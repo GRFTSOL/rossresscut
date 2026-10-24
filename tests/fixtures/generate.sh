@@ -20,6 +20,12 @@ ffmpeg -y -hide_banner -loglevel error \
 
 ffmpeg -y -hide_banner -loglevel error \
     -f lavfi -i testsrc2=size=160x120:rate=10:duration=2 \
+    -c:v libx264 -preset ultrafast -crf 35 -pix_fmt yuv420p \
+    -an \
+    tests/fixtures/sample-video-only.mp4
+
+ffmpeg -y -hide_banner -loglevel error \
+    -f lavfi -i testsrc2=size=160x120:rate=10:duration=2 \
     -f lavfi -i sine=frequency=440:sample_rate=44100:duration=2 \
     -f lavfi -i sine=frequency=880:sample_rate=44100:duration=2 \
     -i tests/fixtures/subtitles.srt \

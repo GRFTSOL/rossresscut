@@ -2,9 +2,9 @@
 
 ## 当前阶段
 
-**Phase 1：媒体分析（已完成）**
+**Phase 2：媒体预览（已完成）**
 
-Phase 2 尚未开始。
+Phase 3 尚未开始。
 
 除非用户明确要求，不提前实现后续阶段功能。
 
@@ -33,7 +33,7 @@ Phase 2 尚未开始。
 - [x] 创建 `PLANS.md`
 - [x] 创建架构文档
 
-托管 CI：`.github/workflows/ci.yml`。Git 仓库已初始化，尚未提交。
+托管 CI：`.github/workflows/ci.yml`。Git 仓库已初始化，初始 commit 已创建。
 
 ## 完成条件
 
@@ -100,7 +100,7 @@ cargo fmt --check
 
 # Phase 2：媒体预览
 
-状态：`未开始`
+状态：`完成`
 
 ## 目标
 
@@ -108,20 +108,39 @@ cargo fmt --check
 
 ## 任务
 
-- [ ] 确定预览后端
-- [ ] 设计 PreviewBackend
-- [ ] 播放
-- [ ] 暂停
-- [ ] Seek
-- [ ] 时间显示
-- [ ] 错误处理
-- [ ] 音频播放
+- [x] 确定预览后端
+- [x] 设计 PreviewBackend
+- [x] 播放
+- [x] 暂停
+- [x] Seek
+- [x] 时间显示
+- [x] 错误处理
+- [x] 音频播放
 
 ## 注意
 
 预览后端必须先进行架构评估。
 
 不要因为“需要播放视频”就直接添加未经评估的播放器 crate。
+
+当前只有一套具体后端（外部 ffmpeg / ffplay），因此没有引入 `PreviewBackend` trait；
+未来出现第二套后端时再按真实复用需求抽取接口。
+
+## 已知限制
+
+- A/V 同步是近似的：视频由墙钟驱动，音频由独立 `ffplay` 进程播放。
+- 运行环境需要 `ffmpeg`、`ffprobe`、`ffplay`。
+- 预览固定 30fps、最大 960x540，不保证帧精确；非方形 SAR 尚未补偿。
+- 暂无音量、音频设备选择、音轨选择。
+
+验证记录（2026-10-24）：
+
+- `./scripts/check.sh` 通过，实际执行 `cargo fmt --all --check`、`cargo check`、`cargo clippy --all-targets --all-features -- -D warnings`、`cargo test`、`cargo build`。
+- 单元测试 27 个、集成测试 11 个，全部通过；音频测试默认 ignored。
+- 视频预览测试覆盖：首帧解码、从 0.5s seek 解码、解码失败路径、应用层播放 / 暂停 / seek。
+- `cargo test --test preview_audio -- --ignored --nocapture --test-threads=1` 在带音频设备的会话中通过（2 个测试，1.89s）：直接 ffplay 播放与应用层音频启动。
+- GUI 实际启动并截图检查：顶部工具栏、中央预览、右侧媒体信息、底部时间轴正常；一次截图中播放位置为 0.688s 且按钮显示 Pause，确认播放状态下预览帧与时间显示会更新。
+- `.github/workflows/ci.yml` 尚未在 GitHub Actions 环境实际执行。
 
 ---
 

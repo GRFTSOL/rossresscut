@@ -50,7 +50,7 @@ FFprobe 的 `duration`、`size`、`bit_rate`、`sample_rate` 等字段实际可�
 
 ### 4. 后台探测，UI 不阻塞
 
-`Application::open_media` 启动命名线程并通过 `mpsc` 回传结果；UI 每帧调用非阻塞的 `Application::poll`。探测中 UI 通过 `request_repaint_after` 定期重绘。
+`Application::open_media` 启动命名线程并通过 `mpsc` 回传结果；UI 每帧调用非阻塞的 `Application::update` 轮询结果。探测中 UI 通过 `request_repaint_after` 定期重绘。
 
 否决在 egui update 中同步执行 FFprobe，也否决引入异步运行时：Phase 1 只有一个短任务，标准库线程与通道足够。
 

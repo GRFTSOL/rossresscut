@@ -4,3 +4,4 @@
 //! not depend on `eframe` or `egui`.
 
 pub mod ffprobe;
+pub mod preview;

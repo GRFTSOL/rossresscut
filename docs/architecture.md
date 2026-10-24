@@ -281,7 +281,7 @@ docs/decisions/
 
 ---
 
-# 十一、当前代码结构（Phase 1）
+# 十一、当前代码结构（Phase 2）
 
 ```text
 src/
@@ -289,24 +289,28 @@ src/
 ├── lib.rs                     库根：导出各层模块
 ├── error.rs                   应用错误类型（上下文 + source 链）
 ├── logging.rs                 进程级日志初始化
-├── application/mod.rs         Application、OpenState、后台探测任务
+├── application/mod.rs         Application、OpenState、探测与播放状态机
 ├── domain/
 │   ├── media.rs               MediaFile / MediaFormat / 流 / Chapter
 │   └── time.rs                TimeBase / Timestamp / Duration / FrameRate
 ├── media/
-│   └── ffprobe/
-│       ├── mod.rs             FFprobe 进程封装与 ProbeError
-│       ├── raw.rs             私有 serde 结构（JSON 边界）
-│       └── parse.rs           JSON → 领域模型
-└── ui/mod.rs                  egui/eframe 窗口与媒体信息展示
+│   ├── ffprobe/
+│   │   ├── mod.rs             FFprobe 进程封装与 ProbeError
+│   │   ├── raw.rs             私有 serde 结构（JSON 边界）
+│   │   └── parse.rs           JSON → 领域模型
+│   └── preview/
+│       ├── mod.rs             PreviewError 与共享参数格式化
+│       ├── video.rs           ffmpeg RGB 帧解码、背压队列
+│       └── audio.rs           ffplay 音频进程
+└── ui/mod.rs                  egui 窗口、预览 texture、时间轴与信息侧栏
 ```
 
 依赖方向：
 
 - `main` → `ui`、`logging`、`error`
 - `ui` → `eframe`、`application`、`domain`（只读领域状态）
-- `application` → `domain`、`media::ffprobe`、`error`
-- `media` → `domain`、外部 FFprobe 进程
+- `application` → `domain`、`media::ffprobe`、`media::preview`、`error`
+- `media` → `domain`、外部 FFmpeg / FFprobe / ffplay 进程
 - `domain` → 标准库、`serde`；不得依赖 `eframe`、`egui`、FFprobe JSON
 - `ffprobe::raw` 只在 `ffprobe` 模块内部可见
 
@@ -321,12 +325,37 @@ Application::open_media
         ↓
 raw JSON → parse → MediaFile
         ↓
-Application::poll（非阻塞）
+Application::update（非阻塞）
         ↓
-UI 渲染
+Playback 状态机 / UI 渲染
 ```
 
-egui 帧内不会执行 FFprobe，也不会阻塞等待通道。
+预览流程：
+
+```text
+UI Play / Pause / Seek
+        ↓
+Application
+        ├── PreviewVideo（ffmpeg → RGB24 raw frames，容量 4 的通道）
+        └── PreviewAudio（ffplay 音频进程）
+        ↓
+Application::update（非阻塞轮询）
+        ↓
+UI texture / 时间轴 / 警告
+```
+
+egui 帧内不会执行 FFprobe、FFmpeg 或 ffplay，也不会阻塞等待通道。
+
+UI 布局：
+
+```text
+顶部工具栏：打开媒体、播放 / 暂停、当前时间 / 总时长
+中央：视频预览
+右侧：媒体信息、流信息（后续承载 Segment 列表）
+底部：时间轴与警告
+```
+
+布局方向记录在 `GOALS.md`。
 
 验证入口：
 

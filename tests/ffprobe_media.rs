@@ -191,7 +191,7 @@ fn application_probes_off_the_calling_thread() {
 
     let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline {
-        application.poll();
+        application.update();
         if matches!(application.state(), OpenState::Ready) {
             break;
         }
