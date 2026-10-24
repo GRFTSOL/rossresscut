@@ -1,17 +1,21 @@
 //! Preview backends built on external FFmpeg processes.
 //!
 //! Video frames are decoded by `ffmpeg` into RGB24 and delivered through a
-//! bounded channel. Audio is played by `ffplay`. Neither process is spawned
-//! through a shell.
+//! bounded channel. Audio is decoded by `ffmpeg` into PCM and written to the
+//! system audio device through `cpal`. No process is spawned through a shell.
 
 mod audio;
 mod video;
 
 use std::fmt;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
+use std::process::{Child, ChildStderr};
 
 pub use audio::{PreviewAudio, PreviewAudioStatus};
-pub use video::{PreviewVideo, PreviewVideoConfig, PreviewVideoResult, VideoFrame};
+pub use video::{
+    HardwareAcceleration, PreviewVideo, PreviewVideoConfig, PreviewVideoResult, VideoFrame,
+};
 
 use crate::domain::time::Timestamp;
 
@@ -43,6 +47,11 @@ pub enum PreviewError {
         /// What is unsupported or invalid.
         detail: String,
     },
+    /// Audio output could not be initialized.
+    AudioDevice {
+        /// Description of the audio device failure.
+        detail: String,
+    },
 }
 
 impl PreviewError {
@@ -65,6 +74,12 @@ impl PreviewError {
     fn invalid_input(path: &Path, detail: impl Into<String>) -> Self {
         Self::InvalidInput {
             path: path.to_path_buf(),
+            detail: detail.into(),
+        }
+    }
+
+    fn audio_device(detail: impl Into<String>) -> Self {
+        Self::AudioDevice {
             detail: detail.into(),
         }
     }
@@ -98,6 +113,9 @@ impl fmt::Display for PreviewError {
                     path.display()
                 )
             }
+            Self::AudioDevice { detail } => {
+                write!(formatter, "could not initialize audio preview: {detail}")
+            }
         }
     }
 }
@@ -106,8 +124,42 @@ impl std::error::Error for PreviewError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Spawn { source, .. } | Self::Worker { source, .. } => Some(source),
-            Self::InvalidInput { .. } => None,
+            Self::InvalidInput { .. } | Self::AudioDevice { .. } => None,
         }
+    }
+}
+
+fn terminate_child(child: &mut Child) {
+    if let Err(error) = child.kill()
+        && error.kind() != io::ErrorKind::InvalidInput
+    {
+        log::warn!("failed to stop preview process: {error}");
+    }
+    if let Err(error) = child.wait() {
+        log::warn!("failed to reap preview process: {error}");
+    }
+}
+
+fn read_stderr(stderr: &mut ChildStderr) -> String {
+    let mut bytes = Vec::new();
+    match stderr.read_to_end(&mut bytes) {
+        Ok(_) => String::from_utf8_lossy(&bytes).trim().to_owned(),
+        Err(error) => {
+            let text = String::from_utf8_lossy(&bytes).trim().to_owned();
+            if text.is_empty() {
+                format!("failed to read preview stderr: {error}")
+            } else {
+                format!("{text}\nfailed to read preview stderr: {error}")
+            }
+        }
+    }
+}
+
+fn join_detail(detail: &str, stderr: &str) -> String {
+    if stderr.is_empty() {
+        detail.to_owned()
+    } else {
+        format!("{detail}: {stderr}")
     }
 }
 

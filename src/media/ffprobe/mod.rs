@@ -3,8 +3,11 @@
 //! FFprobe is executed directly, without a shell, and its JSON output is
 //! converted into the domain model before it leaves this module.
 
+mod keyframes;
 mod parse;
 mod raw;
+
+pub use keyframes::probe_keyframes;
 
 use std::fmt;
 use std::path::{Path, PathBuf};

@@ -42,6 +42,9 @@
 - 显示应用状态
 - 显示任务进度
 - 显示错误
+- 通过 XDG desktop portal 触发 Linux 文件选择
+- 显示只读媒体标题、播放信息与设置窗口
+- 选择界面语言并读取本地化字符串（`ui/i18n.rs`）
 
 不负责：
 
@@ -50,6 +53,9 @@
 - 媒体解析
 - Segment 业务逻辑
 - 文件导出
+- 自建文件选择器
+- 计算播放位置
+- 构造 FFprobe 关键帧查询
 
 ---
 
@@ -62,7 +68,10 @@
 ```text
 OpenMedia
 CloseMedia
+Play
+Pause
 Seek
+ScrubPreview
 CreateSegment
 UpdateSegment
 DeleteSegment
@@ -113,8 +122,13 @@ ExportRequest
 - 进度解析
 - 取消
 - 媒体操作
+- 预览视频帧解码（外部 ffmpeg，默认硬件解码）
+- 预览音频 PCM 输出（外部 ffmpeg 解码，cpal 输出）
+- 关键帧索引（外部 ffprobe 读取 packet flags，不输入解码）
 
 媒体层不得依赖 egui。
+
+`cpal` 只负责音频 PCM 输出；解码仍由 FFmpeg 完成。
 
 ---
 
@@ -124,7 +138,9 @@ ExportRequest
 
 ```text
 FFprobe
-FFmpeg
+FFmpeg preview decode
+Keyframe indexing
+Audio decode / cpal output
 Thumbnail
 Waveform
 Scene Detection
@@ -177,10 +193,15 @@ StreamSelection
 例如：
 
 ```text
+PlaybackState
+PlaybackPosition
+KeyframeIndex
 ExportProgress
 ExportStatus
 Error
 ```
+
+播放位置属于应用状态。有音频时由音频输出设备消费的样本帧推进；无音频或音频设备不可用时才使用墙钟。
 
 ## UI 状态
 
@@ -273,10 +294,12 @@ docs/decisions/
 例如：
 
 ```text
-0001-rust-native.md
-0002-preview-backend.md
-0003-timestamp-model.md
-0004-export-strategy.md
+0001-foundation-stack.md
+0002-ffprobe-integration.md
+0003-preview-backend.md
+0004-audio-clock-and-desktop-integration.md
+0005-hardware-decoding.md
+0006-ui-localization-and-settings.md
 ```
 
 ---
@@ -289,35 +312,45 @@ src/
 ├── lib.rs                     库根：导出各层模块
 ├── error.rs                   应用错误类型（上下文 + source 链）
 ├── logging.rs                 进程级日志初始化
-├── application/mod.rs         Application、OpenState、探测与播放状态机
+├── application/mod.rs         Application、OpenState、播放状态机、音频主时钟、
+│                              关键帧后台索引与导航
 ├── domain/
-│   ├── media.rs               MediaFile / MediaFormat / 流 / Chapter
+│   ├── media.rs               MediaFile / MediaFormat / 流 / Chapter / KeyframeIndex
 │   └── time.rs                TimeBase / Timestamp / Duration / FrameRate
 ├── media/
 │   ├── ffprobe/
 │   │   ├── mod.rs             FFprobe 进程封装与 ProbeError
 │   │   ├── raw.rs             私有 serde 结构（JSON 边界）
-│   │   └── parse.rs           JSON → 领域模型
+│   │   ├── parse.rs           JSON → 领域模型
+│   │   └── keyframes.rs       packet flags → 关键帧索引
 │   └── preview/
-│       ├── mod.rs             PreviewError 与共享参数格式化
-│       ├── video.rs           ffmpeg RGB 帧解码、背压队列
-│       └── audio.rs           ffplay 音频进程
-└── ui/mod.rs                  egui 窗口、预览 texture、时间轴与信息侧栏
+│       ├── mod.rs             PreviewError、共享进程清理与参数格式化
+│       ├── video.rs           ffmpeg RGB 帧解码、硬件解码选择、背压、快速/精确 seek
+│       └── audio.rs           ffmpeg PCM 解码 + cpal 输出、音频主时钟
+└── ui/
+    ├── mod.rs                 egui 窗口、菜单栏、预览 texture、时间轴、
+    │                          播放/媒体侧栏、设置页、XDG portal、主题与设置持久化
+    └── i18n.rs                语言枚举、强类型字符串与嵌入资源
+
+locales/
+├── en.json
+└── zh-CN.json
 ```
 
 依赖方向：
 
 - `main` → `ui`、`logging`、`error`
-- `ui` → `eframe`、`application`、`domain`（只读领域状态）
+- `ui` → `eframe`、`application`、`domain`（只读领域状态）；Linux 下 → `rfd`
+- `ui::i18n` → 嵌入的 locale JSON、`serde`
 - `application` → `domain`、`media::ffprobe`、`media::preview`、`error`
-- `media` → `domain`、外部 FFmpeg / FFprobe / ffplay 进程
+- `media` → `domain`、外部 FFmpeg / FFprobe 进程、`cpal`
 - `domain` → 标准库、`serde`；不得依赖 `eframe`、`egui`、FFprobe JSON
 - `ffprobe::raw` 只在 `ffprobe` 模块内部可见
 
 打开媒体流程：
 
 ```text
-UI 路径输入 / 命令行参数
+UI Open（Linux: rfd xdg-portal，后台线程） / 命令行参数
         ↓
 Application::open_media
         ↓
@@ -327,33 +360,80 @@ raw JSON → parse → MediaFile
         ↓
 Application::update（非阻塞）
         ↓
-Playback 状态机 / UI 渲染
+后台线程 → ffprobe probe_keyframes（packet flags）
+        ↓
+KeyframeIndex
+        ↓
+播放状态机 / UI 渲染
 ```
 
-预览流程：
+预览与时钟流程：
 
 ```text
-UI Play / Pause / Seek
+UI Play / Pause / Seek / ScrubPreview / StepKeyframe / Skip
         ↓
 Application
         ├── PreviewVideo（ffmpeg → RGB24 raw frames，容量 4 的通道）
-        └── PreviewAudio（ffplay 音频进程）
+        │   └── 平台默认硬件解码（VAAPI / D3D11VA / VideoToolbox）
+        └── PreviewAudio（ffmpeg → f32le PCM → cpal）
+        ↓
+音频设备消费样本帧 → 音频主时钟 → 选择要显示的视频帧
         ↓
 Application::update（非阻塞轮询）
         ↓
-UI texture / 时间轴 / 警告
+UI texture / 时间轴 / 播放信息 / 警告
 ```
 
-egui 帧内不会执行 FFprobe、FFmpeg 或 ffplay，也不会阻塞等待通道。
+快速 scrub 流程：
+
+```text
+时间轴拖动
+        ↓
+暂停播放（记录拖动前是否在播放）
+        ↓
+Application::scrub → 单帧 ffmpeg
+        -noaccurate_seek（关键帧近似，约 12Hz 限流）
+        ↓
+释放时间轴
+        ↓
+Application::seek（精确 seek）
+        ↓
+如果拖动前正在播放，则 Application::play
+```
+
+快速 scrub 位置只用于视觉反馈，不用于编辑边界或导出。
+
+egui 帧内不会执行 FFprobe、FFmpeg 或音频解码，也不会阻塞等待通道。
 
 UI 布局：
 
 ```text
-顶部工具栏：打开媒体、播放 / 暂停、当前时间 / 总时长
-中央：视频预览
-右侧：媒体信息、流信息（后续承载 Segment 列表）
-底部：时间轴与警告
+顶部：菜单栏（File / View / Help）、设置按钮、当前媒体标题（不含扩展名）
+中央：视频预览（点击切换播放 / 暂停，滚轮按关键帧步进）
+右侧：播放信息（mpv Tab 风格）在上，媒体信息与默认折叠的流信息在下
+底部：自定义时间轴与精确播放头、播放 / 暂停、时间与警告
 ```
+
+设置页：
+
+```text
+主题：跟随系统主题复选框 + Dark / Light 下拉框
+语言：English / 简体中文
+```
+
+主题、语言与 egui memory（流折叠状态、窗口尺寸）通过 eframe storage 持久化。
+
+时间轴滚轮步进：
+
+```text
+上滚 → 上一个关键帧
+下滚 → 下一个关键帧
+mod + 滚轮 → ±10 秒
+```
+
+关键帧索引在后台生成；索引未完成时滚轮回退为 ±1 秒。
+
+滚轮交互占用了 command / ctrl 修饰键，因此 egui 的 ctrl+滚轮界面缩放被显式关闭（`InputOptions::zoom_modifier = Modifiers::NONE`）。
 
 布局方向记录在 `GOALS.md`。
 

@@ -25,6 +25,12 @@ ffmpeg -y -hide_banner -loglevel error \
     tests/fixtures/sample-video-only.mp4
 
 ffmpeg -y -hide_banner -loglevel error \
+    -f lavfi -i testsrc2=size=160x120:rate=10:duration=3 \
+    -c:v libx264 -preset ultrafast -crf 35 -pix_fmt yuv420p \
+    -g 10 -keyint_min 10 -sc_threshold 0 -an \
+    tests/fixtures/sample-keyframes.mp4
+
+ffmpeg -y -hide_banner -loglevel error \
     -f lavfi -i testsrc2=size=160x120:rate=10:duration=2 \
     -f lavfi -i sine=frequency=440:sample_rate=44100:duration=2 \
     -f lavfi -i sine=frequency=880:sample_rate=44100:duration=2 \

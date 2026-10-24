@@ -4,40 +4,201 @@
 //! never runs FFprobe, parses FFprobe output, or mutates domain state directly.
 //!
 //! The layout follows the LosslessCut direction recorded in `GOALS.md`: a top
-//! toolbar, a central preview, a bottom timeline, and a side panel for media
-//! information.
+//! menu bar, a central preview, a bottom timeline, and a side panel with
+//! playback and media information.
+
+mod i18n;
 
 use std::path::PathBuf;
-use std::time::Duration;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use eframe::egui;
+use serde::{Deserialize, Serialize};
 
 use crate::application::{Application, OpenState};
 use crate::domain::media::{
     AudioStream, Disposition, MediaFile, MediaStream, StreamInfo, VideoStream,
 };
-use crate::domain::time::Timestamp;
+use crate::domain::time::{Duration as MediaDuration, Timestamp};
+
+use i18n::{Language, Strings, fill};
+
+const FILE_DIALOG_SUPPORTED: bool = cfg!(target_os = "linux");
+const SETTINGS_KEY: &str = "ui_settings";
+const WHEEL_STEP_POINTS: f32 = 50.0;
+const WHEEL_LINE_POINTS: f32 = 50.0;
+const WHEEL_PAGE_LINES: f32 = 10.0;
+const TIMELINE_HEIGHT: f32 = 20.0;
+
+/// Color theme selected when the system theme is not followed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum ThemeChoice {
+    #[default]
+    Dark,
+    Light,
+}
+
+/// UI settings persisted by eframe.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct UiSettings {
+    follow_system_theme: bool,
+    theme: ThemeChoice,
+    language: Language,
+}
+
+impl Default for UiSettings {
+    fn default() -> Self {
+        Self {
+            follow_system_theme: true,
+            theme: ThemeChoice::Dark,
+            language: Language::English,
+        }
+    }
+}
+
+enum DialogError {
+    Failed(String),
+    Stopped,
+}
 
 /// Main application window.
 #[derive(Default)]
 pub struct RossresscutApp {
     application: Application,
-    path_input: String,
     preview_texture: Option<egui::TextureHandle>,
     preview_texture_timestamp: Option<i64>,
     preview_source: Option<PathBuf>,
-    scrub_seconds: Option<f64>,
+    scrub_target: Option<Timestamp>,
+    scrub_was_playing: bool,
+    last_scrub_target: Option<i64>,
+    last_scrub_start: Option<Instant>,
+    file_dialog: Option<Receiver<Option<PathBuf>>>,
+    dialog_error: Option<DialogError>,
+    settings: UiSettings,
+    settings_open: bool,
+    about_open: bool,
+    wheel_accumulator: f32,
 }
 
 impl RossresscutApp {
     /// Creates the window state and optionally opens `initial_path`.
-    pub fn new(initial_path: Option<PathBuf>) -> Self {
-        let mut app = Self::default();
+    pub fn new(context: &eframe::CreationContext<'_>, initial_path: Option<PathBuf>) -> Self {
+        // The preview uses the command modifier with the wheel for seeking, so
+        // egui must not also treat that gesture as a UI zoom.
+        context
+            .egui_ctx
+            .options_mut(|options| options.input_options.zoom_modifier = egui::Modifiers::NONE);
+
+        let settings = context
+            .storage
+            .and_then(|storage| eframe::get_value(storage, SETTINGS_KEY))
+            .unwrap_or_default();
+        let mut app = Self {
+            settings,
+            ..Self::default()
+        };
         if let Some(path) = initial_path {
-            app.path_input = path.display().to_string();
             app.application.open_media(path);
         }
         app
+    }
+
+    fn strings(&self) -> &'static Strings {
+        self.settings.language.strings()
+    }
+
+    fn apply_theme(&self, context: &egui::Context) {
+        let preference = if self.settings.follow_system_theme {
+            egui::ThemePreference::System
+        } else {
+            match self.settings.theme {
+                ThemeChoice::Dark => egui::ThemePreference::Dark,
+                ThemeChoice::Light => egui::ThemePreference::Light,
+            }
+        };
+        context.set_theme(preference);
+    }
+
+    fn poll_file_dialog(&mut self) {
+        let Some(receiver) = self.file_dialog.take() else {
+            return;
+        };
+
+        match receiver.try_recv() {
+            Ok(Some(path)) => {
+                self.reset_scrub();
+                self.application.open_media(path);
+            }
+            Ok(None) => {}
+            Err(TryRecvError::Empty) => {
+                self.file_dialog = Some(receiver);
+            }
+            Err(TryRecvError::Disconnected) => {
+                log::warn!("file dialog thread stopped without a result");
+                self.dialog_error = Some(DialogError::Stopped);
+            }
+        }
+    }
+
+    fn start_file_dialog(&mut self) {
+        if self.file_dialog.is_some() {
+            return;
+        }
+        self.dialog_error = None;
+
+        let (sender, receiver) = mpsc::channel();
+        let spawn = thread::Builder::new()
+            .name("file-dialog".to_owned())
+            .spawn(move || {
+                let path = pick_media_file();
+                if sender.send(path).is_err() {
+                    log::debug!("file dialog result discarded: the window is closing");
+                }
+            });
+
+        match spawn {
+            Ok(_handle) => {
+                self.file_dialog = Some(receiver);
+            }
+            Err(error) => {
+                log::error!("failed to start the file dialog thread: {error}");
+                self.dialog_error = Some(DialogError::Failed(error.to_string()));
+            }
+        }
+    }
+
+    fn reset_scrub(&mut self) {
+        self.scrub_target = None;
+        self.scrub_was_playing = false;
+        self.last_scrub_target = None;
+        self.last_scrub_start = None;
+    }
+
+    fn scrub_to(&mut self, target: Timestamp) {
+        self.scrub_target = Some(target);
+        let now = Instant::now();
+        let should_scrub = !self.application.is_waiting_for_preview()
+            && self.last_scrub_target != Some(target.micros())
+            && self
+                .last_scrub_start
+                .is_none_or(|start| now.duration_since(start) >= Duration::from_millis(80));
+        if should_scrub {
+            self.application.scrub(target);
+            self.last_scrub_target = Some(target.micros());
+            self.last_scrub_start = Some(now);
+        }
+    }
+
+    fn finish_scrub(&mut self, target: Timestamp) {
+        self.application.seek(target);
+        let resume = self.scrub_was_playing;
+        self.reset_scrub();
+        if resume {
+            self.application.play();
+        }
     }
 
     fn sync_preview_texture(&mut self, context: &egui::Context) {
@@ -87,92 +248,197 @@ impl RossresscutApp {
         self.preview_texture_timestamp = Some(frame.timestamp.micros());
     }
 
-    fn toolbar(&mut self, ui: &mut egui::Ui) {
-        egui::Panel::top("media_toolbar").show(ui, |ui| {
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                let field_width = (ui.available_width() - 330.0).max(80.0);
-                let response = ui.add_sized(
-                    [field_width, 22.0],
-                    egui::TextEdit::singleline(&mut self.path_input)
-                        .hint_text("/path/to/media.mp4"),
+    fn media_title(&self) -> Option<String> {
+        let path = match self.application.state() {
+            OpenState::Empty => None,
+            OpenState::Probing { path } | OpenState::Failed { path, .. } => Some(path),
+            OpenState::Ready => self.application.media().map(|media| &media.path),
+        }?;
+        path.file_stem()
+            .or_else(|| path.file_name())
+            .map(|name| name.to_string_lossy().into_owned())
+    }
+
+    fn menu_bar(&mut self, ui: &mut egui::Ui) {
+        let strings = self.strings();
+        egui::Panel::top("menu_bar").show(ui, |ui| {
+            egui::MenuBar::new().ui(ui, |ui| {
+                ui.menu_button(strings.menu_file.as_str(), |ui| {
+                    let dialog_open = self.file_dialog.is_some();
+                    let open_enabled = FILE_DIALOG_SUPPORTED && !dialog_open;
+                    let open_label = if dialog_open {
+                        strings.opening.as_str()
+                    } else {
+                        strings.open.as_str()
+                    };
+                    let open = ui
+                        .add_enabled(open_enabled, egui::Button::new(open_label))
+                        .on_disabled_hover_text(if FILE_DIALOG_SUPPORTED {
+                            strings.open_in_progress.as_str()
+                        } else {
+                            strings.open_disabled.as_str()
+                        });
+                    if open.clicked() {
+                        self.start_file_dialog();
+                        ui.close();
+                    }
+
+                    let has_media = !matches!(self.application.state(), OpenState::Empty);
+                    if ui
+                        .add_enabled(has_media, egui::Button::new(strings.close_media.as_str()))
+                        .clicked()
+                    {
+                        self.application.close_media();
+                        self.reset_scrub();
+                        ui.close();
+                    }
+
+                    ui.separator();
+                    if ui.button(strings.quit.as_str()).clicked() {
+                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                });
+
+                ui.menu_button(strings.menu_view.as_str(), |ui| {
+                    if ui.button(strings.settings.as_str()).clicked() {
+                        self.settings_open = true;
+                        ui.close();
+                    }
+                });
+
+                ui.menu_button(strings.menu_help.as_str(), |ui| {
+                    if ui.button(strings.about.as_str()).clicked() {
+                        self.about_open = true;
+                        ui.close();
+                    }
+                });
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .button("⚙")
+                        .on_hover_text(strings.settings.as_str())
+                        .clicked()
+                    {
+                        self.settings_open = true;
+                    }
+                    let title = self
+                        .media_title()
+                        .unwrap_or_else(|| strings.no_media.clone());
+                    ui.add(egui::Label::new(title).truncate());
+                });
+            });
+        });
+    }
+
+    fn settings_window(&mut self, context: &egui::Context) {
+        if !self.settings_open {
+            return;
+        }
+        let strings = self.strings();
+        let mut open = self.settings_open;
+
+        egui::Window::new(strings.settings.as_str())
+            .open(&mut open)
+            .resizable(false)
+            .collapsible(false)
+            .show(context, |ui| {
+                ui.heading(strings.appearance.as_str());
+                ui.checkbox(
+                    &mut self.settings.follow_system_theme,
+                    strings.follow_system_theme.as_str(),
                 );
-                let submitted =
-                    response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
-                let has_path = !self.path_input.trim().is_empty();
-                let clicked = ui
-                    .add_enabled(has_path, egui::Button::new("Open"))
-                    .clicked();
-                if has_path && (submitted || clicked) {
-                    self.scrub_seconds = None;
-                    self.application
-                        .open_media(PathBuf::from(self.path_input.trim()));
-                }
+                ui.add_enabled_ui(!self.settings.follow_system_theme, |ui| {
+                    egui::ComboBox::from_label(strings.theme.as_str())
+                        .selected_text(theme_label(strings, self.settings.theme))
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut self.settings.theme,
+                                ThemeChoice::Dark,
+                                strings.theme_dark.as_str(),
+                            );
+                            ui.selectable_value(
+                                &mut self.settings.theme,
+                                ThemeChoice::Light,
+                                strings.theme_light.as_str(),
+                            );
+                        });
+                });
 
                 ui.separator();
+                ui.heading(strings.language.as_str());
+                egui::ComboBox::from_label(strings.language.as_str())
+                    .selected_text(self.settings.language.label())
+                    .show_ui(ui, |ui| {
+                        for language in Language::ALL {
+                            ui.selectable_value(
+                                &mut self.settings.language,
+                                language,
+                                language.label(),
+                            );
+                        }
+                    });
+            });
 
+        self.settings_open = open;
+    }
+
+    fn about_window(&mut self, context: &egui::Context) {
+        if !self.about_open {
+            return;
+        }
+        let strings = self.strings();
+        let mut open = self.about_open;
+
+        egui::Window::new(strings.about.as_str())
+            .open(&mut open)
+            .resizable(false)
+            .collapsible(false)
+            .show(context, |ui| {
+                ui.heading("rossresscut");
+                ui.label(strings.about_description.as_str());
+                ui.label(fill(&strings.about_version, &[env!("CARGO_PKG_VERSION")]));
+            });
+
+        self.about_open = open;
+    }
+
+    fn timeline_panel(&mut self, ui: &mut egui::Ui) {
+        let strings = self.strings();
+        egui::Panel::bottom("media_timeline").show(ui, |ui| {
+            ui.add_space(4.0);
+            self.timeline_bar(ui);
+
+            ui.horizontal(|ui| {
                 let can_play = self.application.media().is_some();
                 let playing = self.application.is_playing();
-                let label = if playing { "Pause" } else { "Play" };
+                let label = if playing {
+                    strings.pause.as_str()
+                } else {
+                    strings.play.as_str()
+                };
                 if ui.add_enabled(can_play, egui::Button::new(label)).clicked() {
                     self.application.toggle_playback();
                 }
 
-                let shown_position = self
-                    .scrub_seconds
-                    .map(seconds_to_timestamp)
+                let position = self
+                    .scrub_target
                     .unwrap_or_else(|| self.application.position());
-                ui.monospace(format!(
-                    "{} / {}",
-                    shown_position,
-                    dash(self.application.duration())
-                ));
+                let duration = self.application.duration().map_or_else(
+                    || strings.duration_unavailable.clone(),
+                    |value| value.to_string(),
+                );
+                ui.monospace(format!("{position} / {duration}"));
             });
-            ui.add_space(4.0);
-        });
-    }
 
-    fn timeline_panel(&mut self, ui: &mut egui::Ui) {
-        egui::Panel::bottom("media_timeline").show(ui, |ui| {
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                let position = self.application.position();
-                if let Some(duration) = self.application.duration() {
-                    let max_seconds = duration.micros() as f64 / 1_000_000.0;
-                    if max_seconds > 0.0 {
-                        let mut value = self
-                            .scrub_seconds
-                            .unwrap_or_else(|| position.micros() as f64 / 1_000_000.0)
-                            .clamp(0.0, max_seconds);
-                        let width = (ui.available_width() - 230.0).max(80.0);
-                        ui.spacing_mut().slider_width = width;
-                        let response = ui.add(
-                            egui::Slider::new(&mut value, 0.0..=max_seconds)
-                                .show_value(false)
-                                .trailing_fill(true),
-                        );
-
-                        if response.drag_stopped() {
-                            self.application.seek(seconds_to_timestamp(value));
-                            self.scrub_seconds = None;
-                        } else if response.dragged() {
-                            self.scrub_seconds = Some(value);
-                        } else if response.changed() {
-                            self.application.seek(seconds_to_timestamp(value));
-                        }
+            if let Some(error) = &self.dialog_error {
+                let message = match error {
+                    DialogError::Failed(detail) => {
+                        fill(&strings.file_dialog_failed, &[detail.as_str()])
                     }
-
-                    let shown = self
-                        .scrub_seconds
-                        .map(seconds_to_timestamp)
-                        .unwrap_or(position);
-                    ui.monospace(format!("{shown} / {duration}"));
-                } else {
-                    ui.label("Duration unavailable");
-                    ui.monospace(position.to_string());
-                }
-            });
-
+                    DialogError::Stopped => strings.file_dialog_stopped.clone(),
+                };
+                ui.colored_label(ui.visuals().error_fg_color, message);
+            }
             if let Some(warning) = self.application.warning() {
                 ui.colored_label(ui.visuals().warn_fg_color, warning);
             }
@@ -180,24 +446,238 @@ impl RossresscutApp {
         });
     }
 
+    fn timeline_bar(&mut self, ui: &mut egui::Ui) {
+        let response = ui.allocate_response(
+            egui::vec2(ui.available_width(), TIMELINE_HEIGHT),
+            egui::Sense::click_and_drag(),
+        );
+        let rect = response.rect;
+        let Some(duration) = self.application.duration() else {
+            ui.painter()
+                .rect_filled(rect, 4.0, ui.visuals().extreme_bg_color);
+            return;
+        };
+
+        let position = self
+            .scrub_target
+            .unwrap_or_else(|| self.application.position());
+        let fraction = fraction_of(position, duration);
+        let playhead_x = rect.left() + rect.width() * fraction;
+        let played = egui::Rect::from_min_max(rect.min, egui::pos2(playhead_x, rect.max.y));
+
+        let visuals = ui.visuals();
+        let painter = ui.painter_at(rect);
+        painter.rect_filled(rect, 4.0, visuals.extreme_bg_color);
+        painter.rect_filled(played, 4.0, visuals.selection.bg_fill.gamma_multiply(0.35));
+        painter.line_segment(
+            [
+                egui::pos2(playhead_x, rect.top()),
+                egui::pos2(playhead_x, rect.bottom()),
+            ],
+            egui::Stroke::new(2.0, visuals.selection.stroke.color),
+        );
+
+        if response.drag_started() {
+            self.scrub_was_playing = self.application.is_playing();
+            if self.scrub_was_playing {
+                self.application.pause();
+            }
+            self.last_scrub_target = None;
+            self.last_scrub_start = None;
+        }
+
+        if response.dragged()
+            && let Some(pointer) = response.interact_pointer_pos()
+        {
+            self.scrub_to(timestamp_at_x(rect, pointer.x, duration));
+        }
+
+        if response.drag_stopped() {
+            let target = self
+                .scrub_target
+                .unwrap_or_else(|| self.application.position());
+            self.finish_scrub(target);
+        } else if response.clicked()
+            && let Some(pointer) = response.interact_pointer_pos()
+        {
+            self.application
+                .seek(timestamp_at_x(rect, pointer.x, duration));
+        }
+
+        if response.hovered() {
+            self.handle_wheel(ui);
+            if let Some(pointer) = response.hover_pos() {
+                let hover_x = pointer.x.clamp(rect.left(), rect.right());
+                let hover = timestamp_at_x(rect, hover_x, duration);
+                painter.line_segment(
+                    [
+                        egui::pos2(hover_x, rect.top()),
+                        egui::pos2(hover_x, rect.bottom()),
+                    ],
+                    egui::Stroke::new(1.0, visuals.weak_text_color()),
+                );
+                let _ = response.clone().on_hover_text(hover.to_string());
+            }
+        }
+    }
+
+    fn preview_panel(&mut self, ui: &mut egui::Ui) {
+        let strings = self.strings();
+        egui::CentralPanel::default().show(ui, |ui| match self.application.state() {
+            OpenState::Empty => {
+                let response = self.preview_open_response(ui);
+                centered_message(ui, strings.open_media_prompt.as_str());
+                if response.clicked() {
+                    self.start_file_dialog();
+                }
+            }
+            OpenState::Probing { path } => {
+                let title = file_title(path);
+                self.centered_spinner(ui, fill(&strings.probing_file, &[title.as_str()]));
+            }
+            OpenState::Failed { path, message } => {
+                let title = file_title(path);
+                let response = self.preview_open_response(ui);
+                let mut text = fill(&strings.could_not_open, &[title.as_str(), message.as_str()]);
+                text.push_str("\n\n");
+                text.push_str(&strings.open_media_prompt);
+                centered_message(ui, text);
+                if response.clicked() {
+                    self.start_file_dialog();
+                }
+            }
+            OpenState::Ready => {
+                let texture = self
+                    .preview_texture
+                    .as_ref()
+                    .map(|texture| (texture.id(), texture.size_vec2()));
+                if let Some((texture_id, texture_size)) = texture {
+                    let rect = ui.available_rect_before_wrap();
+                    let response = ui.allocate_rect(rect, egui::Sense::click());
+                    ui.painter().rect_filled(rect, 0.0, egui::Color32::BLACK);
+
+                    let size = fit_size(texture_size, rect.size());
+                    let image_rect = egui::Rect::from_center_size(rect.center(), size);
+                    ui.painter().image(
+                        texture_id,
+                        image_rect,
+                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                        egui::Color32::WHITE,
+                    );
+
+                    if response.clicked() {
+                        self.application.toggle_playback();
+                    }
+                    if response.hovered() {
+                        self.handle_wheel(ui);
+                    }
+                } else if self.application.is_waiting_for_preview() {
+                    self.centered_spinner(ui, strings.loading_preview.clone());
+                } else {
+                    centered_message(ui, strings.no_video_frame.as_str());
+                }
+            }
+        });
+    }
+
+    fn centered_spinner(&self, ui: &mut egui::Ui, message: String) {
+        ui.with_layout(
+            egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
+            |ui| {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(message);
+                });
+            },
+        );
+    }
+
+    fn preview_open_response(&self, ui: &mut egui::Ui) -> egui::Response {
+        let rect = ui.available_rect_before_wrap();
+        let response = ui.interact(
+            rect,
+            ui.scope_id().with("preview_open"),
+            egui::Sense::click(),
+        );
+        if FILE_DIALOG_SUPPORTED && self.file_dialog.is_none() {
+            response.on_hover_cursor(egui::CursorIcon::PointingHand)
+        } else {
+            response
+        }
+    }
+
+    fn handle_wheel(&mut self, ui: &egui::Ui) {
+        let (delta, modifiers) = ui.input(|input| {
+            let mut delta = 0.0;
+            let mut modifiers = egui::Modifiers::NONE;
+            for event in &input.events {
+                if let egui::Event::MouseWheel {
+                    unit,
+                    delta: wheel,
+                    source,
+                    modifiers: event_modifiers,
+                    ..
+                } = event
+                {
+                    if *source == egui::MouseWheelSource::Momentum {
+                        continue;
+                    }
+                    let points = match unit {
+                        egui::MouseWheelUnit::Point => wheel.y,
+                        egui::MouseWheelUnit::Line => wheel.y * WHEEL_LINE_POINTS,
+                        egui::MouseWheelUnit::Page => {
+                            wheel.y * WHEEL_LINE_POINTS * WHEEL_PAGE_LINES
+                        }
+                    };
+                    delta += points;
+                    modifiers = *event_modifiers;
+                }
+            }
+            (delta, modifiers)
+        });
+
+        if delta == 0.0 {
+            return;
+        }
+        self.wheel_accumulator += delta;
+
+        let steps = (self.wheel_accumulator / WHEEL_STEP_POINTS).trunc();
+        if steps == 0.0 {
+            return;
+        }
+        self.wheel_accumulator -= steps * WHEEL_STEP_POINTS;
+
+        if modifiers.command {
+            let count = steps.abs() as i64;
+            self.application
+                .skip(wheel_direction(steps) * 10_000_000 * count);
+        } else {
+            self.application.step_keyframe(wheel_direction(steps) > 0);
+        }
+    }
+
     fn info_panel(&mut self, ui: &mut egui::Ui) {
+        let strings = self.strings();
         egui::Panel::right("media_information")
             .resizable(true)
-            .default_size(340.0)
+            .default_size(360.0)
             .show(ui, |ui| {
                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
                 egui::ScrollArea::vertical().show(ui, |ui| {
-                    ui.heading("Media");
+                    ui.heading(strings.playback.as_str());
+                    render_playback_info(ui, &self.application, self.scrub_target, strings);
                     ui.separator();
 
+                    ui.heading(strings.media.as_str());
+                    ui.separator();
                     match self.application.state() {
                         OpenState::Empty => {
-                            ui.label("No media loaded.");
+                            ui.label(strings.no_media_loaded.as_str());
                         }
                         OpenState::Probing { path } => {
                             ui.horizontal(|ui| {
                                 ui.spinner();
-                                ui.label("Reading media information...");
+                                ui.label(strings.reading_media.as_str());
                             });
                             ui.monospace(path.display().to_string());
                         }
@@ -210,70 +690,24 @@ impl RossresscutApp {
                         }
                         OpenState::Ready => {
                             if let Some(media) = self.application.media() {
-                                render_media_info(ui, media);
+                                render_media_info(ui, media, strings);
                             }
                         }
                     }
                 });
             });
     }
-
-    fn preview_panel(&mut self, ui: &mut egui::Ui) {
-        egui::CentralPanel::default().show(ui, |ui| {
-            ui.painter()
-                .rect_filled(ui.max_rect(), 0.0, egui::Color32::BLACK);
-
-            match self.application.state() {
-                OpenState::Empty => {
-                    centered_message(ui, "Open a media file to preview.");
-                }
-                OpenState::Probing { path } => {
-                    ui.with_layout(
-                        egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
-                        |ui| {
-                            ui.horizontal(|ui| {
-                                ui.spinner();
-                                ui.label(format!("Probing {}", path.display()));
-                            });
-                        },
-                    );
-                }
-                OpenState::Failed { path, message } => {
-                    centered_message(ui, format!("Could not open {}\n{message}", path.display()));
-                }
-                OpenState::Ready => {
-                    if let Some(texture) = &self.preview_texture {
-                        let size = fit_size(texture.size_vec2(), ui.available_size());
-                        ui.with_layout(
-                            egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
-                            |ui| {
-                                ui.image(egui::load::SizedTexture::new(texture.id(), size));
-                            },
-                        );
-                    } else if self.application.is_waiting_for_preview() {
-                        ui.with_layout(
-                            egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
-                            |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.spinner();
-                                    ui.label("Loading preview...");
-                                });
-                            },
-                        );
-                    } else {
-                        centered_message(ui, "No video frame available.");
-                    }
-                }
-            }
-        });
-    }
 }
 
 impl eframe::App for RossresscutApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.apply_theme(ui.ctx());
+        self.poll_file_dialog();
+
         if self.application.update() {
             ui.ctx().request_repaint();
         }
+
         let has_video = self.application.media().is_some_and(|media| {
             media
                 .streams
@@ -286,15 +720,23 @@ impl eframe::App for RossresscutApp {
                 .request_repaint_after(Duration::from_millis(repaint_millis));
         } else if self.application.is_waiting_for_preview() {
             ui.ctx().request_repaint_after(Duration::from_millis(50));
-        } else if matches!(self.application.state(), OpenState::Probing { .. }) {
+        } else if matches!(self.application.state(), OpenState::Probing { .. })
+            || self.file_dialog.is_some()
+        {
             ui.ctx().request_repaint_after(Duration::from_millis(100));
         }
 
         self.sync_preview_texture(ui.ctx());
-        self.toolbar(ui);
+        self.menu_bar(ui);
         self.timeline_panel(ui);
         self.info_panel(ui);
         self.preview_panel(ui);
+        self.settings_window(ui.ctx());
+        self.about_window(ui.ctx());
+    }
+
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        eframe::set_value(storage, SETTINGS_KEY, &self.settings);
     }
 }
 
@@ -305,18 +747,150 @@ pub fn run(initial_path: Option<PathBuf>) -> Result<(), eframe::Error> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([960.0, 640.0])
-            .with_min_inner_size([480.0, 320.0]),
+            .with_min_inner_size([720.0, 480.0]),
         ..Default::default()
     };
 
     eframe::run_native(
         "rossresscut",
         options,
-        Box::new(move |_creation_context| Ok(Box::new(RossresscutApp::new(initial_path)))),
+        Box::new(move |creation_context| {
+            Ok(Box::new(RossresscutApp::new(
+                creation_context,
+                initial_path,
+            )))
+        }),
     )
 }
 
-fn render_media_info(ui: &mut egui::Ui, media: &MediaFile) {
+fn render_playback_info(
+    ui: &mut egui::Ui,
+    application: &Application,
+    scrub_target: Option<Timestamp>,
+    strings: &Strings,
+) {
+    let scrubbing = scrub_target.is_some();
+    let displayed_position = scrub_target.unwrap_or_else(|| application.position());
+
+    egui::Grid::new("playback_info")
+        .num_columns(2)
+        .min_col_width(115.0)
+        .striped(true)
+        .show(ui, |ui| {
+            row(
+                ui,
+                &strings.state,
+                playback_state(application, scrubbing, strings),
+            );
+            row(
+                ui,
+                &strings.position,
+                format!("{} / {}", displayed_position, dash(application.duration())),
+            );
+            row(
+                ui,
+                &strings.sync,
+                playback_sync(application, scrubbing, strings),
+            );
+            row(ui, &strings.decoder, decoder_label(application, strings));
+            row(ui, &strings.preview, strings.preview_summary.clone());
+            row(ui, &strings.frame, frame_summary(application));
+            row(ui, &strings.video, video_summary(application.media()));
+            row(ui, &strings.audio, audio_summary(application.media()));
+        });
+}
+
+fn decoder_label(application: &Application, strings: &Strings) -> String {
+    match application.hardware_decoder() {
+        Some(name) => format!("ffmpeg ({name})"),
+        None => format!("ffmpeg ({})", strings.decoder_software),
+    }
+}
+
+fn playback_state(application: &Application, scrubbing: bool, strings: &Strings) -> String {
+    if scrubbing {
+        return strings.state_scrubbing.clone();
+    }
+    match application.state() {
+        OpenState::Empty => strings.state_no_media.clone(),
+        OpenState::Probing { .. } => strings.state_probing.clone(),
+        OpenState::Failed { .. } => strings.state_failed.clone(),
+        OpenState::Ready => {
+            if application.is_playing() {
+                strings.state_playing.clone()
+            } else {
+                strings.state_paused.clone()
+            }
+        }
+    }
+}
+
+fn playback_sync(application: &Application, scrubbing: bool, strings: &Strings) -> String {
+    if scrubbing {
+        strings.sync_scrub.clone()
+    } else if application.is_playing() {
+        if application.uses_audio_clock() {
+            strings.sync_audio_clock.clone()
+        } else {
+            strings.sync_wall_clock.clone()
+        }
+    } else {
+        "-".to_owned()
+    }
+}
+
+fn frame_summary(application: &Application) -> String {
+    match (application.frame_size(), application.frame_timestamp()) {
+        (Some((width, height)), Some(timestamp)) => {
+            format!("{width}x{height} @ {timestamp}")
+        }
+        _ => "-".to_owned(),
+    }
+}
+
+fn video_summary(media: Option<&MediaFile>) -> String {
+    let Some(media) = media else {
+        return "-".to_owned();
+    };
+    let Some(video) = media.streams.iter().find_map(|stream| match stream {
+        MediaStream::Video(video) if !video.info.disposition.attached_pic => Some(video),
+        _ => None,
+    }) else {
+        return "-".to_owned();
+    };
+
+    let codec = video.info.codec_name.as_deref().unwrap_or("unknown");
+    let resolution = resolution_text(video);
+    match video.frame_rate {
+        Some(rate) => format!("{codec} {resolution} @ {rate} fps"),
+        None => format!("{codec} {resolution}"),
+    }
+}
+
+fn audio_summary(media: Option<&MediaFile>) -> String {
+    let Some(media) = media else {
+        return "-".to_owned();
+    };
+    let Some(audio) = media.streams.iter().find_map(|stream| match stream {
+        MediaStream::Audio(audio) => Some(audio),
+        _ => None,
+    }) else {
+        return "-".to_owned();
+    };
+
+    let codec = audio.info.codec_name.as_deref().unwrap_or("unknown");
+    let sample_rate = audio
+        .sample_rate
+        .map(|rate| format!("{rate} Hz"))
+        .unwrap_or_else(|| "-".to_owned());
+    let channels = audio
+        .channels
+        .map(|channels| format!("{channels} ch"))
+        .unwrap_or_else(|| "-".to_owned());
+    format!("{codec}, {sample_rate}, {channels}")
+}
+
+fn render_media_info(ui: &mut egui::Ui, media: &MediaFile, strings: &Strings) {
     let file_name = media.path.file_name().map_or_else(
         || media.path.display().to_string(),
         |name| name.to_string_lossy().into_owned(),
@@ -325,48 +899,56 @@ fn render_media_info(ui: &mut egui::Ui, media: &MediaFile) {
     ui.monospace(media.path.display().to_string());
     ui.separator();
 
-    ui.heading("Format");
+    ui.heading(strings.format.as_str());
     egui::Grid::new("media_format")
         .num_columns(2)
         .min_col_width(115.0)
         .striped(true)
         .show(ui, |ui| {
-            row(ui, "Container", media.format.name.clone());
-            row(ui, "Long name", dash(media.format.long_name.as_deref()));
-            row(ui, "Duration", dash(media.duration));
-            row(ui, "Start time", dash(media.start_time));
+            row(ui, &strings.container, media.format.name.clone());
             row(
                 ui,
-                "Size",
+                &strings.long_name,
+                dash(media.format.long_name.as_deref()),
+            );
+            row(ui, &strings.duration, dash(media.duration));
+            row(ui, &strings.start_time, dash(media.start_time));
+            row(
+                ui,
+                &strings.size,
                 dash(media.format.size.map(|size| format!("{size} bytes"))),
             );
             row(
                 ui,
-                "Bit rate",
+                &strings.bit_rate,
                 dash(media.format.bit_rate.map(|rate| format!("{rate} bit/s"))),
             );
         });
 
     ui.separator();
-    ui.heading(format!("Streams ({})", media.streams.len()));
+    ui.heading(fill(&strings.streams, &[&media.streams.len().to_string()]));
     for stream in &media.streams {
-        egui::CollapsingHeader::new(stream_title(stream))
-            .default_open(true)
-            .show(ui, |ui| render_stream_details(ui, stream));
+        egui::CollapsingHeader::new(stream_title(stream, strings))
+            .default_open(false)
+            .id_salt(("stream", stream.info().index))
+            .show(ui, |ui| render_stream_details(ui, stream, strings));
     }
 
     if !media.chapters.is_empty() {
         ui.separator();
-        ui.heading(format!("Chapters ({})", media.chapters.len()));
+        ui.heading(fill(
+            &strings.chapters,
+            &[&media.chapters.len().to_string()],
+        ));
         egui::Grid::new("media_chapters")
             .num_columns(4)
             .min_col_width(45.0)
             .striped(true)
             .show(ui, |ui| {
-                ui.label("ID");
-                ui.label("Start");
-                ui.label("End");
-                ui.label("Title");
+                ui.label(strings.id.as_str());
+                ui.label(strings.start_time.as_str());
+                ui.label(strings.end.as_str());
+                ui.label(strings.title.as_str());
                 ui.end_row();
 
                 for chapter in &media.chapters {
@@ -380,7 +962,7 @@ fn render_media_info(ui: &mut egui::Ui, media: &MediaFile) {
     }
 }
 
-fn render_stream_details(ui: &mut egui::Ui, stream: &MediaStream) {
+fn render_stream_details(ui: &mut egui::Ui, stream: &MediaStream, strings: &Strings) {
     let info = stream.info();
 
     egui::Grid::new(format!("stream_shared_{}", info.index))
@@ -388,51 +970,71 @@ fn render_stream_details(ui: &mut egui::Ui, stream: &MediaStream) {
         .min_col_width(115.0)
         .striped(true)
         .show(ui, |ui| {
-            row(ui, "Codec", dash(info.codec_name.as_deref()));
-            row(ui, "Codec name", dash(info.codec_long_name.as_deref()));
-            row(ui, "Profile", dash(info.profile.as_deref()));
-            row(ui, "Language", dash(info.language.as_deref()));
-            row(ui, "Title", dash(info.title.as_deref()));
+            row(ui, &strings.codec, dash(info.codec_name.as_deref()));
             row(
                 ui,
-                "Bit rate",
+                &strings.codec_name,
+                dash(info.codec_long_name.as_deref()),
+            );
+            row(ui, &strings.profile, dash(info.profile.as_deref()));
+            row(ui, &strings.language, dash(info.language.as_deref()));
+            row(ui, &strings.title, dash(info.title.as_deref()));
+            row(
+                ui,
+                &strings.bit_rate,
                 dash(info.bit_rate.map(|rate| format!("{rate} bit/s"))),
             );
-            row(ui, "Time base", dash(info.time_base));
-            row(ui, "Start time", dash(info.start_time));
-            row(ui, "Duration", dash(info.duration));
-            row(ui, "Disposition", disposition_text(&info.disposition));
+            row(ui, &strings.time_base, dash(info.time_base));
+            row(ui, &strings.start_time, dash(info.start_time));
+            row(ui, &strings.duration, dash(info.duration));
+            row(
+                ui,
+                &strings.disposition,
+                disposition_text(&info.disposition, strings),
+            );
         });
 
     match stream {
-        MediaStream::Video(video) => render_video_details(ui, video),
-        MediaStream::Audio(audio) => render_audio_details(ui, audio),
+        MediaStream::Video(video) => render_video_details(ui, video, strings),
+        MediaStream::Audio(audio) => render_audio_details(ui, audio, strings),
         MediaStream::Subtitle(_) | MediaStream::Other(_) => {}
     }
 }
 
-fn render_video_details(ui: &mut egui::Ui, video: &VideoStream) {
+fn render_video_details(ui: &mut egui::Ui, video: &VideoStream, strings: &Strings) {
     egui::Grid::new(format!("stream_video_{}", video.info.index))
         .num_columns(2)
         .min_col_width(115.0)
         .striped(true)
         .show(ui, |ui| {
-            row(ui, "Resolution", resolution_text(video));
-            row(ui, "Pixel format", dash(video.pixel_format.as_deref()));
-            row(ui, "Frame rate", dash(video.frame_rate));
-            row(ui, "Average frame rate", dash(video.average_frame_rate));
-            row(ui, "Color range", dash(video.color_range.as_deref()));
-            row(ui, "Color space", dash(video.color_space.as_deref()));
-            row(ui, "Color transfer", dash(video.color_transfer.as_deref()));
+            row(ui, &strings.resolution, resolution_text(video));
             row(
                 ui,
-                "Color primaries",
+                &strings.pixel_format,
+                dash(video.pixel_format.as_deref()),
+            );
+            row(ui, &strings.frame_rate, dash(video.frame_rate));
+            row(
+                ui,
+                &strings.average_frame_rate,
+                dash(video.average_frame_rate),
+            );
+            row(ui, &strings.color_range, dash(video.color_range.as_deref()));
+            row(ui, &strings.color_space, dash(video.color_space.as_deref()));
+            row(
+                ui,
+                &strings.color_transfer,
+                dash(video.color_transfer.as_deref()),
+            );
+            row(
+                ui,
+                &strings.color_primaries,
                 dash(video.color_primaries.as_deref()),
             );
         });
 }
 
-fn render_audio_details(ui: &mut egui::Ui, audio: &AudioStream) {
+fn render_audio_details(ui: &mut egui::Ui, audio: &AudioStream, strings: &Strings) {
     egui::Grid::new(format!("stream_audio_{}", audio.info.index))
         .num_columns(2)
         .min_col_width(115.0)
@@ -440,12 +1042,20 @@ fn render_audio_details(ui: &mut egui::Ui, audio: &AudioStream) {
         .show(ui, |ui| {
             row(
                 ui,
-                "Sample rate",
+                &strings.sample_rate,
                 dash(audio.sample_rate.map(|rate| format!("{rate} Hz"))),
             );
-            row(ui, "Channels", dash(audio.channels));
-            row(ui, "Channel layout", dash(audio.channel_layout.as_deref()));
-            row(ui, "Sample format", dash(audio.sample_format.as_deref()));
+            row(ui, &strings.channels, dash(audio.channels));
+            row(
+                ui,
+                &strings.channel_layout,
+                dash(audio.channel_layout.as_deref()),
+            );
+            row(
+                ui,
+                &strings.sample_format,
+                dash(audio.sample_format.as_deref()),
+            );
         });
 }
 
@@ -459,13 +1069,13 @@ fn dash<T: std::fmt::Display>(value: Option<T>) -> String {
     value.map_or_else(|| "-".to_owned(), |value| value.to_string())
 }
 
-fn stream_title(stream: &MediaStream) -> String {
+fn stream_title(stream: &MediaStream, strings: &Strings) -> String {
     let info = stream.info();
     let kind = match stream {
-        MediaStream::Video(_) => "Video",
-        MediaStream::Audio(_) => "Audio",
-        MediaStream::Subtitle(_) => "Subtitle",
-        MediaStream::Other(_) => "Other",
+        MediaStream::Video(_) => &strings.stream_video,
+        MediaStream::Audio(_) => &strings.stream_audio,
+        MediaStream::Subtitle(_) => &strings.stream_subtitle,
+        MediaStream::Other(_) => &strings.stream_other,
     };
     format!("{kind} #{} - {}", info.index, codec_label(info))
 }
@@ -481,22 +1091,22 @@ fn resolution_text(video: &VideoStream) -> String {
     }
 }
 
-fn disposition_text(disposition: &Disposition) -> String {
+fn disposition_text(disposition: &Disposition, strings: &Strings) -> String {
     let mut flags = Vec::new();
     if disposition.default {
-        flags.push("default");
+        flags.push(strings.flag_default.as_str());
     }
     if disposition.forced {
-        flags.push("forced");
+        flags.push(strings.flag_forced.as_str());
     }
     if disposition.hearing_impaired {
-        flags.push("hearing impaired");
+        flags.push(strings.flag_hearing_impaired.as_str());
     }
     if disposition.visual_impaired {
-        flags.push("visually impaired");
+        flags.push(strings.flag_visual_impaired.as_str());
     }
     if disposition.attached_pic {
-        flags.push("attached picture");
+        flags.push(strings.flag_attached_pic.as_str());
     }
 
     if flags.is_empty() {
@@ -523,24 +1133,105 @@ fn fit_size(source: egui::Vec2, available: egui::Vec2) -> egui::Vec2 {
     source * scale
 }
 
-fn seconds_to_timestamp(seconds: f64) -> Timestamp {
-    if !seconds.is_finite() {
+fn fraction_of(position: Timestamp, duration: MediaDuration) -> f32 {
+    if duration.micros() == 0 {
+        return 0.0;
+    }
+    let fraction = position.micros().max(0) as f64 / duration.micros() as f64;
+    fraction.clamp(0.0, 1.0) as f32
+}
+
+fn timestamp_at_x(rect: egui::Rect, x: f32, duration: MediaDuration) -> Timestamp {
+    if rect.width() <= 0.0 {
         return Timestamp::ZERO;
     }
-    let micros = (seconds.max(0.0) * 1_000_000.0).round();
+    let fraction = ((x - rect.left()) / rect.width()).clamp(0.0, 1.0) as f64;
+    let micros = (fraction * duration.micros() as f64).round();
     Timestamp::from_micros(micros.clamp(0.0, i64::MAX as f64) as i64)
+}
+
+fn file_title(path: &std::path::Path) -> String {
+    path.file_stem()
+        .or_else(|| path.file_name())
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string())
+}
+
+fn theme_label(strings: &Strings, theme: ThemeChoice) -> String {
+    match theme {
+        ThemeChoice::Dark => strings.theme_dark.clone(),
+        ThemeChoice::Light => strings.theme_light.clone(),
+    }
+}
+
+/// Maps accumulated wheel points to playback direction.
+///
+/// Positive egui scroll points mean the content moves down, which is the
+/// gesture users perceive as scrolling forward in this application: next
+/// keyframe / later position.
+fn wheel_direction(steps: f32) -> i64 {
+    if steps > 0.0 { 1 } else { -1 }
+}
+
+#[cfg(target_os = "linux")]
+fn pick_media_file() -> Option<PathBuf> {
+    rfd::FileDialog::new()
+        .add_filter(
+            "Media files",
+            &[
+                "mp4", "mkv", "mov", "avi", "wmv", "ts", "m2ts", "webm", "flv", "mpg", "mpeg",
+                "m4v", "mp3", "aac", "flac", "wav", "ogg", "opus", "mka", "srt", "ass",
+            ],
+        )
+        .pick_file()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn pick_media_file() -> Option<PathBuf> {
+    None
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[derive(Default)]
+    struct MemoryStorage(std::collections::BTreeMap<String, String>);
+
+    impl eframe::Storage for MemoryStorage {
+        fn get_string(&self, key: &str) -> Option<String> {
+            self.0.get(key).cloned()
+        }
+
+        fn set_string(&mut self, key: &str, value: String) {
+            self.0.insert(key.to_owned(), value);
+        }
+
+        fn remove_string(&mut self, key: &str) {
+            self.0.remove(key);
+        }
+
+        fn flush(&mut self) {}
+    }
+
     #[test]
-    fn converts_timeline_seconds_to_microseconds() {
-        assert_eq!(seconds_to_timestamp(1.5), Timestamp::from_micros(1_500_000));
-        assert_eq!(seconds_to_timestamp(-1.0), Timestamp::ZERO);
-        assert_eq!(seconds_to_timestamp(f64::NAN), Timestamp::ZERO);
-        assert_eq!(seconds_to_timestamp(0.000_000_5), Timestamp::from_micros(1));
+    fn converts_timeline_fractions_to_microseconds() {
+        let duration = MediaDuration::from_micros(10_000_000);
+        let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(100.0, 20.0));
+
+        assert_eq!(
+            timestamp_at_x(rect, 50.0, duration),
+            Timestamp::from_micros(5_000_000)
+        );
+        assert_eq!(timestamp_at_x(rect, -10.0, duration), Timestamp::ZERO);
+        assert_eq!(
+            timestamp_at_x(rect, 200.0, duration),
+            Timestamp::from_micros(10_000_000)
+        );
+        assert_eq!(
+            fraction_of(Timestamp::from_micros(5_000_000), duration),
+            0.5
+        );
     }
 
     #[test]
@@ -552,5 +1243,59 @@ mod tests {
         let large = fit_size(egui::vec2(1920.0, 1080.0), egui::vec2(640.0, 480.0));
         assert!((large.x - 640.0).abs() < 0.01);
         assert!((large.y - 360.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn applies_theme_to_context() {
+        let context = egui::Context::default();
+
+        context.set_theme(egui::ThemePreference::Light);
+        assert_eq!(context.theme(), egui::Theme::Light);
+
+        context.set_theme(egui::ThemePreference::Dark);
+        assert_eq!(context.theme(), egui::Theme::Dark);
+    }
+
+    #[test]
+    fn persists_ui_settings() {
+        let mut settings = UiSettings {
+            follow_system_theme: false,
+            theme: ThemeChoice::Light,
+            language: Language::English,
+        };
+
+        for language in Language::ALL {
+            settings.language = language;
+            let mut storage = MemoryStorage::default();
+            eframe::set_value(&mut storage, SETTINGS_KEY, &settings);
+            let parsed: Option<UiSettings> = eframe::get_value(&storage, SETTINGS_KEY);
+
+            assert_eq!(parsed, Some(settings));
+        }
+    }
+
+    #[test]
+    fn defaults_to_system_theme() {
+        let settings = UiSettings::default();
+
+        assert!(settings.follow_system_theme);
+        assert_eq!(settings.theme, ThemeChoice::Dark);
+        assert_eq!(settings.language, Language::English);
+    }
+
+    #[test]
+    fn wheel_direction_maps_scroll_to_playback_direction() {
+        assert_eq!(wheel_direction(1.0), 1);
+        assert_eq!(wheel_direction(-1.0), -1);
+        assert_eq!(wheel_direction(0.0), -1);
+    }
+
+    #[test]
+    fn strips_extensions_from_titles() {
+        assert_eq!(
+            file_title(std::path::Path::new("/tmp/sample.mkv")),
+            "sample"
+        );
+        assert_eq!(file_title(std::path::Path::new("/tmp/archive")), "archive");
     }
 }

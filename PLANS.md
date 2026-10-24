@@ -33,7 +33,7 @@ Phase 3 尚未开始。
 - [x] 创建 `PLANS.md`
 - [x] 创建架构文档
 
-托管 CI：`.github/workflows/ci.yml`。Git 仓库已初始化，初始 commit 已创建。
+托管 CI：`.github/workflows/ci.yml`。Git 仓库已初始化；初始 commit 与 Phase 2 commit 已创建，Phase 2 修订尚未提交。
 
 ## 完成条件
 
@@ -123,24 +123,116 @@ cargo fmt --check
 
 不要因为“需要播放视频”就直接添加未经评估的播放器 crate。
 
-当前只有一套具体后端（外部 ffmpeg / ffplay），因此没有引入 `PreviewBackend` trait；
+当前只有一套具体后端（外部 ffmpeg 视频帧 + cpal 音频输出），因此没有引入 `PreviewBackend` trait；
 未来出现第二套后端时再按真实复用需求抽取接口。
+
+## Phase 2 修订（2026-10-24）
+
+根据真实文件测试补齐：
+
+- [x] 拖动时间轴时刷新预览（快速 keyframe scrub，松开后精确 seek）
+- [x] 音频主时钟（FFmpeg PCM + cpal），修复独立 ffplay 进程导致的 A/V 偏移
+- [x] 硬件解码默认启用：Linux VAAPI、Windows D3D11VA、macOS VideoToolbox；设备不可用时回退软件解码
+- [x] Linux XDG desktop portal 文件打开
+- [x] 顶部改为菜单栏（File / View / Help）
+- [x] 路径显示改为标题 label，只显示不含扩展名的文件名
+- [x] 预览区点击切换播放 / 暂停
+- [x] 预览区与时间轴滚轮按关键帧步进，mod + 滚轮步进 10 秒
+- [x] 后台关键帧索引（FFprobe packet flags，不解码视频）
+- [x] 自定义时间轴与精确播放头
+- [x] 侧栏播放信息（mpv Tab 风格）显示在媒体信息上方
+- [x] 流信息默认折叠，并由 egui memory 记录状态
+- [x] 设置页：主题下拉框 + 跟随系统复选框，语言选择
+- [x] UI 本地化：`locales/*.json` 编译期嵌入，运行时选择语言
+- [x] 使用 eframe storage 持久化主题、语言与 egui memory
 
 ## 已知限制
 
-- A/V 同步是近似的：视频由墙钟驱动，音频由独立 `ffplay` 进程播放。
-- 运行环境需要 `ffmpeg`、`ffprobe`、`ffplay`。
+- A/V 同步由音频输出设备消费的样本帧驱动；仍受设备缓冲延迟影响（通常数十毫秒）。
+- 运行环境需要 `ffmpeg`、`ffprobe` 与音频输出设备；不再需要 `ffplay`。
+- 仅支持 f32 音频输出格式；设备不支持时回退墙钟并显示 warning。
+- 硬件解码默认启用。Linux 只检测 `/dev/dri/renderD128`；设备不存在时使用软件解码。
+- 播放信息中的 Decoder 显示请求的后端；FFmpeg 对某些 codec 可能在内部回退到软件解码，当前没有解析实际使用的解码器。
+- 关键帧索引在打开媒体后于后台生成；索引完成前滚轮回退为 1 秒步进。
+- 时间轴尚未按 Segment 着色；播放头与拖动已实现，Segment 颜色随 Phase 3 落地。
+- 4K HEVC 精确 seek 仍可能耗时数秒；测试机 CPU 受限，不能代表一般硬件。快速 seek 调研见下节。
+- A/V 同步由音频时钟驱动，但设备输出缓冲可能让时钟领先实际听到的音频；待办见下节。
+- 快速 scrub 可能显示目标时间之前的关键帧；只能用于视觉反馈，不能用于 Segment 或导出。
 - 预览固定 30fps、最大 960x540，不保证帧精确；非方形 SAR 尚未补偿。
 - 暂无音量、音频设备选择、音轨选择。
+- UI 字符串已本地化；应用层 warning 与媒体层错误仍为英文。
+- 文件门户仅在 Linux 实现；其他平台暂时禁用 Open。
+- 文件对话框未做自动化选择测试；已确认 XDG portal 服务与 `FileChooser` 接口存在。
+- 浅色主题通过截图与 egui Context 测试验证；中文界面通过截图验证。
 
 验证记录（2026-10-24）：
 
 - `./scripts/check.sh` 通过，实际执行 `cargo fmt --all --check`、`cargo check`、`cargo clippy --all-targets --all-features -- -D warnings`、`cargo test`、`cargo build`。
-- 单元测试 27 个、集成测试 11 个，全部通过；音频测试默认 ignored。
-- 视频预览测试覆盖：首帧解码、从 0.5s seek 解码、解码失败路径、应用层播放 / 暂停 / seek。
-- `cargo test --test preview_audio -- --ignored --nocapture --test-threads=1` 在带音频设备的会话中通过（2 个测试，1.89s）：直接 ffplay 播放与应用层音频启动。
-- GUI 实际启动并截图检查：顶部工具栏、中央预览、右侧媒体信息、底部时间轴正常；一次截图中播放位置为 0.688s 且按钮显示 Pause，确认播放状态下预览帧与时间显示会更新。
+- 单元测试 46 个、集成测试 14 个，全部通过；2 个音频测试默认 ignored。
+- 集成测试覆盖：首帧解码、从 0.5s seek 解码、解码失败路径、快速 scrub、应用层播放 / 暂停 / seek、关键帧索引与关键帧导航。
+- `cargo test --test preview_audio -- --ignored --nocapture --test-threads=1` 在带音频设备的会话中通过（2 个测试，1.94s）。
+- GUI 实际加载真实 4K HEVC 素材（3840x2160, 59.94fps）并截图：菜单栏、标题 label、只读媒体信息、默认折叠的流信息、时间轴播放头与 `ffmpeg (vaapi)` 解码器状态均正常显示。
+- 实际运行中后台索引了该文件的 265 个关键帧。
+- 中文界面通过修改持久化语言设置后实际启动截图验证；设置窗口中的主题下拉框与语言选择可见。
+- 硬件解码命令构造由单元测试覆盖（VAAPI 参数与 render node）；真实文件的 `-loglevel verbose` 输出确认选择 `hevc` 解码器并初始化 radeonsi VAAPI。
+- 滚轮方向由 `wheel_direction` 单元测试覆盖；实际滚轮事件无法在无头环境注入，方向按用户反馈修正。
+- 预览区空状态 / 失败状态点击打开文件已实现；未做自动化点击验证。
 - `.github/workflows/ci.yml` 尚未在 GitHub Actions 环境实际执行。
+
+## 预览性能与音画同步待办（Phase 2 后续，未开始）
+
+### 快速 seek 调研（LosslessCut 3.70.1）
+
+事实：
+
+- LosslessCut 的预览不是外部 ffmpeg CLI 逐次 seek；`package.json` 没有 mpv 依赖。
+- `src/renderer/src/MediaSourcePlayer.tsx` 使用 Chromium HTML5 `<video>` + Media Source Extensions：
+  - master video 负责播放、`currentTime` 与音频；
+  - 主进程的 `compatPlayer.createMediaSourceStream` 持续把 FFmpeg 输出写成 fragmented MP4，再 append 到 `SourceBuffer`；
+  - seek 时 abort 当前流并用新的 `seekTo` 重启 ffmpeg，debounce 500ms；
+  - 预览可限制到 800/420px、30/15fps，降低解码与上传成本；
+  - 通过 `sourceBuffer.timestampOffset = seekTo - frameDuration` 与 30ms 间隔的 `currentTime` 同步。
+- 来源：
+  - https://github.com/mifi/lossless-cut/blob/master/src/renderer/src/MediaSourcePlayer.tsx
+  - https://github.com/mifi/lossless-cut/blob/master/package.json
+
+候选优化（未决定，按成本排序）：
+
+1. 保持外部 FFmpeg，继续降低预览成本：
+   - VAAPI 解码 + `scale_vaapi`，只下载缩小后的帧；
+   - 降低预览分辨率 / fps，或生成低分辨率代理文件；
+   - 拖动时只做 keyframe 近似，松开后再精确 seek（已实现）。
+2. 换 libmpv：
+   - 可能同时改善 seek、硬件解码与 A/V 同步；
+   - 需要把 mpv 渲染进 egui，涉及 GL/Vulkan 互操作、窗口嵌入与跨平台。
+3. 其他持久化解码器：GStreamer / libav 绑定，暂不推荐。
+
+### 音画同步
+
+- 当前以 cpal 实际消费的样本帧为时钟；cpal 回调写入设备缓冲不等于已经被听到，时钟可能领先一个输出缓冲周期。
+- 待验证 / 待优化：
+  - 减小 cpal 输出缓冲；
+  - 从播放位置中扣除设备缓冲延迟；
+  - 等待首个视频帧就绪后再启动音频；
+  - 用真实文件做可量化的 A/V 偏移测试。
+- 如果优化后仍不可接受，再评估 libmpv。
+
+### libmpv 与 unsafe（待评估）
+
+- libmpv 的渲染 API 需要把 mpv 的帧渲染到 egui 可用的纹理，通常要 OpenGL/Vulkan 互操作；如果由本项目代码调用 GL/FFI，会引入 `unsafe`，违反 `AGENTS.md`。
+- 纯 JSON IPC（外部 mpv 进程）不引入 `unsafe`，但难以把视频嵌入 egui；Wayland 下尤其受限。
+- 结论：换 libmpv 前必须先做最小实验并记录 ADR；当前不换。
+
+## 进入 Phase 3 前注意事项
+
+- Segment 边界必须使用精确时间与 FFprobe 数据，不得使用快速 scrub 的关键帧近似位置。
+- 时间轴播放位置必须读取应用层的音频时钟；不要用 UI 墙钟自行推算播放时间。
+- 关键帧索引已存在（`KeyframeIndex`），可作为 Segment 边界与导航的候选；但 keyframe 不等于用户期望的精确切点。
+- 时间轴目前是单色轨道 + 精确播放头；不同 Segment 的颜色与列表编辑留给 Phase 3。
+- 硬件解码默认启用。不要为了预览计时而在后续阶段默认关闭它；预览解码路径与导出路径必须保持分离。
+- 4K HEVC 精确 seek 可能耗时数秒；timeline 交互需要接受该延迟，或先引入代理文件 / GPU 零拷贝预览方案。
+- 保持 `Timestamp` 为整数微秒；UI 只做坐标转换，不引入浮点作为媒体时间表示。
+- 预览固定 30fps / 最大 960x540，不能作为编辑或导出精度的依据。
 
 ---
 
@@ -158,6 +250,8 @@ cargo fmt --check
 - [ ] Segment
 - [ ] Timeline
 - [ ] 当前播放位置
+- [ ] 时间轴按 Segment 着色（不同 Segment 不同颜色）
+- [ ] 精确播放头与 Segment 边界联动
 - [ ] In 点
 - [ ] Out 点
 - [ ] Segment 创建

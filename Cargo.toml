@@ -6,11 +6,15 @@ rust-version = "1.99"
 description = "Native lossless media cutting tool built with Rust and egui."
 
 [dependencies]
-eframe = "0.37"
+cpal = "0.18"
+eframe = { version = "0.37", features = ["persistence"] }
 env_logger = "0.11"
 log = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
 
 [lints.rust]
 unsafe_code = "forbid"

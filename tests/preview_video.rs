@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use rossresscut::application::{Application, OpenState};
 use rossresscut::domain::time::Timestamp;
 use rossresscut::media::preview::{
-    PreviewVideo, PreviewVideoConfig, PreviewVideoResult, VideoFrame,
+    HardwareAcceleration, PreviewVideo, PreviewVideoConfig, PreviewVideoResult, VideoFrame,
 };
 
 const FIXTURE_WIDTH: u32 = 160;
@@ -27,6 +27,8 @@ fn start_preview(start: Timestamp) -> PreviewVideo {
         height: FIXTURE_HEIGHT,
         start,
         frame_rate: 30,
+        fast_seek: false,
+        hardware: HardwareAcceleration::None,
     })
     .unwrap_or_else(|error| panic!("failed to start the preview decoder: {error}"))
 }
@@ -96,6 +98,8 @@ fn reports_decoder_failures() {
         height: FIXTURE_HEIGHT,
         start: Timestamp::ZERO,
         frame_rate: 30,
+        fast_seek: false,
+        hardware: HardwareAcceleration::None,
     })
     .unwrap_or_else(|error| panic!("failed to start the preview decoder: {error}"));
 
@@ -117,6 +121,59 @@ fn reports_decoder_failures() {
             }
         }
     }
+}
+
+#[test]
+fn application_scrubs_with_a_fast_preview() {
+    let mut application = Application::new();
+    application.open_media(fixture("sample-video-only.mp4"));
+    wait_until_ready(&mut application);
+
+    let target = Timestamp::from_micros(1_000_000);
+    application.scrub(target);
+    assert_eq!(application.position(), target);
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while application.is_waiting_for_preview() && Instant::now() < deadline {
+        application.update();
+        thread::sleep(Duration::from_millis(10));
+    }
+
+    assert!(
+        !application.is_waiting_for_preview(),
+        "scrub preview did not finish"
+    );
+    assert!(
+        application.frame().is_some(),
+        "scrub did not produce a frame"
+    );
+    assert!(!application.is_playing());
+}
+
+#[test]
+fn application_steps_between_keyframes() {
+    let mut application = Application::new();
+    application.open_media(fixture("sample-keyframes.mp4"));
+    wait_until_ready(&mut application);
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while application.keyframes().is_none() && Instant::now() < deadline {
+        application.update();
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        application.keyframes().is_some(),
+        "keyframe index did not become available"
+    );
+
+    application.step_keyframe(true);
+    assert_eq!(application.position(), Timestamp::from_micros(1_000_000));
+
+    application.step_keyframe(true);
+    assert_eq!(application.position(), Timestamp::from_micros(2_000_000));
+
+    application.step_keyframe(false);
+    assert_eq!(application.position(), Timestamp::from_micros(1_000_000));
 }
 
 #[test]

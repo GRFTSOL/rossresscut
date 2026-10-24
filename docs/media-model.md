@@ -351,3 +351,45 @@ title: Option<String>
 ## 3. 序列化
 
 领域模型当前派生 `Serialize`。`Deserialize` 留到项目持久化阶段，并需要校验 `TimeBase` 的零值不变式。
+
+---
+
+# 十八、播放位置（Phase 2）
+
+播放位置属于应用状态，不属于 `MediaFile` 或 `Timeline`。
+
+- 有音轨且音频设备可用时，位置由音频输出设备实际消费的样本帧推进：
+
+```text
+position = start_position + played_frames / sample_rate
+```
+
+- 无音轨、音频设备不可用或音频输出格式不支持时，才使用墙钟。
+- 视频帧只显示 `timestamp <= position` 的最新帧，因此音频是主时钟，视频可以丢帧但不能累积漂移。
+- 快速 scrub 使用关键帧 seek，位置是近似值，不能用于 Segment 边界、编辑结果或导出。
+- 释放时间轴或执行播放 seek 时必须使用精确 seek。
+- 预览帧时间戳是预览时钟，不是源文件的 PTS；导出必须使用 FFmpeg 与源时间戳。
+
+播放位置仍使用 `Timestamp`（整数微秒），不引入浮点作为领域时间表示。
+
+---
+
+# 十九、关键帧索引（Phase 2 修订）
+
+`KeyframeIndex` 表示一个视频流的 keyframe 时间点，位于领域层，不依赖 FFprobe JSON 或 UI。
+
+```text
+KeyframeIndex
+└── times: Vec<Timestamp>
+```
+
+规则：
+
+- 时间戳升序、去重。
+- 时间戳归一到媒体时间轴：FFprobe packet PTS 减去容器 `start_time`，负数截断为 0。
+  这与预览输入 `-ss` 的相对定位语义一致。
+- `previous(position)` 返回严格小于 `position` 的最近 keyframe。
+- `next(position)` 返回严格大于 `position` 的最近 keyframe。
+- 索引由 FFprobe 的 `packet=pts_time,flags` 生成，只读取 packet header，不解码视频。
+- 索引在后台线程生成，不阻塞 UI 帧。
+- Keyframe 是 seek 与后续无损裁剪的重要边界；快速 scrub 的近似位置不能替代它。

@@ -169,3 +169,109 @@ pub struct Chapter {
     /// Chapter title.
     pub title: Option<String>,
 }
+
+/// Keyframe timestamps for one video stream, ordered and normalized to the
+/// media timeline.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct KeyframeIndex {
+    times: Vec<Timestamp>,
+}
+
+impl KeyframeIndex {
+    /// Builds an index from timestamps in any order, sorting and deduplicating
+    /// them.
+    pub fn new(mut times: Vec<Timestamp>) -> Self {
+        times.sort_unstable();
+        times.dedup();
+        Self { times }
+    }
+
+    /// Returns the keyframes in ascending order.
+    pub fn times(&self) -> &[Timestamp] {
+        &self.times
+    }
+
+    /// Returns the number of known keyframes.
+    pub fn len(&self) -> usize {
+        self.times.len()
+    }
+
+    /// Returns whether no keyframes are known.
+    pub fn is_empty(&self) -> bool {
+        self.times.is_empty()
+    }
+
+    /// Returns the latest keyframe strictly before `position`.
+    pub fn previous(&self, position: Timestamp) -> Option<Timestamp> {
+        let index = self.times.partition_point(|time| *time < position);
+        self.times.get(index.checked_sub(1)?).copied()
+    }
+
+    /// Returns the earliest keyframe strictly after `position`.
+    pub fn next(&self, position: Timestamp) -> Option<Timestamp> {
+        let index = self.times.partition_point(|time| *time <= position);
+        self.times.get(index).copied()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn index() -> KeyframeIndex {
+        KeyframeIndex::new(vec![
+            Timestamp::from_micros(2_000_000),
+            Timestamp::ZERO,
+            Timestamp::from_micros(1_000_000),
+            Timestamp::from_micros(1_000_000),
+        ])
+    }
+
+    #[test]
+    fn sorts_and_deduplicates_keyframes() {
+        let index = index();
+
+        assert_eq!(index.len(), 3);
+        assert_eq!(
+            index.times(),
+            &[
+                Timestamp::ZERO,
+                Timestamp::from_micros(1_000_000),
+                Timestamp::from_micros(2_000_000),
+            ]
+        );
+    }
+
+    #[test]
+    fn navigates_strictly_between_keyframes() {
+        let index = index();
+
+        assert_eq!(index.previous(Timestamp::ZERO), None);
+        assert_eq!(
+            index.previous(Timestamp::from_micros(1_500_000)),
+            Some(Timestamp::from_micros(1_000_000))
+        );
+        assert_eq!(
+            index.previous(Timestamp::from_micros(1_000_000)),
+            Some(Timestamp::ZERO)
+        );
+        assert_eq!(
+            index.next(Timestamp::ZERO),
+            Some(Timestamp::from_micros(1_000_000))
+        );
+        assert_eq!(
+            index.next(Timestamp::from_micros(1_000_000)),
+            Some(Timestamp::from_micros(2_000_000))
+        );
+        assert_eq!(index.next(Timestamp::from_micros(2_000_000)), None);
+    }
+
+    #[test]
+    fn empty_index_has_no_navigation_targets() {
+        let index = KeyframeIndex::default();
+
+        assert!(index.is_empty());
+        assert_eq!(index.previous(Timestamp::ZERO), None);
+        assert_eq!(index.next(Timestamp::ZERO), None);
+    }
+}

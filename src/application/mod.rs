@@ -8,13 +8,13 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 use std::time::Instant;
 
-use crate::domain::media::{MediaFile, MediaStream, VideoStream};
+use crate::domain::media::{KeyframeIndex, MediaFile, MediaStream, VideoStream};
 use crate::domain::time::{Duration, Timestamp};
 use crate::error::AppError;
 use crate::media::ffprobe::{self, ProbeError};
 use crate::media::preview::{
-    PreviewAudio, PreviewAudioStatus, PreviewVideo, PreviewVideoConfig, PreviewVideoResult,
-    VideoFrame,
+    HardwareAcceleration, PreviewAudio, PreviewAudioStatus, PreviewVideo, PreviewVideoConfig,
+    PreviewVideoResult, VideoFrame,
 };
 
 const PREVIEW_FRAME_RATE: u32 = 30;
@@ -47,12 +47,18 @@ pub struct Application {
     media: Option<MediaFile>,
     state: OpenState,
     probe: Option<ProbeJob>,
+    keyframes: Option<KeyframeIndex>,
+    keyframe_job: Option<KeyframeJob>,
     playback: Playback,
 }
 
 struct ProbeJob {
     path: PathBuf,
     receiver: Receiver<Result<MediaFile, ProbeError>>,
+}
+
+struct KeyframeJob {
+    receiver: Receiver<Result<KeyframeIndex, ProbeError>>,
 }
 
 impl Application {
@@ -86,6 +92,11 @@ impl Application {
         self.playback.playing
     }
 
+    /// Returns whether the playback clock is currently driven by audio output.
+    pub fn uses_audio_clock(&self) -> bool {
+        self.playback.audio.is_some()
+    }
+
     /// Returns whether a seek/load preview frame is still being decoded.
     pub fn is_waiting_for_preview(&self) -> bool {
         !self.playback.playing && self.playback.video.is_some()
@@ -96,9 +107,36 @@ impl Application {
         self.playback.frame.as_ref()
     }
 
+    /// Returns the dimensions of the latest preview frame.
+    pub fn frame_size(&self) -> Option<(u32, u32)> {
+        self.playback
+            .frame
+            .as_ref()
+            .map(|frame| (frame.width, frame.height))
+    }
+
+    /// Returns the timestamp of the latest preview frame.
+    pub fn frame_timestamp(&self) -> Option<Timestamp> {
+        self.playback.frame.as_ref().map(|frame| frame.timestamp)
+    }
+
     /// Returns a non-fatal preview warning, if any.
     pub fn warning(&self) -> Option<&str> {
         self.playback.warning.as_deref()
+    }
+
+    /// Returns the keyframe index for the preview video stream, once loaded.
+    pub fn keyframes(&self) -> Option<&KeyframeIndex> {
+        self.keyframes.as_ref()
+    }
+
+    /// Returns the FFmpeg hardware accelerator in use, or `None` for software
+    /// decoding.
+    pub fn hardware_decoder(&self) -> Option<&'static str> {
+        self.playback.video.as_ref().map_or_else(
+            || HardwareAcceleration::default_for_platform().name(),
+            |video| video.hardware().name(),
+        )
     }
 
     /// Starts a background probe for `path`.
@@ -108,6 +146,8 @@ impl Application {
     /// [`OpenState::Failed`].
     pub fn open_media(&mut self, path: PathBuf) {
         self.playback.reset();
+        self.keyframes = None;
+        self.keyframe_job = None;
 
         if path.as_os_str().is_empty() {
             self.media = None;
@@ -161,6 +201,7 @@ impl Application {
     /// Returns `true` when application state changed, so the UI can repaint.
     pub fn update(&mut self) -> bool {
         let mut changed = self.poll_probe();
+        self.poll_keyframes();
         let duration = self.duration();
         changed |= self.playback.update(duration);
         changed
@@ -198,6 +239,76 @@ impl Application {
         self.playback.seek(target, media);
     }
 
+    /// Requests a transient scrub preview at `position`.
+    ///
+    /// Scrub previews use a fast keyframe seek and may show a frame from before
+    /// `position`. Use [`Self::seek`] for an accurate preview and playback
+    /// position.
+    pub fn scrub(&mut self, position: Timestamp) {
+        let Some(media) = self.media.as_ref() else {
+            return;
+        };
+        let target = clamp_position(position, media.duration);
+        self.playback.scrub(target, media);
+    }
+
+    /// Pauses playback and moves to the previous or next keyframe.
+    ///
+    /// The keyframe index is built in the background. Until it is available,
+    /// this falls back to a one-second step so navigation still responds.
+    /// Nothing happens when there is no keyframe in the requested direction.
+    pub fn step_keyframe(&mut self, forward: bool) {
+        let Some(duration) = self.media.as_ref().map(|media| media.duration) else {
+            return;
+        };
+        let Some(index) = self.keyframes.as_ref() else {
+            self.skip(if forward { 1_000_000 } else { -1_000_000 });
+            return;
+        };
+
+        let position = self.playback.position;
+        let target = if forward {
+            index.next(position)
+        } else {
+            index.previous(position)
+        };
+        let Some(target) = target else {
+            return;
+        };
+        let target = clamp_position(target, duration);
+
+        if self.playback.playing {
+            self.pause();
+        }
+        let Some(media) = self.media.as_ref() else {
+            return;
+        };
+        self.playback.seek(target, media);
+    }
+
+    /// Moves the playback position by `delta_micros` and clamps it to the media.
+    pub fn skip(&mut self, delta_micros: i64) {
+        let Some(media) = self.media.as_ref() else {
+            return;
+        };
+        let Some(position) = self.playback.position.micros().checked_add(delta_micros) else {
+            log::warn!("relative seek overflowed; ignoring it");
+            return;
+        };
+        let target = clamp_position(Timestamp::from_micros(position), media.duration);
+        self.playback.seek(target, media);
+    }
+
+    /// Closes the current media and stops all preview work.
+    pub fn close_media(&mut self) {
+        self.playback.reset();
+        self.media = None;
+        self.probe = None;
+        self.keyframes = None;
+        self.keyframe_job = None;
+        self.state = OpenState::Empty;
+    }
+
     fn poll_probe(&mut self) -> bool {
         let Some(job) = self.probe.take() else {
             return false;
@@ -212,6 +323,7 @@ impl Application {
                     media.chapters.len()
                 );
                 self.playback.load(&media);
+                self.start_keyframes(&media);
                 self.media = Some(media);
                 self.state = OpenState::Ready;
                 true
@@ -220,6 +332,8 @@ impl Application {
                 log::warn!("{error}");
                 self.playback.reset();
                 self.media = None;
+                self.keyframes = None;
+                self.keyframe_job = None;
                 self.state = OpenState::Failed {
                     path: job.path,
                     message: error.to_string(),
@@ -235,11 +349,60 @@ impl Application {
                 log::error!("probing {}: {message}", job.path.display());
                 self.playback.reset();
                 self.media = None;
+                self.keyframes = None;
+                self.keyframe_job = None;
                 self.state = OpenState::Failed {
                     path: job.path,
                     message,
                 };
                 true
+            }
+        }
+    }
+
+    fn start_keyframes(&mut self, media: &MediaFile) {
+        let Some(video) = preview_video_stream(media) else {
+            return;
+        };
+        let path = media.path.clone();
+        let stream_index = video.info.index;
+        let start_time = media.start_time;
+        let (sender, receiver) = mpsc::channel();
+
+        let spawn_result = thread::Builder::new()
+            .name("ffprobe-keyframes".to_owned())
+            .spawn(move || {
+                let result = ffprobe::probe_keyframes(&path, stream_index, start_time);
+                if sender.send(result).is_err() {
+                    log::debug!(
+                        "discarding keyframe index for {}: the request was superseded",
+                        path.display()
+                    );
+                }
+            });
+
+        match spawn_result {
+            Ok(_handle) => self.keyframe_job = Some(KeyframeJob { receiver }),
+            Err(error) => {
+                log::warn!("failed to start the keyframe worker: {error}");
+            }
+        }
+    }
+
+    fn poll_keyframes(&mut self) {
+        let Some(job) = self.keyframe_job.take() else {
+            return;
+        };
+
+        match job.receiver.try_recv() {
+            Ok(Ok(index)) => {
+                log::info!("indexed {} keyframes", index.len());
+                self.keyframes = Some(index);
+            }
+            Ok(Err(error)) => log::warn!("keyframe indexing failed: {error}"),
+            Err(TryRecvError::Empty) => self.keyframe_job = Some(job),
+            Err(TryRecvError::Disconnected) => {
+                log::warn!("the keyframe worker stopped without a result");
             }
         }
     }
@@ -275,10 +438,10 @@ impl Playback {
     fn update(&mut self, duration: Option<Duration>) -> bool {
         let mut changed = false;
         if self.playing {
+            changed |= self.poll_audio(duration);
             changed |= self.advance(duration);
         }
         changed |= self.poll_video(duration);
-        changed |= self.poll_audio();
         changed
     }
 
@@ -336,6 +499,24 @@ impl Playback {
         self.last_update = Instant::now();
     }
 
+    fn scrub(&mut self, target: Timestamp, media: &MediaFile) {
+        self.position = target;
+        self.playing = false;
+        self.pending_frame = None;
+        self.warning = None;
+        self.stop_video();
+        self.stop_audio();
+
+        if duration_end(media.duration).is_some_and(|end| target.micros() >= end) {
+            self.frame = None;
+            self.last_update = Instant::now();
+            return;
+        }
+
+        self.start_video_with_seek(media, true);
+        self.last_update = Instant::now();
+    }
+
     fn load(&mut self, media: &MediaFile) {
         self.reset();
         self.start_video(media);
@@ -354,25 +535,35 @@ impl Playback {
 
     fn advance(&mut self, duration: Option<Duration>) -> bool {
         let now = Instant::now();
-        let elapsed = now.saturating_duration_since(self.last_update);
-        self.last_update = now;
-        let elapsed_micros = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
-        if elapsed_micros == 0 {
-            return false;
-        }
+        let mut changed = false;
 
-        let Some(position) = self
-            .position
-            .checked_add(Duration::from_micros(elapsed_micros))
-        else {
-            log::warn!("playback position overflowed; pausing");
-            self.playing = false;
-            self.pending_frame = None;
-            self.stop_audio();
-            self.stop_video();
-            return true;
-        };
-        self.position = position;
+        if let Some(audio) = &self.audio {
+            let audio_position = audio.position();
+            if audio_position > self.position {
+                self.position = audio_position;
+                changed = true;
+            }
+            self.last_update = now;
+        } else {
+            let elapsed = now.saturating_duration_since(self.last_update);
+            self.last_update = now;
+            let elapsed_micros = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
+            if elapsed_micros > 0 {
+                let Some(position) = self
+                    .position
+                    .checked_add(Duration::from_micros(elapsed_micros))
+                else {
+                    log::warn!("playback position overflowed; pausing");
+                    self.playing = false;
+                    self.pending_frame = None;
+                    self.stop_audio();
+                    self.stop_video();
+                    return true;
+                };
+                self.position = position;
+                changed = true;
+            }
+        }
 
         if let Some(end) = duration_end(duration)
             && self.position.micros() >= end
@@ -382,9 +573,10 @@ impl Playback {
             self.pending_frame = None;
             self.stop_audio();
             self.stop_video();
+            changed = true;
         }
 
-        true
+        changed
     }
 
     fn poll_video(&mut self, duration: Option<Duration>) -> bool {
@@ -467,7 +659,7 @@ impl Playback {
         changed
     }
 
-    fn poll_audio(&mut self) -> bool {
+    fn poll_audio(&mut self, duration: Option<Duration>) -> bool {
         let Some(mut audio) = self.audio.take() else {
             return false;
         };
@@ -478,6 +670,12 @@ impl Playback {
                 false
             }
             PreviewAudioStatus::Ended { success, stderr } => {
+                let audio_position = audio.position();
+                if audio_position > self.position {
+                    self.position = audio_position;
+                }
+                self.last_update = Instant::now();
+
                 if !success {
                     let message = if stderr.is_empty() {
                         "audio preview stopped unexpectedly".to_owned()
@@ -487,7 +685,16 @@ impl Playback {
                     log::warn!("{message}");
                     self.warning = Some(message);
                 } else if !stderr.is_empty() {
-                    log::debug!("ffplay stderr: {stderr}");
+                    log::debug!("audio decoder stderr: {stderr}");
+                }
+
+                if let Some(end) = duration_end(duration)
+                    && self.position.micros() >= end
+                {
+                    self.position = Timestamp::from_micros(end);
+                    self.playing = false;
+                    self.pending_frame = None;
+                    self.stop_video();
                 }
                 true
             }
@@ -495,6 +702,10 @@ impl Playback {
     }
 
     fn start_video(&mut self, media: &MediaFile) {
+        self.start_video_with_seek(media, false);
+    }
+
+    fn start_video_with_seek(&mut self, media: &MediaFile, fast_seek: bool) {
         let Some(video) = preview_video_stream(media) else {
             return;
         };
@@ -509,6 +720,8 @@ impl Playback {
             height,
             start: self.position,
             frame_rate: PREVIEW_FRAME_RATE,
+            fast_seek,
+            hardware: HardwareAcceleration::default_for_platform(),
         };
         match PreviewVideo::start(config) {
             Ok(video) => self.video = Some(video),

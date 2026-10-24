@@ -47,4 +47,4 @@ Phase 0 只有 I/O 失败与启动失败两类错误。`AppError` 保存操作�
 - Domain / Media / Application 可以在不创建窗口的情况下编译与测试。
 - Phase 0 不为后续阶段预置占位类型或 trait，分层目前只体现为模块边界与文档。
 - `eframe` 带来较大的依赖树，这是原生 GUI 的既定成本。若启动时间或二进制体积成为实测问题，再基于测量调整特性或渲染器。
-- 当前准入门槛由 `scripts/check.sh` 提供；托管 CI 待仓库托管方式确定后添加。
+- 当前准入门槛由 `scripts/check.sh` 提供；托管 CI 已添加 `.github/workflows/ci.yml`，尚未在 GitHub Actions 实际执行。

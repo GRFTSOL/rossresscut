@@ -1,4 +1,4 @@
-//! Manual audio preview test.
+//! Manual audio preview tests.
 //!
 //! Ignored by default because CI runners do not provide an audio device.
 
@@ -33,7 +33,7 @@ fn wait_until_ready(application: &mut Application) {
 
 #[test]
 #[ignore = "requires a working audio output device"]
-fn plays_audio_through_ffplay() {
+fn plays_audio_through_system_output() {
     let mut audio = PreviewAudio::start(&fixture("sample.mp4"), Timestamp::ZERO)
         .unwrap_or_else(|error| panic!("failed to start audio preview: {error}"));
 
@@ -43,12 +43,12 @@ fn plays_audio_through_ffplay() {
             PreviewAudioStatus::Running => {
                 assert!(
                     Instant::now() < deadline,
-                    "ffplay did not exit before the deadline"
+                    "audio preview did not end before the deadline"
                 );
                 thread::sleep(Duration::from_millis(10));
             }
             PreviewAudioStatus::Ended { success, stderr } => {
-                assert!(success, "ffplay failed: {stderr}");
+                assert!(success, "audio preview failed: {stderr}");
                 break;
             }
         }
@@ -76,5 +76,20 @@ fn application_starts_audio_playback() {
         "application reported a preview warning: {:?}",
         application.warning()
     );
+    assert!(application.uses_audio_clock(), "audio clock was not active");
+    let position = application.position();
+    assert!(
+        position.micros() > 0,
+        "audio clock did not advance: {position}"
+    );
+
+    if let Some(frame_timestamp) = application.frame_timestamp() {
+        let lag = position.micros() - frame_timestamp.micros();
+        assert!(
+            (0..250_000).contains(&lag),
+            "preview frame is out of sync: frame={frame_timestamp}, position={position}"
+        );
+    }
+
     application.pause();
 }

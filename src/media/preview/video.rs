@@ -4,15 +4,84 @@ use std::io::{self, Read};
 use std::path::PathBuf;
 use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::thread::{self, JoinHandle};
+
+#[cfg(target_os = "linux")]
+use std::path::Path;
 
 use crate::domain::time::{Duration, Timestamp};
 
-use super::{PreviewError, seconds_arg};
+use super::{PreviewError, join_detail, read_stderr, seconds_arg, terminate_child};
 
 const PREVIEW_MAX_WIDTH: u32 = 960;
 const PREVIEW_MAX_HEIGHT: u32 = 540;
+
+const VAAPI_DEVICE: &str = "/dev/dri/renderD128";
+
+/// Hardware acceleration backend used by the preview decoder.
+///
+/// The platform default is VAAPI on Linux, D3D11VA on Windows, and
+/// VideoToolbox on macOS. When the required device is unavailable, the decoder
+/// runs in software mode.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HardwareAcceleration {
+    /// Decode on the CPU.
+    #[default]
+    None,
+    /// VAAPI on Linux.
+    Vaapi,
+    /// D3D11VA on Windows.
+    D3d11va,
+    /// VideoToolbox on macOS.
+    VideoToolbox,
+}
+
+impl HardwareAcceleration {
+    /// Returns the hardware acceleration backend for the current platform.
+    ///
+    /// The Linux backend requires the VAAPI render node used by the preview
+    /// decoder. Detection runs once per process.
+    pub fn default_for_platform() -> Self {
+        static PLATFORM: LazyLock<HardwareAcceleration> = LazyLock::new(detect_platform);
+        *PLATFORM
+    }
+
+    /// Returns the FFmpeg `-hwaccel` name, or `None` for software decoding.
+    pub const fn name(self) -> Option<&'static str> {
+        match self {
+            Self::None => None,
+            Self::Vaapi => Some("vaapi"),
+            Self::D3d11va => Some("d3d11va"),
+            Self::VideoToolbox => Some("videotoolbox"),
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn detect_platform() -> HardwareAcceleration {
+    if Path::new(VAAPI_DEVICE).exists() {
+        HardwareAcceleration::Vaapi
+    } else {
+        log::warn!("{VAAPI_DEVICE} is unavailable; preview decoding falls back to software");
+        HardwareAcceleration::None
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn detect_platform() -> HardwareAcceleration {
+    HardwareAcceleration::D3d11va
+}
+
+#[cfg(target_os = "macos")]
+fn detect_platform() -> HardwareAcceleration {
+    HardwareAcceleration::VideoToolbox
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+fn detect_platform() -> HardwareAcceleration {
+    HardwareAcceleration::None
+}
 
 /// A decoded RGB preview frame.
 #[derive(Clone)]
@@ -39,6 +108,14 @@ pub struct PreviewVideoConfig {
     pub start: Timestamp,
     /// Output frame rate used for preview timing.
     pub frame_rate: u32,
+    /// Use a keyframe seek for interactive scrubbing.
+    ///
+    /// Fast seeks can display a frame from before `start`. They are only used
+    /// for transient scrubbing previews; accurate playback and final seek
+    /// previews leave this disabled.
+    pub fast_seek: bool,
+    /// Hardware acceleration backend for decoding.
+    pub hardware: HardwareAcceleration,
 }
 
 /// Result of polling a preview video decoder.
@@ -59,6 +136,7 @@ pub struct PreviewVideo {
     child: Arc<Mutex<Child>>,
     events: Option<Receiver<VideoEvent>>,
     reader: Option<JoinHandle<()>>,
+    hardware: HardwareAcceleration,
 }
 
 enum VideoEvent {
@@ -142,7 +220,13 @@ impl PreviewVideo {
             child,
             events: Some(receiver),
             reader: Some(reader),
+            hardware: config.hardware,
         })
+    }
+
+    /// Returns the hardware acceleration backend requested for this decoder.
+    pub const fn hardware(&self) -> HardwareAcceleration {
+        self.hardware
     }
 
     /// Polls the decoder without blocking.
@@ -188,7 +272,27 @@ fn command_for(config: &PreviewVideoConfig, width: u32, height: u32) -> Command 
         .arg("-nostdin")
         .arg("-loglevel")
         .arg("error")
-        .arg("-xerror")
+        .arg("-xerror");
+    match config.hardware {
+        HardwareAcceleration::None => {}
+        HardwareAcceleration::Vaapi => {
+            command
+                .arg("-hwaccel")
+                .arg("vaapi")
+                .arg("-hwaccel_device")
+                .arg(VAAPI_DEVICE);
+        }
+        HardwareAcceleration::D3d11va => {
+            command.arg("-hwaccel").arg("d3d11va");
+        }
+        HardwareAcceleration::VideoToolbox => {
+            command.arg("-hwaccel").arg("videotoolbox");
+        }
+    }
+    if config.fast_seek {
+        command.arg("-noaccurate_seek");
+    }
+    command
         .arg("-ss")
         .arg(seconds_arg(config.start))
         .arg("-i")
@@ -223,6 +327,7 @@ fn read_frames(
 ) {
     let mut buffer = vec![0_u8; config.frame_size];
     let mut frame_index: u64 = 0;
+    let mut frame_count: u64 = 0;
     let mut read_error: Option<String> = None;
 
     loop {
@@ -255,6 +360,7 @@ fn read_frames(
                     break;
                 };
                 frame_index = next_index;
+                frame_count = frame_count.saturating_add(1);
             }
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
             Err(error) => {
@@ -279,50 +385,22 @@ fn read_frames(
             &format!("failed to check ffmpeg status: {error}"),
             &stderr_text,
         )),
-        // FFmpeg is run with `-loglevel error`, so any stderr output is an
-        // error even when the process has not been reaped yet.
-        (None, _) if !stderr_text.is_empty() => {
+        // With no decoded frames, stderr means the decoder never produced a
+        // usable frame. Once frames were produced, stderr is logged but is not
+        // treated as fatal unless the process exits with a failure status.
+        (None, _) if frame_count == 0 && !stderr_text.is_empty() => {
             Some(format!("ffmpeg reported an error: {stderr_text}"))
         }
-        (None, _) => None,
+        (None, _) => {
+            if !stderr_text.is_empty() {
+                log::debug!("preview ffmpeg stderr after {frame_count} frames: {stderr_text}");
+            }
+            None
+        }
     };
 
     if sender.send(VideoEvent::Ended { error }).is_err() {
         log::debug!("preview consumer stopped before the decoder reported its result");
-    }
-}
-
-fn read_stderr(stderr: &mut ChildStderr) -> String {
-    let mut bytes = Vec::new();
-    match stderr.read_to_end(&mut bytes) {
-        Ok(_) => String::from_utf8_lossy(&bytes).trim().to_owned(),
-        Err(error) => {
-            let text = String::from_utf8_lossy(&bytes).trim().to_owned();
-            if text.is_empty() {
-                format!("failed to read ffmpeg stderr: {error}")
-            } else {
-                format!("{text}\nfailed to read ffmpeg stderr: {error}")
-            }
-        }
-    }
-}
-
-fn join_detail(detail: &str, stderr: &str) -> String {
-    if stderr.is_empty() {
-        detail.to_owned()
-    } else {
-        format!("{detail}: {stderr}")
-    }
-}
-
-fn terminate_child(child: &mut Child) {
-    if let Err(error) = child.kill()
-        && error.kind() != io::ErrorKind::InvalidInput
-    {
-        log::warn!("failed to stop preview process: {error}");
-    }
-    if let Err(error) = child.wait() {
-        log::warn!("failed to reap preview process: {error}");
     }
 }
 
@@ -374,6 +452,8 @@ mod tests {
             height: 120,
             start: Timestamp::from_micros(1_500_000),
             frame_rate: 30,
+            fast_seek: false,
+            hardware: HardwareAcceleration::None,
         }
     }
 
@@ -395,6 +475,16 @@ mod tests {
             PreviewVideo::start(config),
             Err(PreviewError::InvalidInput { .. })
         ));
+    }
+
+    #[test]
+    fn fast_seek_command_adds_noaccurate_seek() {
+        let mut config = config();
+        config.fast_seek = true;
+        let command = command_for(&config, 160, 120);
+        let arguments: Vec<&OsStr> = command.get_args().collect();
+
+        assert!(arguments.contains(&OsStr::new("-noaccurate_seek")));
     }
 
     #[test]
@@ -437,6 +527,37 @@ mod tests {
                 OsStr::new("rawvideo"),
                 OsStr::new("pipe:1"),
             ]
+        );
+    }
+
+    #[test]
+    fn vaapi_command_selects_the_render_node() {
+        let mut config = config();
+        config.hardware = HardwareAcceleration::Vaapi;
+        let command = command_for(&config, 160, 120);
+        let arguments: Vec<&OsStr> = command.get_args().collect();
+
+        assert_eq!(
+            &arguments[4..10],
+            &[
+                OsStr::new("-hwaccel"),
+                OsStr::new("vaapi"),
+                OsStr::new("-hwaccel_device"),
+                OsStr::new(VAAPI_DEVICE),
+                OsStr::new("-ss"),
+                OsStr::new("1.500000"),
+            ]
+        );
+    }
+
+    #[test]
+    fn platform_hardware_names_are_stable() {
+        assert_eq!(HardwareAcceleration::None.name(), None);
+        assert_eq!(HardwareAcceleration::Vaapi.name(), Some("vaapi"));
+        assert_eq!(HardwareAcceleration::D3d11va.name(), Some("d3d11va"));
+        assert_eq!(
+            HardwareAcceleration::VideoToolbox.name(),
+            Some("videotoolbox")
         );
     }
 }

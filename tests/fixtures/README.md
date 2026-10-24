@@ -12,6 +12,7 @@
 | --- | --- | --- |
 | `sample.mp4` | 基础 MP4 解析、音频预览 | MP4 / H.264 + AAC |
 | `sample-video-only.mp4` | 视频预览与播放控制 | MP4 / H.264 |
+| `sample-keyframes.mp4` | 关键帧索引与导航（0 / 1 / 2 秒） | MP4 / H.264 |
 | `sample.mkv` | 多音轨、字幕、章节 | Matroska / H.264 + 2x AAC + SubRip |
 | `sample.wmv` | ASF/WMV 解析 | ASF / WMV2 + WMA2 |
 | `sample.avi` | AVI 解析 | AVI / MPEG-4 Part 2 + PCM |

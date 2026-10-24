@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use rossresscut::application::{Application, OpenState};
 use rossresscut::domain::media::{AudioStream, MediaFile, MediaStream, VideoStream};
-use rossresscut::domain::time::Duration as MediaDuration;
+use rossresscut::domain::time::{Duration as MediaDuration, Timestamp};
 use rossresscut::media::ffprobe::{self, ProbeError};
 
 fn fixture(name: &str) -> PathBuf {
@@ -182,6 +182,27 @@ fn reports_missing_files_as_ffprobe_failures() {
         }
         other => panic!("expected an ffprobe failure, got {other:?}"),
     }
+}
+
+#[test]
+fn probes_video_keyframes() {
+    let index = match ffprobe::probe_keyframes(&fixture("sample-keyframes.mp4"), 0, None) {
+        Ok(index) => index,
+        Err(error) => panic!("failed to read keyframes: {error}"),
+    };
+
+    assert_eq!(
+        index.times(),
+        &[
+            Timestamp::ZERO,
+            Timestamp::from_micros(1_000_000),
+            Timestamp::from_micros(2_000_000),
+        ]
+    );
+    assert_eq!(
+        index.next(Timestamp::from_micros(500_000)),
+        Some(Timestamp::from_micros(1_000_000))
+    );
 }
 
 #[test]
