@@ -2,11 +2,22 @@
 
 ## 当前阶段
 
-**Phase 3：核心时间轴（基础版完成）**
+**Phase 4A：播放器性能调查（已完成，等待 Phase 4B 决策）**
 
-Phase 4 尚未开始。
+Phase 4B 尚未开始。当前数据见 `docs/investigations/playback-pipeline.md`；在开始 4B 前必须走 `architecture-decision` 并写 ADR。
 
 除非用户明确要求，不提前实现后续阶段功能。
+
+---
+
+# 参考实现研究
+
+LosslessCut 是产品行为、媒体语义和 FFmpeg 工作流的参考实现，不是本项目的架构或代码模板。
+
+- 研究顺序：本项目代码 / ADR → FFmpeg 官方文档 → LosslessCut 实现与 issue / commit → 实验验证 → 设计本项目实现。
+- 重点：FFmpeg 导出参数、`-ss` / `-to` / `-t`、stream copy、PTS/DTS/time base、keyframe、smart cut、concat、音画同步、容器兼容性、metadata、字幕、chapter。
+- LosslessCut 使用 GPL-2.0：只阅读、理解和验证行为；不复制源代码，不做逐行 TypeScript → Rust 翻译。
+- 阶段约束：Phase 4 只做普通 stream copy；smart cut 属于后续阶段，必须先调查再决定是否实现。当前 PLANS 编号中 Phase 5 是多段 concat、smart cut 在 Phase 8 候选；若要把 smart cut 提前到 Phase 5/6，需要显式调整阶段编号。
 
 ---
 
@@ -287,9 +298,77 @@ cargo fmt --check
 
 ---
 
-# Phase 4：无损导出
+# Phase 4：播放链路调查与渲染架构
 
-状态：`未开始`
+状态：`Phase 4A 已完成；Phase 4B 未开始`
+
+Phase 4 不再直接进入导出。当前实际播放性能与音画同步不可接受，先完成播放链路调查和渲染架构决策，再恢复无损导出。
+
+## Phase 4A：播放器性能调查
+
+目标：用测量而不是猜测，判断瓶颈属于 decoder、frame conversion、GPU upload、egui、wgpu、presentation 还是 clock/scheduler。
+
+任务：
+
+- [x] 确认当前 FFmpeg / VAAPI 解码路径与 ffmpeg 参数。
+- [x] 确认 frame PTS / DTS / time base 与预览时间戳的关系。
+- [x] 确认 audio clock 的实现；设备缓冲提前量未测（见调查文档“尚未验证”）。
+- [x] 测量 A/V drift（`audio_clock - presented_video_pts`）。
+- [x] 测量 decode → texture upload latency。
+- [x] 测量 egui frame / render cadence。
+- [x] 测量实际 presentation cadence。
+- [x] 与 mpv 对照。
+- [x] 执行 A/B/C/D 实验：
+  - A：FFmpeg software → egui/wgpu
+  - B：VAAPI → egui/wgpu
+  - C：VAAPI → mpv
+  - D：software → mpv
+- [x] 输出调查文档：`docs/investigations/playback-pipeline.md`。
+
+实测结论（详见调查文档）：
+
+- 4K HEVC 下 VAAPI 路径只有 10.4 fps，`delta` 在 40 秒内增长 11.6 秒。
+- 同一文件软件解码 29.8 fps，稳定后 `delta` ≈ 0~10 ms。
+- FFmpeg 微基准显示瓶颈是 VAAPI 帧下载到系统内存：帧全程留在 GPU 时 86 fps，一旦 `hwdownload` 即使已缩到 960x540 也只有 20 fps。
+- 纹理上传 0.01 ms、egui `ui_fps` 40+，均不是瓶颈。
+- mpv 在相同文件与 VAAPI 下 33 fps，因为它保持 GPU 帧；外部 FFmpeg 进程 + 管道模型结构上必须同步下载。
+- 1080p H.264 下 VAAPI 有 2.38x，可用；问题集中在 4K HEVC。
+
+测量工具：
+
+- `examples/phase4a_probe.rs`：绕开 egui 驱动 `Application`，输出帧率、呈现间隔与 A/V delta。
+- `ROSS_RESCUT_DIAG`：GUI 渲染统计（每 2 秒）。
+- `ROSS_RESCUT_DIAG_AUTOPLAY`：诊断时自动 seek 到 60s 并播放。
+- `ROSS_RESCUT_PREVIEW_HW`：覆盖本次运行的解码后端。
+
+未完成：Windows D3D11VA / macOS VideoToolbox 的下载开销；VAAPI 下载慢的具体原因（未 profiling）；分钟级长时漂移。
+
+约束：
+
+- 不继续增加 egui 视频功能。
+- 测量工具可以临时、粗糙，但必须可重复运行。
+- 诊断日志不得影响默认行为。
+
+## Phase 4B：确定视频渲染架构
+
+状态：`未开始（等待决策）`
+
+在 Phase 4A 数据完成后再决定，不在数据不足时先选 UI 框架。
+
+Phase 4A 已确认的核心约束：外部 FFmpeg 进程只能通过管道返回系统内存帧，因此 VAAPI 在 4K 上必然发生同步下载，参数调优无法消除。
+
+候选：
+
+- A. egui + wgpu（当前路径）
+- B. egui + 独立 video renderer（video output 不经过 egui 绘制）
+- C. Slint + wgpu
+- D. Slint + 独立 video renderer
+
+Phase 4B 必须通过 `architecture-decision` 流程并写 ADR。
+
+## Phase 4C：无损导出（原 Phase 4）
+
+状态：`未开始（阻塞于 4A / 4B）`
 
 ## 目标
 
@@ -306,6 +385,12 @@ cargo fmt --check
 - [ ] 多 Segment 导出
 - [ ] 输出文件验证
 - [ ] 回归测试
+
+## 研究任务（不复制代码）
+
+- [ ] 研究 LosslessCut 单 Segment lossless export：FFmpeg 参数、`-ss` / `-to` / `-t`、stream copy、时间戳与音视频流处理。
+- [ ] 验证普通无损切割的 keyframe 回退语义，并为实际回退行为增加回归测试。
+- [ ] 区分产品行为、媒体处理算法、FFmpeg 参数与 Electron / Chromium 特定实现。
 
 ## 核心要求
 
@@ -337,6 +422,12 @@ re-encode
 - [ ] 不兼容情况处理
 - [ ] 顺序护栏测试（导出必须读取 Timeline 既有顺序，不得按 start 重排）
 - [ ] 回归测试
+
+## 研究任务（不复制代码）
+
+- [ ] 研究 LosslessCut 的 concat / timestamp 处理与容器兼容性边界。
+- [ ] 研究 audio-only 裁剪、leading non-keyframe audio packets 等历史边界修复。
+- [ ] 对采用的媒体语义增加本项目自己的测试。
 
 ## 顺序语义
 
@@ -390,6 +481,9 @@ re-encode
 - [ ] 基于音频音量自动切分视频
 - [ ] 导出视频时包含章节信息
 - [ ] 智能裁切(裁切点为非关键帧时, 从该帧到关键帧进行基于此段平均码率的重新编码)
+- [ ] Smart cut 技术调查（只调查，不实现；输出独立文档 / ADR）
+
+smart cut 在实现前必须先完成技术调查（LosslessCut 的边界判定、关键帧处理、重编码范围、FFmpeg 行为），形成独立 ADR；调查完成前不实现。
 
 每个功能在实现前都需要独立设计。
 

@@ -178,9 +178,18 @@ impl Application {
     /// decoding.
     pub fn hardware_decoder(&self) -> Option<&'static str> {
         self.playback.video.as_ref().map_or_else(
-            || HardwareAcceleration::default_for_platform().name(),
+            || self.playback.hardware.name(),
             |video| video.hardware().name(),
         )
+    }
+
+    /// Overrides the hardware backend used by subsequently started preview
+    /// decoders.
+    ///
+    /// Intended for diagnostics and future settings. It does not restart a
+    /// decoder that is already running; the next play/seek uses the new value.
+    pub fn set_preview_hardware(&mut self, hardware: HardwareAcceleration) {
+        self.playback.hardware = hardware;
     }
 
     /// Returns the current editing timeline.
@@ -636,6 +645,7 @@ struct Playback {
     pending_frame: Option<VideoFrame>,
     audio: Option<PreviewAudio>,
     warning: Option<String>,
+    hardware: HardwareAcceleration,
 }
 
 impl Default for Playback {
@@ -649,6 +659,7 @@ impl Default for Playback {
             pending_frame: None,
             audio: None,
             warning: None,
+            hardware: HardwareAcceleration::default_for_platform(),
         }
     }
 }
@@ -940,7 +951,7 @@ impl Playback {
             start: self.position,
             frame_rate: PREVIEW_FRAME_RATE,
             fast_seek,
-            hardware: HardwareAcceleration::default_for_platform(),
+            hardware: self.hardware,
         };
         match PreviewVideo::start(config) {
             Ok(video) => self.video = Some(video),
@@ -1084,5 +1095,16 @@ mod tests {
         application.select_segment(Some(SegmentId::new(3)));
 
         assert_eq!(application.selected_segment(), None);
+    }
+
+    #[test]
+    fn preview_hardware_can_be_overridden() {
+        let mut application = Application::new();
+
+        application.set_preview_hardware(HardwareAcceleration::None);
+        assert_eq!(application.hardware_decoder(), None);
+
+        application.set_preview_hardware(HardwareAcceleration::Vaapi);
+        assert_eq!(application.hardware_decoder(), Some("vaapi"));
     }
 }

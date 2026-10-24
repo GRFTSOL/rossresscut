@@ -23,6 +23,7 @@ use crate::domain::media::{
 };
 use crate::domain::segment::{Segment, SegmentId};
 use crate::domain::time::{Duration as MediaDuration, Timestamp};
+use crate::media::preview::HardwareAcceleration;
 
 use i18n::{Language, Strings, fill};
 
@@ -91,6 +92,74 @@ pub struct RossresscutApp {
     about_open: bool,
     wheel_accumulator: f32,
     segment_error: Option<String>,
+    diagnostics: Option<RenderDiagnostics>,
+    diagnostic_autoplay: bool,
+    diagnostic_autoplay_started: bool,
+}
+
+/// Temporary render-path diagnostics, enabled by setting `ROSS_RESCUT_DIAG`.
+///
+/// Phase 4A uses this to compare egui frame cadence with preview frame rate
+/// and to measure CPU texture upload cost. The struct is only constructed when
+/// the environment variable is present, so the default path stays unchanged.
+struct RenderDiagnostics {
+    last_report: Instant,
+    frames: u32,
+    uploads: u32,
+    upload_total: Duration,
+    upload_max: Duration,
+}
+
+impl Default for RenderDiagnostics {
+    fn default() -> Self {
+        Self {
+            last_report: Instant::now(),
+            frames: 0,
+            uploads: 0,
+            upload_total: Duration::ZERO,
+            upload_max: Duration::ZERO,
+        }
+    }
+}
+
+impl RenderDiagnostics {
+    fn from_environment() -> Option<Self> {
+        std::env::var_os("ROSS_RESCUT_DIAG").map(|_| Self::default())
+    }
+
+    fn frame(&mut self) {
+        self.frames += 1;
+        self.report_if_due();
+    }
+
+    fn upload(&mut self, elapsed: Duration) {
+        self.uploads += 1;
+        self.upload_total += elapsed;
+        self.upload_max = self.upload_max.max(elapsed);
+    }
+
+    fn report_if_due(&mut self) {
+        if self.last_report.elapsed() < Duration::from_secs(2) {
+            return;
+        }
+        let seconds = self.last_report.elapsed().as_secs_f64();
+        let upload_average = if self.uploads == 0 {
+            0.0
+        } else {
+            self.upload_total.as_secs_f64() * 1_000.0 / f64::from(self.uploads)
+        };
+        log::info!(
+            "render diag: ui_fps={:.1} uploads={} upload_avg_ms={upload_average:.2} upload_max_ms={:.2}",
+            f64::from(self.frames) / seconds,
+            self.uploads,
+            self.upload_max.as_secs_f64() * 1_000.0,
+        );
+        self.last_report = Instant::now();
+        self.frames = 0;
+        self.uploads = 0;
+        self.upload_total = Duration::ZERO;
+        self.upload_max = Duration::ZERO;
+    }
 }
 
 impl RossresscutApp {
@@ -108,8 +177,24 @@ impl RossresscutApp {
             .unwrap_or_default();
         let mut app = Self {
             settings,
+            diagnostics: RenderDiagnostics::from_environment(),
+            diagnostic_autoplay: std::env::var_os("ROSS_RESCUT_DIAG_AUTOPLAY").is_some(),
             ..Self::default()
         };
+        // The diagnostic run overrides the decoder backend without a settings UI.
+        if let Ok(value) = std::env::var("ROSS_RESCUT_PREVIEW_HW") {
+            let hardware = match value.as_str() {
+                "software" | "none" => HardwareAcceleration::None,
+                "vaapi" => HardwareAcceleration::Vaapi,
+                "d3d11va" => HardwareAcceleration::D3d11va,
+                "videotoolbox" => HardwareAcceleration::VideoToolbox,
+                other => {
+                    log::warn!("ignoring unknown ROSS_RESCUT_PREVIEW_HW value {other:?}");
+                    HardwareAcceleration::default_for_platform()
+                }
+            };
+            app.application.set_preview_hardware(hardware);
+        }
         if let Some(path) = initial_path {
             app.application.open_media(path);
         }
@@ -294,6 +379,7 @@ impl RossresscutApp {
         }
 
         let image = egui::ColorImage::from_rgb([width, height], &frame.rgb);
+        let upload_start = Instant::now();
         match &mut self.preview_texture {
             Some(texture) => texture.set(image, egui::TextureOptions::LINEAR),
             None => {
@@ -303,6 +389,9 @@ impl RossresscutApp {
                     egui::TextureOptions::LINEAR,
                 ));
             }
+        }
+        if let Some(diagnostics) = &mut self.diagnostics {
+            diagnostics.upload(upload_start.elapsed());
         }
         self.preview_texture_timestamp = Some(frame.timestamp.micros());
     }
@@ -995,12 +1084,27 @@ impl RossresscutApp {
 
 impl eframe::App for RossresscutApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        if let Some(diagnostics) = &mut self.diagnostics {
+            diagnostics.frame();
+        }
         self.apply_theme(ui.ctx());
         self.poll_file_dialog();
         self.handle_shortcuts(ui.ctx());
 
         if self.application.update() {
             ui.ctx().request_repaint();
+        }
+
+        // A diagnostic run has no input injection, so it seeks and starts
+        // playback once the media is ready. Only enabled by an environment
+        // variable; normal sessions never take this path.
+        if self.diagnostic_autoplay
+            && !self.diagnostic_autoplay_started
+            && matches!(self.application.state(), OpenState::Ready)
+        {
+            self.application.seek(Timestamp::from_micros(60_000_000));
+            self.application.play();
+            self.diagnostic_autoplay_started = true;
         }
 
         let has_video = self.application.media().is_some_and(|media| {
