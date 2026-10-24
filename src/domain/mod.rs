@@ -4,4 +4,5 @@
 //! depend on `eframe`, `egui`, or FFprobe's JSON representation.
 
 pub mod media;
+pub mod segment;
 pub mod time;

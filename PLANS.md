@@ -2,9 +2,9 @@
 
 ## 当前阶段
 
-**Phase 2：媒体预览（已完成）**
+**Phase 3：核心时间轴（基础版完成）**
 
-Phase 3 尚未开始。
+Phase 4 尚未开始。
 
 除非用户明确要求，不提前实现后续阶段功能。
 
@@ -228,7 +228,7 @@ cargo fmt --check
 - Segment 边界必须使用精确时间与 FFprobe 数据，不得使用快速 scrub 的关键帧近似位置。
 - 时间轴播放位置必须读取应用层的音频时钟；不要用 UI 墙钟自行推算播放时间。
 - 关键帧索引已存在（`KeyframeIndex`），可作为 Segment 边界与导航的候选；但 keyframe 不等于用户期望的精确切点。
-- 时间轴目前是单色轨道 + 精确播放头；不同 Segment 的颜色与列表编辑留给 Phase 3。
+- 时间轴已按 Segment 着色并显示精确播放头；Segment 边界拖拽尚未实现。
 - 硬件解码默认启用。不要为了预览计时而在后续阶段默认关闭它；预览解码路径与导出路径必须保持分离。
 - 4K HEVC 精确 seek 可能耗时数秒；timeline 交互需要接受该延迟，或先引入代理文件 / GPU 零拷贝预览方案。
 - 保持 `Timestamp` 为整数微秒；UI 只做坐标转换，不引入浮点作为媒体时间表示。
@@ -238,7 +238,7 @@ cargo fmt --check
 
 # Phase 3：Timeline
 
-状态：`未开始`
+状态：`基础版完成`
 
 ## 目标
 
@@ -246,20 +246,44 @@ cargo fmt --check
 
 ## 任务
 
-- [ ] Timestamp
-- [ ] Segment
-- [ ] Timeline
-- [ ] 当前播放位置
-- [ ] 时间轴按 Segment 着色（不同 Segment 不同颜色）
-- [ ] 精确播放头与 Segment 边界联动
-- [ ] In 点
-- [ ] Out 点
-- [ ] Segment 创建
-- [ ] Segment 删除
-- [ ] Segment 修改
-- [ ] Segment 排序
-- [ ] Segment 启用/禁用
-- [ ] 键盘操作
+- [x] Timestamp
+- [x] Segment
+- [x] Timeline
+- [x] 当前播放位置
+- [x] 时间轴按 Segment 着色（不同 Segment 不同颜色）
+- [x] 精确播放头与 Segment 边界联动
+- [x] In 点
+- [x] Out 点
+- [x] Segment 创建
+- [x] Segment 删除
+- [x] Segment 修改（从播放头设置起点 / 终点）
+- [x] Segment 排序
+- [x] Segment 启用/禁用
+- [x] 键盘操作
+
+## 实现记录
+
+- `src/domain/segment.rs`：`Segment`、`SegmentId` 与 `Timeline`；整数微秒，`start < end` 不变式；`Vec` 顺序即输出顺序，新 Segment 追加，按起点排序是显式操作。
+- 应用层：in/out 标记、按 `SegmentId` 选中 / 编辑 / 删除 / 上移 / 下移 / 排序 / 启停；命令错误返回 `SegmentCommandError`。
+- UI：右侧 Segment 列表（输出顺序，可上移 / 下移）、底部时间轴彩色 Segment、入点 / 出点标记、精确播放头。
+- 快捷键：`Space` 播放 / 暂停，`I` 入点，`O` 出点，`Enter` 添加 Segment，`Delete` 删除选中 Segment，`Esc` 清除标记。
+- 时间轴点击会 seek，并按 `SegmentId` 选中点击位置所在的 Segment；Segment 行点击会 seek 到其起点。
+
+## 已知限制
+
+- Segment 允许重叠；时间轴按列表顺序绘制，后绘制的 Segment 可能覆盖先绘制的。重叠不自动拒绝、裁剪或合并。
+- 列表顺序是输出顺序；修改起止点不会自动按起点重排，`Sort` 是显式操作。
+- 尚未在时间轴上拖拽 Segment 边界或拖拽重排；当前用“上移 / 下移”按钮改变输出顺序。
+- Timeline 绑定单一源媒体；打开新文件会清空 Segment。项目文件持久化尚未实现。
+- Segment 未参与导出；Phase 5 将按 Timeline 顺序解释 enabled Segment。
+
+验证记录（2026-10-24）：
+
+- `./scripts/check.sh` 通过，实际执行 `cargo fmt --all --check`、`cargo check`、`cargo clippy --all-targets --all-features -- -D warnings`、`cargo test`、`cargo build`。
+- 单元测试 58 个、集成测试 22 个，全部通过；2 个音频测试默认 ignored。
+- 集成测试 `tests/timeline.rs` 覆盖追加顺序、显式排序、按 ID 选中 / 编辑 / 删除、上移 / 下移、启用 / 禁用、非法标记、EDL 顺序护栏（B → C → A 不会被自动排序）与关闭媒体时清空。
+- GUI 实际加载真实 4K HEVC 文件并用临时种子 Segment 截图：不同颜色、入点 / 出点标记、Segment 列表、Move up / Move down 按钮与按 `SegmentId` 选中均正常显示；截图后已移除种子代码。
+- 未自动化测试时间轴拖拽与真实键盘输入；快捷键逻辑由代码路径保证，未注入真实按键。
 
 ---
 
@@ -311,7 +335,15 @@ re-encode
 - [ ] timestamp 处理
 - [ ] metadata 处理
 - [ ] 不兼容情况处理
+- [ ] 顺序护栏测试（导出必须读取 Timeline 既有顺序，不得按 start 重排）
 - [ ] 回归测试
+
+## 顺序语义
+
+- 多 Segment 导出按 `Timeline.segments` 的顺序解释 enabled Segment。
+- 导出代码不得对 Segment 重新按 `start` 排序；顺序由 Timeline 决定。
+- 重叠 Segment 默认在输出中重复出现；不自动合并或裁剪。
+- SegmentId 与 `next_id` 需要在项目持久化时保存。
 
 ---
 

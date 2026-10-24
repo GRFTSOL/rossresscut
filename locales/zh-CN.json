@@ -89,5 +89,21 @@
   "follow_system_theme": "跟随系统主题",
   "about_description": "使用 Rust 与 egui 构建的原生无损媒体剪切工具。",
   "about_version": "版本 {}",
-  "decoder_software": "软件"
+  "decoder_software": "软件",
+  "segments": "片段（{}）",
+  "set_in": "设置入点",
+  "set_out": "设置出点",
+  "add_segment": "添加片段",
+  "delete_segment": "删除片段",
+  "clear_markers": "清除入点/出点",
+  "sort_segments": "排序",
+  "move_up": "上移",
+  "move_down": "下移",
+  "no_segments": "尚无片段。",
+  "in_point": "入点",
+  "out_point": "出点",
+  "set_start_from_playhead": "起点 ← 播放头",
+  "set_end_from_playhead": "终点 ← 播放头",
+  "enabled": "启用",
+  "segment_shortcuts": "I：入点 · O：出点 · Enter：添加 · Del：删除 · Space：播放/暂停"
 }

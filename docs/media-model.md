@@ -393,3 +393,58 @@ KeyframeIndex
 - 索引由 FFprobe 的 `packet=pts_time,flags` 生成，只读取 packet header，不解码视频。
 - 索引在后台线程生成，不阻塞 UI 帧。
 - Keyframe 是 seek 与后续无损裁剪的重要边界；快速 scrub 的近似位置不能替代它。
+
+---
+
+# 二十、Segment 与 Timeline（Phase 3）
+
+## 1. Segment
+
+```text
+Segment
+├── id: SegmentId
+├── start: Timestamp
+├── end: Timestamp
+└── enabled: bool
+```
+
+- 区间语义为半开区间 `[start, end)`，表示单一 source 上的源时间。
+- 不变式：`start < end`；`Segment::new` 不满足时返回 `None`。
+- `duration()` 使用 `Timestamp::duration_since`，不经过浮点。
+- 启停状态属于 Segment；修改边界时保留 ID 与启停状态。
+- `SegmentId` 是项目内部的稳定身份，由 `Timeline` 分配，不依赖 Vec index。
+
+## 2. Timeline
+
+```text
+Timeline
+├── source: Option<PathBuf>
+├── segments: Vec<Segment>
+└── next_id: u64
+```
+
+- `segments` 是**有输出顺序的 EDL**；Vec 顺序就是用户可观察、可修改的输出顺序。
+- 概念模型中的 `source` 由 Timeline 持有，而不是在每个 Segment 中重复。当前一次只打开一个媒体文件。
+- 打开媒体时 `Timeline::reset(source)`，关闭媒体时 `Timeline::clear()`；两者都会重置 ID 计数器。
+- `push` 追加到输出顺序末尾并分配新的 `SegmentId`；不会按起点自动排序。
+- `sort_by_start` 是显式用户操作，不是不变量；排序后 SegmentId 不变。
+- `move_to` / `move_up` / `move_down` 改变输出顺序，不改变源时间区间。
+- `update` / `remove` / `set_enabled` 按 SegmentId 操作。
+- 允许 Segment 重叠；不自动拒绝、裁剪或合并。重叠意味着同一源时间区间可以在输出中出现多次。
+- ID 在同一个 Timeline 内不会复用；删除后新建的 Segment 会获得更大的 ID。
+
+## 3. 源时间与输出时间
+
+- `Segment.start` / `end` 是 0-based 媒体时间轴上的源时间，不是容器绝对 PTS。
+- 输出时间是导出/合并时由 enabled Segment 按 Timeline 顺序累加得到的派生值，不存储在 Segment 中。
+- 重叠 Segment 会增加输出总时长；disabled Segment 不参与输出。
+
+## 4. 应用状态
+
+以下不属于领域模型：
+
+- 待创建的入点 / 出点（`Application` 的临时标记）。
+- 当前选中的 `Option<SegmentId>`。
+- Segment 命令的错误文本。
+
+选中状态按 SegmentId 跟踪，因此排序、重排、修改边界都不会改变“选中的是哪个 Segment”。

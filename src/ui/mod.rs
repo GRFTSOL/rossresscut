@@ -21,6 +21,7 @@ use crate::application::{Application, OpenState};
 use crate::domain::media::{
     AudioStream, Disposition, MediaFile, MediaStream, StreamInfo, VideoStream,
 };
+use crate::domain::segment::{Segment, SegmentId};
 use crate::domain::time::{Duration as MediaDuration, Timestamp};
 
 use i18n::{Language, Strings, fill};
@@ -30,7 +31,15 @@ const SETTINGS_KEY: &str = "ui_settings";
 const WHEEL_STEP_POINTS: f32 = 50.0;
 const WHEEL_LINE_POINTS: f32 = 50.0;
 const WHEEL_PAGE_LINES: f32 = 10.0;
-const TIMELINE_HEIGHT: f32 = 20.0;
+const TIMELINE_HEIGHT: f32 = 28.0;
+const SEGMENT_COLORS: [egui::Color32; 6] = [
+    egui::Color32::from_rgb(86, 132, 176),
+    egui::Color32::from_rgb(104, 166, 118),
+    egui::Color32::from_rgb(190, 145, 82),
+    egui::Color32::from_rgb(148, 112, 176),
+    egui::Color32::from_rgb(82, 166, 166),
+    egui::Color32::from_rgb(188, 104, 104),
+];
 
 /// Color theme selected when the system theme is not followed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -81,6 +90,7 @@ pub struct RossresscutApp {
     settings_open: bool,
     about_open: bool,
     wheel_accumulator: f32,
+    segment_error: Option<String>,
 }
 
 impl RossresscutApp {
@@ -130,6 +140,7 @@ impl RossresscutApp {
         match receiver.try_recv() {
             Ok(Some(path)) => {
                 self.reset_scrub();
+                self.segment_error = None;
                 self.application.open_media(path);
             }
             Ok(None) => {}
@@ -175,6 +186,54 @@ impl RossresscutApp {
         self.scrub_was_playing = false;
         self.last_scrub_target = None;
         self.last_scrub_start = None;
+    }
+
+    fn create_segment(&mut self) {
+        match self.application.add_segment() {
+            Ok(_) => self.segment_error = None,
+            Err(error) => self.segment_error = Some(error.to_string()),
+        }
+    }
+
+    fn handle_shortcuts(&mut self, context: &egui::Context) {
+        if context.egui_wants_keyboard_input() {
+            return;
+        }
+
+        let (play_pause, set_in, set_out, add, delete, escape) = context.input(|input| {
+            (
+                input.key_pressed(egui::Key::Space),
+                input.key_pressed(egui::Key::I),
+                input.key_pressed(egui::Key::O),
+                input.key_pressed(egui::Key::Enter),
+                input.key_pressed(egui::Key::Delete),
+                input.key_pressed(egui::Key::Escape),
+            )
+        });
+
+        let position = self.application.position();
+        if set_in {
+            self.application.set_in_point(position);
+            self.segment_error = None;
+        }
+        if set_out {
+            self.application.set_out_point(position);
+            self.segment_error = None;
+        }
+        if play_pause {
+            self.application.toggle_playback();
+        }
+        if add && self.application.media().is_some() {
+            self.create_segment();
+        }
+        if delete {
+            self.application.remove_selected_segment();
+            self.segment_error = None;
+        }
+        if escape {
+            self.application.clear_markers();
+            self.segment_error = None;
+        }
     }
 
     fn scrub_to(&mut self, target: Timestamp) {
@@ -290,6 +349,7 @@ impl RossresscutApp {
                     {
                         self.application.close_media();
                         self.reset_scrub();
+                        self.segment_error = None;
                         ui.close();
                     }
 
@@ -461,20 +521,80 @@ impl RossresscutApp {
         let position = self
             .scrub_target
             .unwrap_or_else(|| self.application.position());
-        let fraction = fraction_of(position, duration);
-        let playhead_x = rect.left() + rect.width() * fraction;
-        let played = egui::Rect::from_min_max(rect.min, egui::pos2(playhead_x, rect.max.y));
+        let playhead_x = x_for_time(rect, position, duration);
 
         let visuals = ui.visuals();
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 4.0, visuals.extreme_bg_color);
-        painter.rect_filled(played, 4.0, visuals.selection.bg_fill.gamma_multiply(0.35));
+
+        if let (Some(in_point), Some(out_point)) =
+            (self.application.in_point(), self.application.out_point())
+        {
+            let (start, end) = if in_point <= out_point {
+                (in_point, out_point)
+            } else {
+                (out_point, in_point)
+            };
+            let region = egui::Rect::from_min_max(
+                egui::pos2(x_for_time(rect, start, duration), rect.top()),
+                egui::pos2(x_for_time(rect, end, duration), rect.bottom()),
+            );
+            painter.rect_filled(
+                region,
+                0.0,
+                egui::Color32::from_rgba_unmultiplied(90, 200, 120, 28),
+            );
+        }
+
+        let selected = self.application.selected_segment();
+        for segment in self.application.timeline().segments().iter() {
+            let left = x_for_time(rect, segment.start(), duration);
+            let right = x_for_time(rect, segment.end(), duration);
+            if right <= left {
+                continue;
+            }
+            let segment_rect = egui::Rect::from_min_max(
+                egui::pos2(left, rect.top() + 2.0),
+                egui::pos2(right, rect.bottom() - 2.0),
+            );
+            painter.rect_filled(
+                segment_rect,
+                2.0,
+                segment_color(segment.id(), segment.enabled(), visuals),
+            );
+            if selected == Some(segment.id()) {
+                painter.rect_stroke(
+                    segment_rect,
+                    2.0,
+                    egui::Stroke::new(1.5, visuals.strong_text_color()),
+                    egui::StrokeKind::Inside,
+                );
+            }
+        }
+
+        if let Some(in_point) = self.application.in_point() {
+            draw_marker(
+                &painter,
+                rect,
+                x_for_time(rect, in_point, duration),
+                egui::Color32::from_rgb(96, 210, 132),
+            );
+        }
+        if let Some(out_point) = self.application.out_point() {
+            draw_marker(
+                &painter,
+                rect,
+                x_for_time(rect, out_point, duration),
+                egui::Color32::from_rgb(232, 168, 82),
+            );
+        }
+
         painter.line_segment(
             [
                 egui::pos2(playhead_x, rect.top()),
                 egui::pos2(playhead_x, rect.bottom()),
             ],
-            egui::Stroke::new(2.0, visuals.selection.stroke.color),
+            egui::Stroke::new(2.0, visuals.strong_text_color()),
         );
 
         if response.drag_started() {
@@ -496,12 +616,30 @@ impl RossresscutApp {
             let target = self
                 .scrub_target
                 .unwrap_or_else(|| self.application.position());
+            let selected = self
+                .application
+                .timeline()
+                .segments()
+                .iter()
+                .rev()
+                .find(|segment| segment.contains(target))
+                .map(|segment| segment.id());
             self.finish_scrub(target);
+            self.application.select_segment(selected);
         } else if response.clicked()
             && let Some(pointer) = response.interact_pointer_pos()
         {
-            self.application
-                .seek(timestamp_at_x(rect, pointer.x, duration));
+            let target = timestamp_at_x(rect, pointer.x, duration);
+            let selected = self
+                .application
+                .timeline()
+                .segments()
+                .iter()
+                .rev()
+                .find(|segment| segment.contains(target))
+                .map(|segment| segment.id());
+            self.application.select_segment(selected);
+            self.application.seek(target);
         }
 
         if response.hovered() {
@@ -516,7 +654,18 @@ impl RossresscutApp {
                     ],
                     egui::Stroke::new(1.0, visuals.weak_text_color()),
                 );
-                let _ = response.clone().on_hover_text(hover.to_string());
+                let text = self
+                    .application
+                    .timeline()
+                    .segments()
+                    .iter()
+                    .rev()
+                    .find(|segment| segment.contains(hover))
+                    .map_or_else(
+                        || hover.to_string(),
+                        |segment| format!("{} – {}", segment.start(), segment.end()),
+                    );
+                let _ = response.clone().on_hover_text(text);
             }
         }
     }
@@ -590,6 +739,148 @@ impl RossresscutApp {
                 });
             },
         );
+    }
+
+    fn segments_panel(&mut self, ui: &mut egui::Ui, strings: &'static Strings) {
+        let has_media = self.application.media().is_some();
+        ui.heading(fill(
+            &strings.segments,
+            &[&self.application.timeline().len().to_string()],
+        ));
+
+        ui.horizontal_wrapped(|ui| {
+            let set_in = ui
+                .add_enabled(has_media, egui::Button::new(strings.set_in.as_str()))
+                .on_hover_text(format!("{} (I)", strings.set_in));
+            if set_in.clicked() {
+                let position = self.application.position();
+                self.application.set_in_point(position);
+                self.segment_error = None;
+            }
+
+            let set_out = ui
+                .add_enabled(has_media, egui::Button::new(strings.set_out.as_str()))
+                .on_hover_text(format!("{} (O)", strings.set_out));
+            if set_out.clicked() {
+                let position = self.application.position();
+                self.application.set_out_point(position);
+                self.segment_error = None;
+            }
+
+            let add = ui
+                .add_enabled(has_media, egui::Button::new(strings.add_segment.as_str()))
+                .on_hover_text(format!("{} (Enter)", strings.add_segment));
+            if add.clicked() {
+                self.create_segment();
+            }
+
+            let has_markers =
+                self.application.in_point().is_some() || self.application.out_point().is_some();
+            if ui
+                .add_enabled(
+                    has_markers,
+                    egui::Button::new(strings.clear_markers.as_str()),
+                )
+                .clicked()
+            {
+                self.application.clear_markers();
+                self.segment_error = None;
+            }
+
+            let can_sort = self.application.timeline().len() > 1;
+            if ui
+                .add_enabled(can_sort, egui::Button::new(strings.sort_segments.as_str()))
+                .clicked()
+            {
+                self.application.sort_segments();
+            }
+        });
+
+        ui.horizontal(|ui| {
+            ui.label(format!(
+                "{}: {}",
+                strings.in_point,
+                dash(self.application.in_point())
+            ));
+            ui.label(format!(
+                "{}: {}",
+                strings.out_point,
+                dash(self.application.out_point())
+            ));
+        });
+
+        if self.application.selected_segment().is_some() {
+            ui.horizontal_wrapped(|ui| {
+                if ui
+                    .button(strings.set_start_from_playhead.as_str())
+                    .clicked()
+                {
+                    let position = self.application.position();
+                    if let Err(error) = self.application.set_selected_segment_start(position) {
+                        self.segment_error = Some(error.to_string());
+                    }
+                }
+                if ui.button(strings.set_end_from_playhead.as_str()).clicked() {
+                    let position = self.application.position();
+                    if let Err(error) = self.application.set_selected_segment_end(position) {
+                        self.segment_error = Some(error.to_string());
+                    }
+                }
+                if ui.button(strings.delete_segment.as_str()).clicked() {
+                    self.application.remove_selected_segment();
+                    self.segment_error = None;
+                }
+                if ui.button(strings.move_up.as_str()).clicked() {
+                    self.application.move_selected_segment_up();
+                }
+                if ui.button(strings.move_down.as_str()).clicked() {
+                    self.application.move_selected_segment_down();
+                }
+            });
+        }
+
+        let segments: Vec<(usize, Segment)> = self
+            .application
+            .timeline()
+            .segments()
+            .iter()
+            .copied()
+            .enumerate()
+            .collect();
+        if segments.is_empty() {
+            ui.label(strings.no_segments.as_str());
+        } else {
+            for (index, segment) in segments {
+                ui.horizontal(|ui| {
+                    let mut enabled = segment.enabled();
+                    let checkbox = ui
+                        .checkbox(&mut enabled, "")
+                        .on_hover_text(strings.enabled.as_str());
+                    if checkbox.changed() {
+                        self.application.set_segment_enabled(segment.id(), enabled);
+                    }
+
+                    let selected = self.application.selected_segment() == Some(segment.id());
+                    let label = format!(
+                        "#{} {} – {} ({})",
+                        index + 1,
+                        segment.start(),
+                        segment.end(),
+                        segment.duration()
+                    );
+                    if ui.selectable_label(selected, label).clicked() {
+                        self.application.select_segment(Some(segment.id()));
+                        self.application.seek(segment.start());
+                    }
+                });
+            }
+        }
+
+        ui.small(strings.segment_shortcuts.as_str());
+
+        if let Some(error) = &self.segment_error {
+            ui.colored_label(ui.visuals().error_fg_color, error);
+        }
     }
 
     fn preview_open_response(&self, ui: &mut egui::Ui) -> egui::Response {
@@ -668,6 +959,9 @@ impl RossresscutApp {
                     render_playback_info(ui, &self.application, self.scrub_target, strings);
                     ui.separator();
 
+                    self.segments_panel(ui, strings);
+                    ui.separator();
+
                     ui.heading(strings.media.as_str());
                     ui.separator();
                     match self.application.state() {
@@ -703,6 +997,7 @@ impl eframe::App for RossresscutApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.apply_theme(ui.ctx());
         self.poll_file_dialog();
+        self.handle_shortcuts(ui.ctx());
 
         if self.application.update() {
             ui.ctx().request_repaint();
@@ -1139,6 +1434,34 @@ fn fraction_of(position: Timestamp, duration: MediaDuration) -> f32 {
     }
     let fraction = position.micros().max(0) as f64 / duration.micros() as f64;
     fraction.clamp(0.0, 1.0) as f32
+}
+
+fn x_for_time(rect: egui::Rect, time: Timestamp, duration: MediaDuration) -> f32 {
+    rect.left() + rect.width() * fraction_of(time, duration)
+}
+
+fn segment_color(id: SegmentId, enabled: bool, visuals: &egui::Visuals) -> egui::Color32 {
+    if enabled {
+        SEGMENT_COLORS[(id.get() % SEGMENT_COLORS.len() as u64) as usize]
+    } else {
+        visuals.weak_text_color().gamma_multiply(0.5)
+    }
+}
+
+fn draw_marker(painter: &egui::Painter, rect: egui::Rect, x: f32, color: egui::Color32) {
+    painter.line_segment(
+        [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
+        egui::Stroke::new(1.5, color),
+    );
+    painter.add(egui::Shape::convex_polygon(
+        vec![
+            egui::pos2(x - 4.0, rect.top()),
+            egui::pos2(x + 4.0, rect.top()),
+            egui::pos2(x, rect.top() + 5.0),
+        ],
+        color,
+        egui::Stroke::new(0.0, color),
+    ));
 }
 
 fn timestamp_at_x(rect: egui::Rect, x: f32, duration: MediaDuration) -> Timestamp {

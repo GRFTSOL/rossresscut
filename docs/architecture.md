@@ -72,9 +72,16 @@ Play
 Pause
 Seek
 ScrubPreview
+StepKeyframe
+Skip
+SetInPoint
+SetOutPoint
 CreateSegment
 UpdateSegment
 DeleteSegment
+MoveSegment
+SortSegments
+ToggleSegment
 SelectStream
 ExportSegments
 CancelExport
@@ -100,9 +107,11 @@ VideoStream
 AudioStream
 SubtitleStream
 Chapter
+KeyframeIndex
 Timestamp
 Duration
 Segment
+SegmentId
 Timeline
 ExportRequest
 ```
@@ -196,6 +205,9 @@ StreamSelection
 PlaybackState
 PlaybackPosition
 KeyframeIndex
+PendingInPoint
+PendingOutPoint
+SelectedSegmentId
 ExportProgress
 ExportStatus
 Error
@@ -300,11 +312,13 @@ docs/decisions/
 0004-audio-clock-and-desktop-integration.md
 0005-hardware-decoding.md
 0006-ui-localization-and-settings.md
+0007-segment-editing-basics.md
+0008-segment-timeline-semantics.md
 ```
 
 ---
 
-# 十一、当前代码结构（Phase 2）
+# 十一、当前代码结构（Phase 3）
 
 ```text
 src/
@@ -316,6 +330,7 @@ src/
 │                              关键帧后台索引与导航
 ├── domain/
 │   ├── media.rs               MediaFile / MediaFormat / 流 / Chapter / KeyframeIndex
+│   ├── segment.rs             Segment / SegmentId / Timeline（有序 EDL、稳定身份）
 │   └── time.rs                TimeBase / Timestamp / Duration / FrameRate
 ├── media/
 │   ├── ffprobe/
@@ -329,7 +344,8 @@ src/
 │       └── audio.rs           ffmpeg PCM 解码 + cpal 输出、音频主时钟
 └── ui/
     ├── mod.rs                 egui 窗口、菜单栏、预览 texture、时间轴、
-    │                          播放/媒体侧栏、设置页、XDG portal、主题与设置持久化
+    │                          Segment 列表、播放/媒体侧栏、设置页、XDG portal、
+    │                          主题与设置持久化、快捷键
     └── i18n.rs                语言枚举、强类型字符串与嵌入资源
 
 locales/
@@ -410,7 +426,7 @@ UI 布局：
 ```text
 顶部：菜单栏（File / View / Help）、设置按钮、当前媒体标题（不含扩展名）
 中央：视频预览（点击切换播放 / 暂停，滚轮按关键帧步进）
-右侧：播放信息（mpv Tab 风格）在上，媒体信息与默认折叠的流信息在下
+右侧：播放信息（mpv Tab 风格）在上，Segment 列表（输出顺序，可上移 / 下移）、媒体信息与默认折叠的流信息在下
 底部：自定义时间轴与精确播放头、播放 / 暂停、时间与警告
 ```
 
@@ -434,6 +450,26 @@ mod + 滚轮 → ±10 秒
 关键帧索引在后台生成；索引未完成时滚轮回退为 ±1 秒。
 
 滚轮交互占用了 command / ctrl 修饰键，因此 egui 的 ctrl+滚轮界面缩放被显式关闭（`InputOptions::zoom_modifier = Modifiers::NONE`）。
+
+Segment 编辑流程：
+
+```text
+UI: I / O / Buttons / Enter
+        ↓
+Application: set_in_point / set_out_point / add_segment
+        ↓
+Domain: Timeline::push(start, end) → SegmentId
+        ↓
+UI: Segment 列表（输出顺序）、时间轴颜色、入点 / 出点标记
+        ↓
+Delete / 修改边界 / 启停 / 排序 / 上移 / 下移 → Application 命令（按 SegmentId）
+```
+
+- 入点 / 出点与选中的 `SegmentId` 属于应用状态，不属于 `Timeline`。
+- `Timeline.segments` 的顺序就是输出顺序；新 Segment 追加到末尾，按起点排序是显式命令。
+- 允许 Segment 重叠，不自动拒绝、裁剪或合并。
+- 时间轴点击 / 拖动仍使用 `Seek` / `ScrubPreview`；点击同时按 SegmentId 选中点击位置所在的 Segment。
+- 详见 `docs/decisions/0008-segment-timeline-semantics.md`。
 
 布局方向记录在 `GOALS.md`。
 

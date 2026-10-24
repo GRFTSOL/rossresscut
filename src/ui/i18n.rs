@@ -159,6 +159,22 @@ pub struct Strings {
     pub about_description: String,
     pub about_version: String,
     pub decoder_software: String,
+    pub segments: String,
+    pub set_in: String,
+    pub set_out: String,
+    pub add_segment: String,
+    pub delete_segment: String,
+    pub clear_markers: String,
+    pub sort_segments: String,
+    pub move_up: String,
+    pub move_down: String,
+    pub no_segments: String,
+    pub in_point: String,
+    pub out_point: String,
+    pub set_start_from_playhead: String,
+    pub set_end_from_playhead: String,
+    pub enabled: String,
+    pub segment_shortcuts: String,
 }
 
 #[cfg(test)]

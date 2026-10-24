@@ -598,7 +598,7 @@ docs/media-model.md
 
 ```text
 Segment
-├── source
+├── id (SegmentId)
 ├── start
 ├── end
 └── enabled
@@ -615,6 +615,14 @@ Segment
 ```
 
 来表达最终编辑结果。
+
+当前实现将 `source` 绑定在 `Timeline` 上，而不是在每个 `Segment` 中重复保存。
+一次只编辑一个源文件；打开新文件会清空 Timeline。
+
+`Timeline.segments` 是**有输出顺序的 EDL**：列表顺序就是导出顺序，按起点排序是显式操作，不是不变量。
+Segment 允许重叠，不自动拒绝、裁剪或合并。
+选择、编辑、删除与重排必须使用稳定 `SegmentId`，不得依赖 Vec index。
+详见 `docs/decisions/0008-segment-timeline-semantics.md`。
 
 ---
 

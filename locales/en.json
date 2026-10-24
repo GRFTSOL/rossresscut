@@ -89,5 +89,21 @@
   "follow_system_theme": "Follow system theme",
   "about_description": "Native lossless media cutting tool built with Rust and egui.",
   "about_version": "Version {}",
-  "decoder_software": "software"
+  "decoder_software": "software",
+  "segments": "Segments ({})",
+  "set_in": "Set in",
+  "set_out": "Set out",
+  "add_segment": "Add segment",
+  "delete_segment": "Delete segment",
+  "clear_markers": "Clear in/out",
+  "sort_segments": "Sort",
+  "move_up": "Move up",
+  "move_down": "Move down",
+  "no_segments": "No segments yet.",
+  "in_point": "In",
+  "out_point": "Out",
+  "set_start_from_playhead": "Start ← playhead",
+  "set_end_from_playhead": "End ← playhead",
+  "enabled": "Enabled",
+  "segment_shortcuts": "I: in · O: out · Enter: add · Del: delete · Space: play/pause"
 }

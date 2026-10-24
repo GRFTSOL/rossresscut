@@ -3,12 +3,14 @@
 //! The UI sends commands and polls [`Application::update`]. FFprobe, preview
 //! decoding, and audio playback all run outside the UI thread.
 
+use std::fmt;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 use std::time::Instant;
 
 use crate::domain::media::{KeyframeIndex, MediaFile, MediaStream, VideoStream};
+use crate::domain::segment::{Segment, SegmentId, Timeline, TimelineError};
 use crate::domain::time::{Duration, Timestamp};
 use crate::error::AppError;
 use crate::media::ffprobe::{self, ProbeError};
@@ -41,6 +43,45 @@ pub enum OpenState {
     },
 }
 
+/// Errors produced by segment editing commands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SegmentCommandError {
+    /// No media is open.
+    NoMedia,
+    /// The in point has not been set.
+    MissingInPoint,
+    /// The out point has not been set.
+    MissingOutPoint,
+    /// The requested range is empty or reversed.
+    EmptyRange,
+    /// No segment is selected.
+    NoSelection,
+    /// The segment identifier counter is exhausted.
+    IdExhausted,
+}
+
+impl fmt::Display for SegmentCommandError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::NoMedia => "open a media file before editing segments",
+            Self::MissingInPoint => "set an in point first",
+            Self::MissingOutPoint => "set an out point first",
+            Self::EmptyRange => "the segment end must be after its start",
+            Self::NoSelection => "select a segment first",
+            Self::IdExhausted => "segment identifier space exhausted",
+        })
+    }
+}
+
+impl std::error::Error for SegmentCommandError {}
+
+/// Temporary in / out markers used to create a segment.
+#[derive(Clone, Copy, Debug, Default)]
+struct Markers {
+    in_point: Option<Timestamp>,
+    out_point: Option<Timestamp>,
+}
+
 /// Owns application state and coordinates background work.
 #[derive(Default)]
 pub struct Application {
@@ -50,6 +91,9 @@ pub struct Application {
     keyframes: Option<KeyframeIndex>,
     keyframe_job: Option<KeyframeJob>,
     playback: Playback,
+    timeline: Timeline,
+    markers: Markers,
+    selected_segment: Option<SegmentId>,
 }
 
 struct ProbeJob {
@@ -139,6 +183,169 @@ impl Application {
         )
     }
 
+    /// Returns the current editing timeline.
+    pub fn timeline(&self) -> &Timeline {
+        &self.timeline
+    }
+
+    /// Returns the pending in point.
+    pub fn in_point(&self) -> Option<Timestamp> {
+        self.markers.in_point
+    }
+
+    /// Returns the pending out point.
+    pub fn out_point(&self) -> Option<Timestamp> {
+        self.markers.out_point
+    }
+
+    /// Returns the selected segment ID.
+    pub fn selected_segment(&self) -> Option<SegmentId> {
+        self.selected_segment
+    }
+
+    /// Selects a segment by stable ID, or clears the selection with `None`.
+    pub fn select_segment(&mut self, id: Option<SegmentId>) {
+        self.selected_segment = id.filter(|id| self.timeline.get(*id).is_some());
+    }
+
+    /// Sets the in point, clamped to the media bounds.
+    pub fn set_in_point(&mut self, point: Timestamp) {
+        let Some(media) = self.media.as_ref() else {
+            return;
+        };
+        self.markers.in_point = Some(clamp_position(point, media.duration));
+    }
+
+    /// Sets the out point, clamped to the media bounds.
+    pub fn set_out_point(&mut self, point: Timestamp) {
+        let Some(media) = self.media.as_ref() else {
+            return;
+        };
+        self.markers.out_point = Some(clamp_position(point, media.duration));
+    }
+
+    /// Clears both pending markers.
+    pub fn clear_markers(&mut self) {
+        self.markers = Markers::default();
+    }
+
+    /// Creates a segment from the pending in and out points.
+    ///
+    /// On success the markers are cleared and the new segment is selected.
+    /// The segment is appended to the output order.
+    pub fn add_segment(&mut self) -> Result<SegmentId, SegmentCommandError> {
+        if self.media.is_none() {
+            return Err(SegmentCommandError::NoMedia);
+        }
+        let Some(start) = self.markers.in_point else {
+            return Err(SegmentCommandError::MissingInPoint);
+        };
+        let Some(end) = self.markers.out_point else {
+            return Err(SegmentCommandError::MissingOutPoint);
+        };
+
+        let id = self
+            .timeline
+            .push(start, end)
+            .map_err(|error| match error {
+                TimelineError::InvalidRange => SegmentCommandError::EmptyRange,
+                TimelineError::IdExhausted => SegmentCommandError::IdExhausted,
+                TimelineError::NotFound => SegmentCommandError::EmptyRange,
+            })?;
+        self.selected_segment = Some(id);
+        self.markers = Markers::default();
+        Ok(id)
+    }
+
+    /// Removes the selected segment.
+    ///
+    /// The selection moves to the next segment in output order, or the
+    /// previous one when the removed segment was last.
+    pub fn remove_selected_segment(&mut self) -> Option<Segment> {
+        let id = self.selected_segment?;
+        let index = self.timeline.index_of(id)?;
+        let removed = self.timeline.remove(id)?;
+        self.selected_segment = self
+            .timeline
+            .segments()
+            .get(index)
+            .or_else(|| {
+                index
+                    .checked_sub(1)
+                    .and_then(|index| self.timeline.segments().get(index))
+            })
+            .map(|segment| segment.id());
+        Some(removed)
+    }
+
+    /// Sets the enabled flag of a segment.
+    pub fn set_segment_enabled(&mut self, id: SegmentId, enabled: bool) -> bool {
+        self.timeline.set_enabled(id, enabled)
+    }
+
+    /// Moves the selected segment one position earlier in output order.
+    pub fn move_selected_segment_up(&mut self) -> bool {
+        let Some(id) = self.selected_segment else {
+            return false;
+        };
+        self.timeline.move_up(id)
+    }
+
+    /// Moves the selected segment one position later in output order.
+    pub fn move_selected_segment_down(&mut self) -> bool {
+        let Some(id) = self.selected_segment else {
+            return false;
+        };
+        self.timeline.move_down(id)
+    }
+
+    /// Moves the selected segment's start to `start`.
+    pub fn set_selected_segment_start(
+        &mut self,
+        start: Timestamp,
+    ) -> Result<(), SegmentCommandError> {
+        let id = self
+            .selected_segment
+            .ok_or(SegmentCommandError::NoSelection)?;
+        let Some(segment) = self.timeline.get(id).copied() else {
+            return Err(SegmentCommandError::NoSelection);
+        };
+        let start = clamp_position(start, self.duration());
+        self.timeline
+            .update(id, start, segment.end())
+            .map(|_| ())
+            .map_err(|error| match error {
+                TimelineError::InvalidRange => SegmentCommandError::EmptyRange,
+                TimelineError::NotFound => SegmentCommandError::NoSelection,
+                TimelineError::IdExhausted => SegmentCommandError::IdExhausted,
+            })
+    }
+
+    /// Moves the selected segment's end to `end`.
+    pub fn set_selected_segment_end(&mut self, end: Timestamp) -> Result<(), SegmentCommandError> {
+        let id = self
+            .selected_segment
+            .ok_or(SegmentCommandError::NoSelection)?;
+        let Some(segment) = self.timeline.get(id).copied() else {
+            return Err(SegmentCommandError::NoSelection);
+        };
+        let end = clamp_position(end, self.duration());
+        self.timeline
+            .update(id, segment.start(), end)
+            .map(|_| ())
+            .map_err(|error| match error {
+                TimelineError::InvalidRange => SegmentCommandError::EmptyRange,
+                TimelineError::NotFound => SegmentCommandError::NoSelection,
+                TimelineError::IdExhausted => SegmentCommandError::IdExhausted,
+            })
+    }
+
+    /// Sorts segments by source start time. Selection is preserved because it
+    /// is tracked by stable ID.
+    pub fn sort_segments(&mut self) {
+        self.timeline.sort_by_start();
+    }
+
     /// Starts a background probe for `path`.
     ///
     /// This method only spawns a worker; it never waits for FFprobe. Failures
@@ -146,6 +353,7 @@ impl Application {
     /// [`OpenState::Failed`].
     pub fn open_media(&mut self, path: PathBuf) {
         self.playback.reset();
+        self.reset_editing();
         self.keyframes = None;
         self.keyframe_job = None;
 
@@ -302,11 +510,18 @@ impl Application {
     /// Closes the current media and stops all preview work.
     pub fn close_media(&mut self) {
         self.playback.reset();
+        self.reset_editing();
         self.media = None;
         self.probe = None;
         self.keyframes = None;
         self.keyframe_job = None;
         self.state = OpenState::Empty;
+    }
+
+    fn reset_editing(&mut self) {
+        self.timeline.clear();
+        self.markers = Markers::default();
+        self.selected_segment = None;
     }
 
     fn poll_probe(&mut self) -> bool {
@@ -323,6 +538,8 @@ impl Application {
                     media.chapters.len()
                 );
                 self.playback.load(&media);
+                self.reset_editing();
+                self.timeline.reset(media.path.clone());
                 self.start_keyframes(&media);
                 self.media = Some(media);
                 self.state = OpenState::Ready;
@@ -331,6 +548,7 @@ impl Application {
             Ok(Err(error)) => {
                 log::warn!("{error}");
                 self.playback.reset();
+                self.reset_editing();
                 self.media = None;
                 self.keyframes = None;
                 self.keyframe_job = None;
@@ -348,6 +566,7 @@ impl Application {
                 let message = "the ffprobe worker stopped without returning a result".to_owned();
                 log::error!("probing {}: {message}", job.path.display());
                 self.playback.reset();
+                self.reset_editing();
                 self.media = None;
                 self.keyframes = None;
                 self.keyframe_job = None;
@@ -840,5 +1059,30 @@ mod tests {
             clamp_position(Timestamp::from_micros(3_000_000), None),
             Timestamp::from_micros(3_000_000)
         );
+    }
+
+    #[test]
+    fn segment_commands_require_media() {
+        let mut application = Application::new();
+
+        assert_eq!(application.add_segment(), Err(SegmentCommandError::NoMedia));
+        assert_eq!(application.remove_selected_segment(), None);
+        assert_eq!(
+            application.set_selected_segment_start(Timestamp::from_micros(1_000)),
+            Err(SegmentCommandError::NoSelection)
+        );
+
+        application.set_in_point(Timestamp::from_micros(1_000_000));
+        assert_eq!(application.in_point(), None);
+        assert!(application.timeline().is_empty());
+    }
+
+    #[test]
+    fn select_segment_ignores_unknown_ids() {
+        let mut application = Application::new();
+
+        application.select_segment(Some(SegmentId::new(3)));
+
+        assert_eq!(application.selected_segment(), None);
     }
 }

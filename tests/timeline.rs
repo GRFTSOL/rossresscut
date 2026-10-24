@@ -1,0 +1,300 @@
+//! Integration tests for segment editing commands.
+
+use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::{Duration, Instant};
+
+use rossresscut::application::{Application, OpenState, SegmentCommandError};
+use rossresscut::domain::segment::{SegmentId, Timeline};
+use rossresscut::domain::time::Timestamp;
+
+fn fixture(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join(name)
+}
+
+fn wait_until_ready(application: &mut Application) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+
+    while Instant::now() < deadline {
+        application.update();
+        if matches!(application.state(), OpenState::Ready) {
+            return;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+
+    panic!("media did not become ready: {:?}", application.state());
+}
+
+fn micros(value: i64) -> Timestamp {
+    Timestamp::from_micros(value)
+}
+
+fn output_order(application: &Application) -> Vec<SegmentId> {
+    application
+        .timeline()
+        .segments()
+        .iter()
+        .map(|segment| segment.id())
+        .collect()
+}
+
+fn timeline_order(timeline: &Timeline) -> Vec<SegmentId> {
+    timeline
+        .segments()
+        .iter()
+        .map(|segment| segment.id())
+        .collect()
+}
+
+/// Guardrail for export: the EDL order is independent of source time, and no
+/// operation may silently re-sort it by `start`.
+#[test]
+fn edl_order_is_independent_of_source_time() {
+    let mut timeline = Timeline::new(PathBuf::from("source.mp4"));
+    let a = timeline
+        .push(micros(0), micros(10_000_000))
+        .expect("A is valid");
+    let b = timeline
+        .push(micros(20_000_000), micros(30_000_000))
+        .expect("B is valid");
+    let c = timeline
+        .push(micros(5_000_000), micros(15_000_000))
+        .expect("C is valid");
+
+    let selected = c;
+
+    // Build B -> C -> A.
+    assert!(timeline.move_to(b, 0));
+    assert!(timeline.move_to(c, 1));
+    assert_eq!(timeline_order(&timeline), vec![b, c, a]);
+
+    // Moving a segment must not trigger a source-time sort.
+    assert!(timeline.move_up(c));
+    assert_eq!(timeline_order(&timeline), vec![c, b, a]);
+    assert_eq!(
+        timeline.get(selected).map(|segment| segment.id()),
+        Some(selected)
+    );
+
+    // Only an explicit sort may restore source-time order.
+    timeline.sort_by_start();
+    assert_eq!(timeline_order(&timeline), vec![a, c, b]);
+    assert_eq!(
+        timeline.get(selected).map(|segment| segment.id()),
+        Some(selected)
+    );
+}
+
+#[test]
+fn selected_id_survives_reorder_and_sort() {
+    let mut application = Application::new();
+    application.open_media(fixture("sample-keyframes.mp4"));
+    wait_until_ready(&mut application);
+
+    // Same source-time relationship as the Domain test, scaled to the fixture:
+    // A = [0, 1s), B = [2s, 3s), C = [0.5s, 1.5s).
+    application.set_in_point(micros(0));
+    application.set_out_point(micros(1_000_000));
+    let a = application.add_segment().expect("A");
+
+    application.set_in_point(micros(2_000_000));
+    application.set_out_point(micros(3_000_000));
+    let b = application.add_segment().expect("B");
+
+    application.set_in_point(micros(500_000));
+    application.set_out_point(micros(1_500_000));
+    let c = application.add_segment().expect("C");
+
+    assert_eq!(output_order(&application), vec![a, b, c]);
+
+    // Build B -> C -> A.
+    application.select_segment(Some(b));
+    assert!(application.move_selected_segment_up());
+    application.select_segment(Some(c));
+    assert!(application.move_selected_segment_up());
+    assert_eq!(output_order(&application), vec![b, c, a]);
+
+    // Selection is tracked by SegmentId, not by position.
+    application.select_segment(Some(c));
+    assert_eq!(application.selected_segment(), Some(c));
+    assert!(application.move_selected_segment_up());
+    assert_eq!(output_order(&application), vec![c, b, a]);
+    assert_eq!(application.selected_segment(), Some(c));
+
+    // Explicit sort changes output order but not identity or selection.
+    application.sort_segments();
+    assert_eq!(output_order(&application), vec![a, c, b]);
+    assert_eq!(application.selected_segment(), Some(c));
+    assert!(application.timeline().get(c).is_some());
+}
+
+#[test]
+fn output_order_is_creation_order_until_explicitly_sorted() {
+    let mut application = Application::new();
+    application.open_media(fixture("sample-keyframes.mp4"));
+    wait_until_ready(&mut application);
+
+    application.set_in_point(micros(200_000));
+    application.set_out_point(micros(800_000));
+    let first = application.add_segment().expect("first segment");
+
+    application.set_in_point(micros(1_200_000));
+    application.set_out_point(micros(2_000_000));
+    let second = application.add_segment().expect("second segment");
+
+    application.set_in_point(micros(0));
+    application.set_out_point(micros(100_000));
+    let third = application.add_segment().expect("third segment");
+
+    assert_ne!(first, second);
+    assert_ne!(second, third);
+    assert_eq!(application.selected_segment(), Some(third));
+    assert_eq!(output_order(&application), vec![first, second, third]);
+
+    application.sort_segments();
+
+    assert_eq!(output_order(&application), vec![third, first, second]);
+    assert_eq!(application.selected_segment(), Some(third));
+}
+
+#[test]
+fn reorders_segments_and_keeps_selection_by_id() {
+    let mut application = Application::new();
+    application.open_media(fixture("sample-keyframes.mp4"));
+    wait_until_ready(&mut application);
+
+    application.set_in_point(micros(0));
+    application.set_out_point(micros(500_000));
+    let first = application.add_segment().expect("first segment");
+
+    application.set_in_point(micros(1_000_000));
+    application.set_out_point(micros(1_500_000));
+    let second = application.add_segment().expect("second segment");
+
+    application.set_in_point(micros(2_000_000));
+    application.set_out_point(micros(2_500_000));
+    let third = application.add_segment().expect("third segment");
+
+    application.select_segment(Some(second));
+    assert!(application.move_selected_segment_up());
+    assert_eq!(output_order(&application), vec![second, first, third]);
+    assert_eq!(application.selected_segment(), Some(second));
+
+    assert!(application.move_selected_segment_down());
+    assert_eq!(output_order(&application), vec![first, second, third]);
+    assert_eq!(application.selected_segment(), Some(second));
+}
+
+#[test]
+fn edits_enabled_state_and_bounds_by_id() {
+    let mut application = Application::new();
+    application.open_media(fixture("sample-keyframes.mp4"));
+    wait_until_ready(&mut application);
+
+    application.set_in_point(micros(200_000));
+    application.set_out_point(micros(800_000));
+    let id = application.add_segment().expect("segment");
+
+    assert!(application.set_segment_enabled(id, false));
+    assert!(!application.timeline().segments()[0].enabled());
+
+    assert_eq!(
+        application.set_selected_segment_start(micros(50_000)),
+        Ok(())
+    );
+    assert_eq!(
+        application.set_selected_segment_end(micros(900_000)),
+        Ok(())
+    );
+
+    let segment = application
+        .timeline()
+        .segments()
+        .iter()
+        .find(|segment| segment.id() == id)
+        .copied()
+        .expect("segment by id");
+    assert_eq!(segment.start(), micros(50_000));
+    assert_eq!(segment.end(), micros(900_000));
+    assert!(!segment.enabled());
+
+    assert_eq!(
+        application.set_selected_segment_start(micros(1_000_000)),
+        Err(SegmentCommandError::EmptyRange)
+    );
+    assert_eq!(
+        application.set_selected_segment_end(micros(0)),
+        Err(SegmentCommandError::EmptyRange)
+    );
+}
+
+#[test]
+fn removes_selected_segment_and_selects_a_neighbour() {
+    let mut application = Application::new();
+    application.open_media(fixture("sample-keyframes.mp4"));
+    wait_until_ready(&mut application);
+
+    application.set_in_point(micros(0));
+    application.set_out_point(micros(500_000));
+    let first = application.add_segment().expect("first segment");
+
+    application.set_in_point(micros(1_000_000));
+    application.set_out_point(micros(1_500_000));
+    let second = application.add_segment().expect("second segment");
+
+    application.select_segment(Some(first));
+    assert_eq!(
+        application
+            .remove_selected_segment()
+            .map(|segment| segment.id()),
+        Some(first)
+    );
+
+    assert_eq!(application.timeline().len(), 1);
+    assert_eq!(application.selected_segment(), Some(second));
+}
+
+#[test]
+fn rejects_incomplete_or_reversed_markers() {
+    let mut application = Application::new();
+    application.open_media(fixture("sample-keyframes.mp4"));
+    wait_until_ready(&mut application);
+
+    assert_eq!(
+        application.add_segment(),
+        Err(SegmentCommandError::MissingInPoint)
+    );
+
+    application.set_in_point(micros(500_000));
+    assert_eq!(
+        application.add_segment(),
+        Err(SegmentCommandError::MissingOutPoint)
+    );
+
+    application.set_out_point(micros(500_000));
+    assert_eq!(
+        application.add_segment(),
+        Err(SegmentCommandError::EmptyRange)
+    );
+}
+
+#[test]
+fn closing_media_clears_the_timeline() {
+    let mut application = Application::new();
+    application.open_media(fixture("sample-keyframes.mp4"));
+    wait_until_ready(&mut application);
+
+    application.set_in_point(micros(0));
+    application.set_out_point(micros(500_000));
+    assert!(application.add_segment().is_ok());
+
+    application.close_media();
+
+    assert!(application.timeline().is_empty());
+    assert_eq!(application.timeline().source(), None);
+    assert_eq!(application.selected_segment(), None);
+}
