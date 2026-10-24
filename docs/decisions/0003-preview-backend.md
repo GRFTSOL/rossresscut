@@ -1,8 +1,12 @@
 # 0003 预览后端：外部 FFmpeg 帧解码
 
-- 状态：视频帧解码部分有效；音频部分已被 0004 取代
+- 状态：视频帧解码部分已被 `0009-preview-decode-zero-copy.md` 取代；音频部分已被 `0004` 取代
 - 日期：2026-10-24
 - 阶段：Phase 2
+
+> 2026-10-24 更新：Phase 4A 证明外部 FFmpeg + `pipe:1` 无法利用 GPU-resident 帧。
+> 预览解码已决定改为进程内 `libav*` + 平台 hwaccel + zero-copy，见 `0009-preview-decode-zero-copy.md`。
+> 本文档保留为 Phase 2 的历史记录，不再描述当前预览实现。
 
 > 2026-10-24 更新：真实文件测试发现独立 `ffplay` 进程会造成 A/V 偏移。
 > 音频已改为 FFmpeg PCM + `cpal`，音频样本时钟为主时钟，见 `0004-audio-clock-and-desktop-integration.md`。

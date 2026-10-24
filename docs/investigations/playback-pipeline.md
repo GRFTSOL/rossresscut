@@ -283,6 +283,9 @@ mpv 在同样 4K HEVC + VAAPI 下能到 33 fps 且 CPU 占用很低。差异来�
 
 ## 对 Phase 4B 的输入
 
+> 2026-10-24：Phase 4B 已完成决策，见 `docs/decisions/0009-preview-decode-zero-copy.md`。
+> 选择进程内 `libav*` + 平台 hwaccel + `media/platform` zero-copy；本节保留为决策前的调查记录。
+
 决策必须回答：在「外部 FFmpeg 进程」约束下，如何避免每帧同步下载 4K 帧。
 
 候选方向（未选择）：

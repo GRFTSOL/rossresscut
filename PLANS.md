@@ -2,9 +2,13 @@
 
 ## 当前阶段
 
-**Phase 4A：播放器性能调查（已完成，等待 Phase 4B 决策）**
+**Phase 4C：预览解码实现（未开始）**
 
-Phase 4B 尚未开始。当前数据见 `docs/investigations/playback-pipeline.md`；在开始 4B 前必须走 `architecture-decision` 并写 ADR。
+- Phase 4A 调查：`docs/investigations/playback-pipeline.md`。
+- Phase 4B 决策：`docs/decisions/0009-preview-decode-zero-copy.md`。
+- Phase 4C 落地 `media/platform`、`libav*` 绑定、surface 导入与进程内音频解码。
+- 无损导出顺延为 Phase 4D。
+- 未解决问题记录在 `docs/open-questions.md`。
 
 除非用户明确要求，不提前实现后续阶段功能。
 
@@ -300,7 +304,7 @@ cargo fmt --check
 
 # Phase 4：播放链路调查与渲染架构
 
-状态：`Phase 4A 已完成；Phase 4B 未开始`
+状态：`Phase 4A 已完成；Phase 4B 已决策；Phase 4C 未开始`
 
 Phase 4 不再直接进入导出。当前实际播放性能与音画同步不可接受，先完成播放链路调查和渲染架构决策，再恢复无损导出。
 
@@ -351,24 +355,54 @@ Phase 4 不再直接进入导出。当前实际播放性能与音画同步不可
 
 ## Phase 4B：确定视频渲染架构
 
-状态：`未开始（等待决策）`
+状态：`已决策（ADR 0009）；实现未开始`
 
-在 Phase 4A 数据完成后再决定，不在数据不足时先选 UI 框架。
+决策：预览解码改为进程内 `libavformat` + `libavcodec` hwaccel（VAAPI / D3D11VA / VideoToolbox），硬件 surface 经 `media/platform` zero-copy 导入 wgpu。导出、裁切、合并与探测继续使用外部 FFmpeg / FFprobe。
 
-Phase 4A 已确认的核心约束：外部 FFmpeg 进程只能通过管道返回系统内存帧，因此 VAAPI 在 4K 上必然发生同步下载，参数调优无法消除。
+`media/platform` 是唯一允许 `unsafe` 的 crate，其余保持 `unsafe_code = "forbid"`。
 
-候选：
+详见 `docs/decisions/0009-preview-decode-zero-copy.md`。
 
-- A. egui + wgpu（当前路径）
-- B. egui + 独立 video renderer（video output 不经过 egui 绘制）
-- C. Slint + wgpu
-- D. Slint + 独立 video renderer
+被否决的方向：
 
-Phase 4B 必须通过 `architecture-decision` 流程并写 ADR。
+- 外部 FFmpeg + `pipe:1`：无法交付 GPU-resident 帧。
+- libmpv SW render：有 GPU → CPU 回读，且偏离自建 media engine。
+- libmpv OpenGL + eframe glow：需要切换渲染栈，GL 状态共享复杂。
+- Slint：UI 框架不是本问题的层面。
+- 自写 demux + 平台媒体 API：容器解析工程量过大。
 
-## Phase 4C：无损导出（原 Phase 4）
+实现任务见 Phase 4C。
 
-状态：`未开始（阻塞于 4A / 4B）`
+## Phase 4C：预览解码实现
+
+状态：`未开始`
+
+任务：
+
+- [ ] 新增 `media/platform` crate 与 `unsafe_code` 边界。
+- [ ] `libavformat` demux + `libavcodec` hwaccel（VAAPI / D3D11VA / VideoToolbox）。
+- [ ] Linux：DMA-BUF → wgpu。
+- [ ] Windows：D3D11 shared handle → wgpu。
+- [ ] macOS：IOSurface → wgpu。
+- [ ] 预览音频改为进程内 `libavcodec` 解码，PCM 仍由 `cpal` 输出。
+- [ ] 软件解码回退，且在 UI 可见。
+- [ ] 预览时间戳改用源 PTS。
+- [ ] 硬件 / 软件输出一致性测试。
+- [ ] 更新 `media/preview/video.rs` 与 `audio.rs`。
+- [ ] 播放信息报告实际生效的解码后端。
+
+完成标准：
+
+- 4K HEVC 在 VAAPI 下保持 GPU-resident，无每帧同步下载。
+- 硬件不可用时自动回退软件，且 UI 可见。
+- 预览时间与源 PTS 一致，可用于 Segment 边界判断。
+- `cargo fmt --check`、`cargo clippy -D warnings`、`cargo test` 全部通过。
+
+未解决问题见 `docs/open-questions.md`。
+
+## Phase 4D：无损导出（原 Phase 4C / 原 Phase 4）
+
+状态：`未开始（阻塞于 Phase 4C 完成）`
 
 ## 目标
 

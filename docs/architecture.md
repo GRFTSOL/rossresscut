@@ -131,9 +131,23 @@ ExportRequest
 - 进度解析
 - 取消
 - 媒体操作
-- 预览视频帧解码（外部 ffmpeg，默认硬件解码）
-- 预览音频 PCM 输出（外部 ffmpeg 解码，cpal 输出）
+- 预览视频帧解码（Phase 4B 决策：进程内 `libav*` + 平台 hwaccel，zero-copy 到 wgpu；尚未实现）
+- 预览音频 PCM 输出（Phase 4B 决策：进程内 `libavcodec` 解码，`cpal` 输出；尚未实现）
 - 关键帧索引（外部 ffprobe 读取 packet flags，不输入解码）
+- `media/platform`：唯一允许 `unsafe` 的 crate，封装 `libav*` 与 surface → wgpu 导入
+
+Phase 4B 的预览边界：
+
+```text
+libavformat → libavcodec hwaccel → hardware surface
+                                      ↓
+                              media/platform
+                                      ↓
+                              wgpu external texture
+```
+
+导出、裁切、合并与探测仍使用外部 FFmpeg / FFprobe 进程。
+详见 `docs/decisions/0009-preview-decode-zero-copy.md`。
 
 媒体层不得依赖 egui。
 
@@ -147,9 +161,10 @@ ExportRequest
 
 ```text
 FFprobe
-FFmpeg preview decode
+FFmpeg export / probe (external process)
+Preview decode (libav* hwaccel, in-process)
 Keyframe indexing
-Audio decode / cpal output
+Audio decode (libavcodec, in-process) / cpal output
 Thumbnail
 Waveform
 Scene Detection
@@ -314,11 +329,12 @@ docs/decisions/
 0006-ui-localization-and-settings.md
 0007-segment-editing-basics.md
 0008-segment-timeline-semantics.md
+0009-preview-decode-zero-copy.md
 ```
 
 ---
 
-# 十一、当前代码结构（Phase 3）
+# 十一、当前代码结构（Phase 3；Phase 4B 尚未实现）
 
 ```text
 src/

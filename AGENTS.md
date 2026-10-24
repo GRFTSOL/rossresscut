@@ -402,7 +402,8 @@ pacfiles -x '.*/libav(codec|format)\.so'
        ▼
 ┌─────────────────────────────┐
 │      FFmpeg / FFprobe       │
-│         外部进程             │
+│ 导出 / 探测：外部进程         │
+│ 预览解码：libav*（进程内）    │
 └─────────────────────────────┘
 ```
 
@@ -421,7 +422,8 @@ Domain
  ↓
 Media
  ↓
-FFmpeg
+FFmpeg（外部进程：导出 / 探测）
+libav*（进程内：预览解码）
 ```
 
 禁止：
@@ -432,6 +434,7 @@ Domain → egui
 Media → UI
 Media → egui
 FFmpeg → UI
+media::platform 的 FFI / GPU 句柄类型 → Domain / Application / UI
 ```
 
 ### 核心原则
@@ -558,6 +561,13 @@ UI 不允许直接修改领域状态。
 
 这些工作交给 FFmpeg。
 
+两种调用方式并存：
+
+- 导出、裁切、合并与探测：外部 FFmpeg / FFprobe 进程。
+- 预览解码：进程内 `libav*`（`libavformat` + `libavcodec` hwaccel）。
+
+两者都必须使用 FFmpeg 的能力，不允许自写编解码器或容器解析。预览的进程内边界与 zero-copy 规则见 `docs/decisions/0009-preview-decode-zero-copy.md`。
+
 Rust 负责：
 
 - 命令构造
@@ -572,9 +582,9 @@ Rust 负责：
 
 ---
 
-## 2. FFmpeg 必须直接执行
+## 2. FFmpeg 调用方式
 
-优先：
+导出、裁切、合并与探测必须直接执行外部程序：
 
 ```text
 Command
@@ -593,6 +603,8 @@ FFmpeg
 不要通过 shell 拼接用户输入。
 
 文件路径、参数等必须作为独立进程参数传递。
+
+预览解码使用进程内 `libav*` 绑定，同样不得经由 shell，也不得在 egui 帧内同步调用。
 
 ---
 
@@ -861,40 +873,30 @@ let first = segments.first().unwrap();
 - 避免不必要的克隆、分配和中间集合。
 - 抽象必须由真实复用驱动，不为"看起来更通用"引入 trait 或泛型。
 
-## 3. 内存安全：禁止 unsafe
+## 3. 内存安全：unsafe 仅允许在 `media/platform`
 
-**本项目禁止使用 `unsafe`，不设例外。**
+除 `media/platform` 外，本项目禁止使用 `unsafe`、FFI 与裸指针。
 
-禁止出现：
+`media/platform` 是唯一例外，用于：
 
-- `unsafe { }` 块
-- `unsafe fn`
-- `unsafe trait` / `unsafe impl`
-- `unsafe impl Send` / `unsafe impl Sync`
-- 裸指针（`*const T` / `*mut T`）
-- `core::mem::transmute`
-- `union`
-- `MaybeUninit`
-- `ManuallyDrop`
-- `static mut`
-- FFI（`extern` 函数声明、`#[no_mangle]` 导出）
+- 调用 `libav*` 与平台 hwaccel。
+- 把硬件解码 surface（DMA-BUF / D3D11 shared handle / IOSurface）导入 wgpu。
+- 维护上述资源的生命周期。
+
+例外规则：
+
+- 该 crate 允许 `unsafe`；其余 crate 必须保持 `unsafe_code = "forbid"`。
+- 每个 `unsafe` 块必须带独占一行的 `// SAFETY:` 注释，说明成立的不变量。
+- 对外只暴露 safe API。
+- 裸指针、FFI 类型与 `wgpu-hal` 句柄不得越过该 crate 边界。
+- 必须有不依赖具体硬件的测试，以及硬件路径与软件路径的一致性测试（见 §十七）。
 
 ### 理由
 
-项目不链接 libav*，所有媒体处理都通过外部 FFmpeg / FFprobe 进程完成，
-不存在必须依赖 FFI 或手写内存布局的场景。
+预览需要 GPU-resident 的硬件解码帧，而 `wgpu 30` 只提供 `unsafe fn` 的外部纹理导入接口。
+`unsafe` 无法避免，只能隔离。决策与代价见 `docs/decisions/0009-preview-decode-zero-copy.md`。
 
-引入 `unsafe` 换来的性能收益在本项目的瓶颈（进程、磁盘、解码）面前可以忽略，
-而代价是内存安全保证失效。
-
-### 如果确实无法避免
-
-不允许自行开例外。必须先：
-
-1. 在 `docs/decisions/` 写清为什么 safe Rust 无法实现。
-2. 修改本文件，移除或收窄该禁令。
-
-两步完成之前，相关代码不得合入。
+导出、探测与媒体模型仍然不需要 `unsafe`。
 
 ### safe Rust 内的内存安全要求
 
@@ -1181,7 +1183,8 @@ docs/decisions/
 - ❌ 引入 `Electron` / `Tauri` / `WebView` / JS UI 框架 / `Node.js` 运行时。
 - ❌ 在 egui 帧回调中同步执行 FFmpeg、FFprobe、解码或大量文件 I/O。
 - ❌ 用 `f32` / `f64` 秒作为媒体时间的唯一表示。
-- ❌ 使用任何形式的 `unsafe`：`unsafe` 块 / `unsafe fn` / `unsafe impl` / 裸指针 / `transmute` / `union` / `MaybeUninit` / `ManuallyDrop` / `static mut` / FFI。
+- ❌ 在 `media/platform` 之外使用 `unsafe`、FFI、裸指针、`transmute`、`union`、`MaybeUninit`、`ManuallyDrop` 或 `static mut`。
+- ❌ 让 `media/platform` 的裸指针、FFI 类型或 GPU 句柄越过该 crate 边界。
 - ❌ 静默把 `stream copy` 降级为重新编码，或把重编码结果标记为无损。
 - ❌ 通过 shell 拼接命令执行 FFmpeg。
 - ❌ 用 `unwrap()` / `expect()` 处理用户输入或外部进程输出。
@@ -1206,7 +1209,7 @@ docs/decisions/
 - [ ] 公开 API 有 `///` 文档注释
 - [ ] `cargo fmt --all --check` 通过
 - [ ] `cargo clippy --all-targets --all-features -- -D warnings` 通过
-- [ ] 没有 `unsafe` 代码，也没有绕过它的等价写法
+- [ ] `unsafe` 仅存在于 `media/platform`，每个 `unsafe` 块有 `// SAFETY:` 注释，且对外只暴露 safe API
 - [ ] 相关文档已经更新
 - [ ] 没有产生无关修改
 - [ ] 功能、重构、格式化、依赖升级没有混在同一次修改中

@@ -1,6 +1,6 @@
 # 0005 硬件解码默认启用
 
-- 状态：已接受
+- 状态：预览实现部分已被 `0009-preview-decode-zero-copy.md` 取代；「默认启用硬件解码、回退必须可见」的原则继续有效
 - 日期：2026-10-24
 - 阶段：Phase 2 修订
 - 取代：`0004-audio-clock-and-desktop-integration.md` §2
