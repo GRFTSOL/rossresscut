@@ -1,0 +1,274 @@
+//! Lossless export through an external FFmpeg process.
+//!
+//! The media layer owns argument construction, process startup, progress
+//! parsing, and cancellation. The application layer owns export job state and
+//! user-facing errors. No shell is involved and no file is re-encoded.
+
+mod command;
+mod progress;
+
+use std::fmt;
+use std::io::{self, BufRead, BufReader, Read};
+use std::path::PathBuf;
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration as StdDuration, Instant};
+
+use crate::domain::time::Timestamp;
+
+pub use command::{ExportRequest, build_args};
+pub use progress::{ProgressUpdate, parse_progress_line};
+
+const FFMPEG: &str = "ffmpeg";
+
+/// Errors produced while starting or running an export.
+#[derive(Debug)]
+pub enum ExportError {
+    /// The FFmpeg process could not be started.
+    Spawn {
+        /// Requested output path.
+        output: PathBuf,
+        /// Operating-system error from process creation.
+        source: io::Error,
+    },
+    /// A worker thread for reading FFmpeg output could not be started.
+    Worker {
+        /// Requested output path.
+        output: PathBuf,
+        /// Operating-system error from thread creation.
+        source: io::Error,
+    },
+}
+
+impl fmt::Display for ExportError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Spawn { output, source } => {
+                write!(
+                    formatter,
+                    "could not start ffmpeg for {}: {source}",
+                    output.display()
+                )
+            }
+            Self::Worker { output, source } => {
+                write!(
+                    formatter,
+                    "could not start an export reader for {}: {source}",
+                    output.display()
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for ExportError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Spawn { source, .. } | Self::Worker { source, .. } => Some(source),
+        }
+    }
+}
+
+/// Events emitted by a running export process.
+#[derive(Debug)]
+pub enum ExportEvent {
+    /// Muxing progressed to `out_time`.
+    Progress {
+        /// Last reported output timestamp.
+        out_time: Timestamp,
+        /// Whether FFmpeg reported `progress=end`.
+        done: bool,
+    },
+    /// The progress stream ended.
+    Finished {
+        /// FFmpeg stderr, which is only populated when it reported an error.
+        stderr: String,
+        /// Whether FFmpeg reported `progress=end` before exiting.
+        ended: bool,
+    },
+}
+
+/// A running FFmpeg export process.
+pub struct ExportProcess {
+    child: Child,
+    events: Receiver<ExportEvent>,
+    reader: Option<JoinHandle<()>>,
+    started: Instant,
+}
+
+impl ExportProcess {
+    /// Starts FFmpeg for `request`.
+    pub fn start(request: &ExportRequest) -> Result<Self, ExportError> {
+        let mut child = Command::new(FFMPEG)
+            .args(build_args(request))
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|source| ExportError::Spawn {
+                output: request.output().to_path_buf(),
+                source,
+            })?;
+
+        let stdout = child.stdout.take().ok_or_else(|| ExportError::Worker {
+            output: request.output().to_path_buf(),
+            source: io::Error::other("ffmpeg stdout was not piped"),
+        })?;
+        let stderr = child.stderr.take().ok_or_else(|| ExportError::Worker {
+            output: request.output().to_path_buf(),
+            source: io::Error::other("ffmpeg stderr was not piped"),
+        })?;
+
+        let (sender, events) = mpsc::channel();
+        let reader = thread::Builder::new()
+            .name("ffmpeg-export".to_owned())
+            .spawn(move || read_export_output(stdout, stderr, sender))
+            .map_err(|source| ExportError::Worker {
+                output: request.output().to_path_buf(),
+                source,
+            })?;
+
+        Ok(Self {
+            child,
+            events,
+            reader: Some(reader),
+            started: Instant::now(),
+        })
+    }
+
+    /// Polls for the next event without blocking.
+    pub fn poll(&mut self) -> Option<ExportEvent> {
+        match self.events.try_recv() {
+            Ok(event) => Some(event),
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => None,
+        }
+    }
+
+    /// Waits for the process to exit and reaps it.
+    ///
+    /// Call this after [`ExportEvent::Finished`].
+    pub fn wait(&mut self) -> io::Result<ExitStatus> {
+        self.join_reader();
+        self.child.wait()
+    }
+
+    /// Stops the process.
+    pub fn cancel(&mut self) {
+        match self.child.try_wait() {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                if let Err(error) = self.child.kill() {
+                    log::warn!("could not kill the ffmpeg export process: {error}");
+                }
+            }
+            Err(error) => log::warn!("could not query the ffmpeg export process: {error}"),
+        }
+    }
+
+    /// Returns how long the process has been running.
+    pub fn elapsed(&self) -> StdDuration {
+        self.started.elapsed()
+    }
+
+    fn join_reader(&mut self) {
+        let Some(handle) = self.reader.take() else {
+            return;
+        };
+        if let Err(error) = handle.join() {
+            log::warn!("ffmpeg export reader thread panicked: {error:?}");
+        }
+    }
+}
+
+impl Drop for ExportProcess {
+    fn drop(&mut self) {
+        self.cancel();
+        self.join_reader();
+        if let Err(error) = self.child.wait() {
+            log::warn!("could not reap the ffmpeg export process: {error}");
+        }
+    }
+}
+
+/// Reads progress from stdout and the error text from stderr.
+fn read_export_output(
+    stdout: impl Read,
+    stderr: impl Read + Send + 'static,
+    sender: mpsc::Sender<ExportEvent>,
+) {
+    let stderr_handle = thread::Builder::new()
+        .name("ffmpeg-export-stderr".to_owned())
+        .spawn(move || read_stderr(stderr));
+
+    let mut stdout = BufReader::new(stdout);
+    let mut line = String::new();
+    let mut out_time = Timestamp::ZERO;
+    let mut ended = false;
+
+    loop {
+        line.clear();
+        match stdout.read_line(&mut line) {
+            Ok(0) => break,
+            Ok(_) => {
+                let Some(update) = parse_progress_line(&line) else {
+                    continue;
+                };
+                match update {
+                    ProgressUpdate::OutTime(time) => {
+                        out_time = out_time.max(time);
+                        if sender
+                            .send(ExportEvent::Progress {
+                                out_time,
+                                done: false,
+                            })
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    ProgressUpdate::Ended => {
+                        ended = true;
+                        if sender
+                            .send(ExportEvent::Progress {
+                                out_time,
+                                done: true,
+                            })
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                }
+            }
+            Err(error) => {
+                log::warn!("could not read ffmpeg export progress: {error}");
+                break;
+            }
+        }
+    }
+
+    let stderr_text = match stderr_handle {
+        Ok(handle) => match handle.join() {
+            Ok(text) => text,
+            Err(_) => "ffmpeg stderr reader panicked".to_owned(),
+        },
+        Err(error) => format!("could not start the ffmpeg stderr reader: {error}"),
+    };
+
+    // The receiver is dropped when the application closes or cancels the job.
+    // Losing the final event in that case is expected.
+    let _ = sender.send(ExportEvent::Finished {
+        stderr: stderr_text,
+        ended,
+    });
+}
+
+fn read_stderr(mut stderr: impl Read) -> String {
+    let mut text = String::new();
+    match stderr.read_to_string(&mut text) {
+        Ok(_) => text,
+        Err(error) => format!("could not read ffmpeg stderr: {error}\n{text}"),
+    }
+}

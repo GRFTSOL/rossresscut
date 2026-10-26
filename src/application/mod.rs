@@ -4,7 +4,7 @@
 //! decoding, and audio playback all run outside the UI thread.
 
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 use std::time::Instant;
@@ -13,13 +13,19 @@ use crate::domain::media::{KeyframeIndex, MediaFile, MediaStream, VideoStream};
 use crate::domain::segment::{Segment, SegmentId, Timeline, TimelineError};
 use crate::domain::time::{Duration, Timestamp};
 use crate::error::AppError;
+use crate::media::export::{ExportEvent, ExportProcess, ExportRequest};
 use crate::media::ffprobe::{self, ProbeError};
 use crate::media::preview::{
     HardwareAcceleration, PreviewAudio, PreviewAudioStatus, PreviewVideo, PreviewVideoConfig,
     PreviewVideoResult, VideoFrame,
 };
+
+mod export;
+
 #[cfg(feature = "mpv-preview")]
 use crate::media::preview::{MpvPreview, MpvPreviewConfig, MpvPreviewError};
+use export::ExportJob;
+pub use export::{ExportCommandError, ExportStatus};
 
 const PREVIEW_FRAME_RATE: u32 = 30;
 
@@ -101,6 +107,8 @@ pub struct Application {
     timeline: Timeline,
     markers: Markers,
     selected_segment: Option<SegmentId>,
+    export: Option<ExportJob>,
+    export_status: ExportStatus,
 }
 
 struct ProbeJob {
@@ -311,6 +319,66 @@ impl Application {
     /// Returns the current editing timeline.
     pub fn timeline(&self) -> &Timeline {
         &self.timeline
+    }
+
+    /// Returns the export state.
+    pub fn export_status(&self) -> &ExportStatus {
+        &self.export_status
+    }
+
+    /// Exports the first enabled segment in timeline order to `output`.
+    ///
+    /// The export is a stream copy. Seeking uses an input seek, so the saved
+    /// segment may start at the keyframe before the segment start.
+    pub fn start_export(&mut self, output: PathBuf) -> Result<(), ExportCommandError> {
+        if !matches!(self.state, OpenState::Ready) {
+            return Err(ExportCommandError::NoMedia);
+        }
+        if self.export.is_some() {
+            return Err(ExportCommandError::AlreadyRunning);
+        }
+
+        let source = self
+            .timeline
+            .source()
+            .map(Path::to_path_buf)
+            .ok_or(ExportCommandError::NoMedia)?;
+        let segment = self
+            .timeline
+            .segments()
+            .iter()
+            .copied()
+            .find(|segment| segment.enabled())
+            .ok_or(ExportCommandError::NoSegment)?;
+
+        let request = ExportRequest::new(source, segment.start(), segment.end(), output.clone())
+            .ok_or(ExportCommandError::InvalidOutput)?;
+        let duration = request.duration();
+        let process = ExportProcess::start(&request).map_err(ExportCommandError::Start)?;
+
+        self.export_status = ExportStatus::Running {
+            output: output.clone(),
+            out_time: Timestamp::ZERO,
+            duration,
+        };
+        self.export = Some(ExportJob {
+            output,
+            duration,
+            out_time: Timestamp::ZERO,
+            cancel_requested: false,
+            process,
+        });
+        Ok(())
+    }
+
+    /// Requests cancellation of the running export.
+    ///
+    /// The status becomes [`ExportStatus::Cancelled`] after the process exits.
+    pub fn cancel_export(&mut self) {
+        if let Some(job) = self.export.as_mut() {
+            job.cancel_requested = true;
+            job.process.cancel();
+        }
     }
 
     /// Returns the pending in point.
@@ -535,6 +603,7 @@ impl Application {
     pub fn update(&mut self) -> bool {
         let mut changed = self.poll_probe();
         self.poll_keyframes();
+        changed |= self.poll_export();
         let duration = self.duration();
         changed |= self.playback.update(duration);
         changed
@@ -634,6 +703,7 @@ impl Application {
 
     /// Closes the current media and stops all preview work.
     pub fn close_media(&mut self) {
+        self.cancel_export();
         self.playback.reset();
         self.reset_editing();
         self.media = None;
@@ -647,6 +717,51 @@ impl Application {
         self.timeline.clear();
         self.markers = Markers::default();
         self.selected_segment = None;
+    }
+
+    fn poll_export(&mut self) -> bool {
+        let mut changed = false;
+        let mut running = None;
+        let mut finished = None;
+
+        if let Some(job) = self.export.as_mut() {
+            while let Some(event) = job.process.poll() {
+                match event {
+                    ExportEvent::Progress { out_time, .. } => {
+                        job.out_time = out_time;
+                        running = Some((job.output.clone(), job.out_time, job.duration));
+                        changed = true;
+                    }
+                    ExportEvent::Finished { stderr, ended } => {
+                        let exit = job.process.wait();
+                        finished = Some((
+                            job.output.clone(),
+                            job.cancel_requested,
+                            stderr,
+                            ended,
+                            exit,
+                        ));
+                        break;
+                    }
+                }
+            }
+        }
+
+        if let Some((output, out_time, duration)) = running {
+            self.export_status = ExportStatus::Running {
+                output,
+                out_time,
+                duration,
+            };
+        }
+
+        if let Some((output, cancelled, stderr, ended, exit)) = finished {
+            self.export = None;
+            self.export_status = export::finish_status(output, cancelled, stderr, ended, exit);
+            changed = true;
+        }
+
+        changed
     }
 
     fn poll_probe(&mut self) -> bool {
@@ -1573,5 +1688,17 @@ mod tests {
 
         application.set_preview_hardware(HardwareAcceleration::Vaapi);
         assert_eq!(application.hardware_decoder(), Some("vaapi"));
+    }
+
+    #[test]
+    fn export_without_media_is_rejected() {
+        let mut application = Application::new();
+
+        let error = application
+            .start_export(PathBuf::from("out.mkv"))
+            .expect_err("export must fail without media");
+
+        assert!(matches!(error, ExportCommandError::NoMedia));
+        assert!(!application.export_status().is_running());
     }
 }

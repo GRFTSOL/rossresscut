@@ -105,5 +105,14 @@
   "set_start_from_playhead": "起点 ← 播放头",
   "set_end_from_playhead": "终点 ← 播放头",
   "enabled": "启用",
-  "segment_shortcuts": "I：入点 · O：出点 · Enter：添加 · Del：删除 · Space：播放/暂停"
+  "segment_shortcuts": "I：入点 · O：出点 · Enter：添加 · Del：删除 · Space：播放/暂停",
+  "export_segment": "导出片段...",
+  "exporting": "正在导出...",
+  "cancel_export": "取消导出",
+  "export_completed": "导出完成：{}",
+  "export_failed": "导出失败：{}",
+  "export_cancelled": "已取消导出",
+  "export_no_segment": "请先添加一个启用的片段",
+  "export_invalid_output": "请选择不同的输出文件",
+  "export_dialog_failed": "无法打开导出对话框"
 }

@@ -333,7 +333,7 @@ docs/decisions/
 
 ---
 
-# 十一、当前代码结构（Phase 4C；方案 F 已接入）
+# 十一、当前代码结构（Phase 4D；导出已接入）
 
 ```text
 src/
@@ -343,11 +343,16 @@ src/
 ├── logging.rs                 进程级日志初始化
 ├── application/mod.rs         Application、OpenState、mpv 播放状态机与回退路径、
 │                              音频时钟、关键帧后台索引与导航
+├── application/export.rs      ExportStatus、ExportJob、导出命令错误
 ├── domain/
 │   ├── media.rs               MediaFile / MediaFormat / 流 / Chapter / KeyframeIndex
 │   ├── segment.rs             Segment / SegmentId / Timeline（有序 EDL、稳定身份）
 │   └── time.rs                TimeBase / Timestamp / Duration / FrameRate
 ├── media/
+│   ├── export/
+│   │   ├── mod.rs             ExportProcess、进度/结束事件、取消与回收
+│   │   ├── command.rs         ExportRequest 与 FFmpeg stream-copy 参数
+│   │   └── progress.rs        `-progress pipe:1` 解析
 │   ├── ffprobe/
 │   │   ├── mod.rs             FFprobe 进程封装与 ProbeError
 │   │   ├── raw.rs             私有 serde 结构（JSON 边界）

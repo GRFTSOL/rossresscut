@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 
-use crate::application::{Application, OpenState};
+use crate::application::{Application, ExportCommandError, ExportStatus, OpenState};
 use crate::domain::media::{
     AudioStream, Disposition, MediaFile, MediaStream, StreamInfo, VideoStream,
 };
@@ -101,6 +101,8 @@ pub struct RossresscutApp {
     last_scrub_start: Option<Instant>,
     file_dialog: Option<Receiver<Option<PathBuf>>>,
     dialog_error: Option<DialogError>,
+    export_dialog: Option<Receiver<Option<PathBuf>>>,
+    export_error: Option<String>,
     settings: UiSettings,
     settings_open: bool,
     about_open: bool,
@@ -261,6 +263,71 @@ impl RossresscutApp {
                 self.dialog_error = Some(DialogError::Stopped);
             }
         }
+    }
+
+    fn poll_export_dialog(&mut self) {
+        let Some(receiver) = self.export_dialog.take() else {
+            return;
+        };
+
+        match receiver.try_recv() {
+            Ok(Some(path)) => {
+                self.export_error = None;
+                if let Err(error) = self.application.start_export(path) {
+                    self.export_error = Some(export_command_message(self.strings(), &error));
+                }
+            }
+            Ok(None) => {}
+            Err(TryRecvError::Empty) => {
+                self.export_dialog = Some(receiver);
+            }
+            Err(TryRecvError::Disconnected) => {
+                log::warn!("export dialog thread stopped without a result");
+                self.export_error = Some(self.strings().export_dialog_failed.clone());
+            }
+        }
+    }
+
+    fn start_export_dialog(&mut self) {
+        if self.export_dialog.is_some() {
+            return;
+        }
+        self.export_error = None;
+
+        let Some(default_name) = self.default_export_name() else {
+            self.export_error = Some(self.strings().export_no_segment.clone());
+            return;
+        };
+        let dialog_error_message = self.strings().export_dialog_failed.clone();
+
+        let (sender, receiver) = mpsc::channel();
+        let spawn = thread::Builder::new()
+            .name("export-dialog".to_owned())
+            .spawn(move || {
+                let path = pick_export_path(&default_name);
+                if sender.send(path).is_err() {
+                    log::debug!("export dialog result discarded: the window is closing");
+                }
+            });
+
+        match spawn {
+            Ok(_handle) => {
+                self.export_dialog = Some(receiver);
+            }
+            Err(error) => {
+                log::error!("failed to start the export dialog thread: {error}");
+                self.export_error = Some(dialog_error_message);
+            }
+        }
+    }
+
+    fn default_export_name(&self) -> Option<String> {
+        let path = &self.application.media()?.path;
+        let stem = path.file_stem()?.to_string_lossy();
+        Some(match path.extension() {
+            Some(extension) => format!("{stem}_export.{}", extension.to_string_lossy()),
+            None => format!("{stem}_export.mkv"),
+        })
     }
 
     fn start_file_dialog(&mut self) {
@@ -572,6 +639,32 @@ impl RossresscutApp {
                         ui.close();
                     }
 
+                    let has_enabled_segment = self
+                        .application
+                        .timeline()
+                        .segments()
+                        .iter()
+                        .any(|segment| segment.enabled());
+                    let exporting = self.application.export_status().is_running();
+                    let export_enabled = FILE_DIALOG_SUPPORTED
+                        && !dialog_open
+                        && self.export_dialog.is_none()
+                        && has_enabled_segment
+                        && !exporting;
+                    let export_label = if self.export_dialog.is_some() {
+                        strings.exporting.as_str()
+                    } else {
+                        strings.export_segment.as_str()
+                    };
+                    if ui
+                        .add_enabled(export_enabled, egui::Button::new(export_label))
+                        .on_disabled_hover_text(strings.export_no_segment.as_str())
+                        .clicked()
+                    {
+                        self.start_export_dialog();
+                        ui.close();
+                    }
+
                     ui.separator();
                     if ui.button(strings.quit.as_str()).clicked() {
                         ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
@@ -718,11 +811,57 @@ impl RossresscutApp {
                 };
                 ui.colored_label(ui.visuals().error_fg_color, message);
             }
+            self.export_status(ui);
             if let Some(warning) = self.application.warning() {
                 ui.colored_label(ui.visuals().warn_fg_color, warning);
             }
             ui.add_space(4.0);
         });
+    }
+
+    fn export_status(&mut self, ui: &mut egui::Ui) {
+        let strings = self.strings();
+        let status = self.application.export_status().clone();
+
+        match &status {
+            ExportStatus::Running { output, .. } => {
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::ProgressBar::new(status.progress().unwrap_or_default())
+                            .show_percentage(),
+                    );
+                    if ui.button(strings.cancel_export.as_str()).clicked() {
+                        self.application.cancel_export();
+                    }
+                });
+                ui.label(format!("{} {}", strings.exporting, output.display()));
+            }
+            ExportStatus::Completed { output } => {
+                let output = output.display().to_string();
+                ui.colored_label(
+                    ui.visuals().weak_text_color(),
+                    fill(&strings.export_completed, &[&output]),
+                );
+            }
+            ExportStatus::Failed { output, message } => {
+                let detail = format!("{} ({})", message, output.display());
+                ui.colored_label(
+                    ui.visuals().error_fg_color,
+                    fill(&strings.export_failed, &[&detail]),
+                );
+            }
+            ExportStatus::Cancelled => {
+                ui.colored_label(
+                    ui.visuals().warn_fg_color,
+                    strings.export_cancelled.as_str(),
+                );
+            }
+            ExportStatus::Idle => {}
+        }
+
+        if let Some(error) = &self.export_error {
+            ui.colored_label(ui.visuals().error_fg_color, error.as_str());
+        }
     }
 
     fn timeline_bar(&mut self, ui: &mut egui::Ui) {
@@ -1248,6 +1387,7 @@ impl eframe::App for RossresscutApp {
         }
         self.apply_theme(ui.ctx());
         self.poll_file_dialog();
+        self.poll_export_dialog();
         self.handle_shortcuts(ui.ctx());
 
         if self.application.update() {
@@ -1276,6 +1416,8 @@ impl eframe::App for RossresscutApp {
             let repaint_millis = if has_video { 16 } else { 100 };
             ui.ctx()
                 .request_repaint_after(Duration::from_millis(repaint_millis));
+        } else if self.application.export_status().is_running() {
+            ui.ctx().request_repaint_after(Duration::from_millis(100));
         } else if self.application.is_waiting_for_preview() {
             ui.ctx().request_repaint_after(Duration::from_millis(50));
         } else if matches!(self.application.state(), OpenState::Probing { .. })
@@ -1799,6 +1941,28 @@ fn pick_media_file() -> Option<PathBuf> {
 #[cfg(not(target_os = "linux"))]
 fn pick_media_file() -> Option<PathBuf> {
     None
+}
+
+#[cfg(target_os = "linux")]
+fn pick_export_path(default_name: &str) -> Option<PathBuf> {
+    rfd::FileDialog::new()
+        .set_file_name(default_name)
+        .add_filter("Matroska", &["mkv"])
+        .add_filter("MP4", &["mp4"])
+        .save_file()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn pick_export_path(_default_name: &str) -> Option<PathBuf> {
+    None
+}
+
+fn export_command_message(strings: &Strings, error: &ExportCommandError) -> String {
+    match error {
+        ExportCommandError::NoSegment => strings.export_no_segment.clone(),
+        ExportCommandError::InvalidOutput => strings.export_invalid_output.clone(),
+        other => other.to_string(),
+    }
 }
 
 #[cfg(test)]

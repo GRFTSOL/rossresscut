@@ -105,5 +105,14 @@
   "set_start_from_playhead": "Start ← playhead",
   "set_end_from_playhead": "End ← playhead",
   "enabled": "Enabled",
-  "segment_shortcuts": "I: in · O: out · Enter: add · Del: delete · Space: play/pause"
+  "segment_shortcuts": "I: in · O: out · Enter: add · Del: delete · Space: play/pause",
+  "export_segment": "Export segment...",
+  "exporting": "Exporting...",
+  "cancel_export": "Cancel export",
+  "export_completed": "Export completed: {}",
+  "export_failed": "Export failed: {}",
+  "export_cancelled": "Export cancelled",
+  "export_no_segment": "Add an enabled segment before exporting",
+  "export_invalid_output": "Choose a different output file",
+  "export_dialog_failed": "Could not open the export dialog"
 }

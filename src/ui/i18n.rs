@@ -175,6 +175,15 @@ pub struct Strings {
     pub set_end_from_playhead: String,
     pub enabled: String,
     pub segment_shortcuts: String,
+    pub export_segment: String,
+    pub exporting: String,
+    pub cancel_export: String,
+    pub export_completed: String,
+    pub export_failed: String,
+    pub export_cancelled: String,
+    pub export_no_segment: String,
+    pub export_invalid_output: String,
+    pub export_dialog_failed: String,
 }
 
 #[cfg(test)]

@@ -3,5 +3,6 @@
 //! This layer owns external process execution, raw output parsing, and the
 //! `mpv-engine` preview wrapper. It must not depend on `eframe` or `egui`.
 
+pub mod export;
 pub mod ffprobe;
 pub mod preview;

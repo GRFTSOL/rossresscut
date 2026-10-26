@@ -2,23 +2,19 @@
 
 ## 当前阶段
 
-**Phase 4C：预览解码实现（方案 F，步骤 1–8 完成；旧路径保留为回退）**
+**Phase 4D：无损导出（单 Segment 已实现；多 Segment 归入 Phase 5）**
 
 - Phase 4A 调查：`docs/investigations/playback-pipeline.md`。
 - Phase 4B 原决策：`docs/decisions/0009-preview-decode-zero-copy.md`（方案 D）。
 - Phase 4B 修订：`docs/decisions/0010-preview-via-mpv-engine.md` 改为方案 F：
   `mpv-engine` export + wgpu；音频由 mpv 输出；`hr-seek=no/yes` 分别用于
   拖动与松手。
-- Phase 4C 落地 `media/preview/mpv`、mpv-engine 集成、音频切换与 scrubbing；
+- Phase 4C 已落地 `media/preview/mpv`、mpv-engine 集成、音频切换与 scrubbing；
   外部 FFmpeg 预览保留为回退。
-- 步骤 1（`mpv-engine` 依赖、CI 系统包、headless 链接/平台测试）已完成。
-- 步骤 2（`media::preview::mpv` 封装）已完成。
-- 步骤 3（UI 纹理接入、Application mpv 路径、外部 FFmpeg 回退）已完成。
-  实测 4K 走 mpv 时 `uploads=0`；`--no-default-features` 回退到外部 FFmpeg
-  时 `uploads>0`。自动 GPU 颜色 / 生命周期回归见步骤 8。
-- 步骤 4–8（mpv 音频时钟、scrub 状态机、窗格等比 resize、后端标注、
-  自动化回归与文档）已完成；旧预览路径保留，删除条件见 ADR 0010。
-- 无损导出顺延为 Phase 4D。
+- Phase 4D 已实现 `media/export`（参数构造、进程、进度、取消）与应用层导出状态；
+  UI 入口为 File ▸ Export segment...，输出路径使用 XDG portal save dialog。
+- 未完成：多 Segment 导出（Phase 5）、stream selection、关键帧回退的显式提示、
+  容器兼容预检查。
 - 未解决问题记录在 `docs/open-questions.md`。
 
 除非用户明确要求，不提前实现后续阶段功能。
@@ -314,7 +310,7 @@ cargo fmt --check
 
 # Phase 4：播放链路调查与渲染架构
 
-状态：`Phase 4A 已完成；Phase 4B 已修订；Phase 4C 步骤 1–8 完成（旧路径保留）`
+状态：`Phase 4A 已完成；Phase 4B 已修订；Phase 4C 步骤 1–8 完成（旧路径保留）；Phase 4D 单 Segment 完成`
 
 Phase 4 不再直接进入导出。当前实际播放性能与音画同步不可接受，先完成播放链路调查和渲染架构决策，再恢复无损导出。
 
@@ -423,7 +419,7 @@ UI 渲染适配层之间按帧传递。详见 `docs/decisions/0010-preview-via-m
 
 ## Phase 4D：无损导出（原 Phase 4C / 原 Phase 4）
 
-状态：`未开始（阻塞于 Phase 4C 完成）`
+状态：`单 Segment 已实现；多 Segment 归入 Phase 5`
 
 ## 目标
 
@@ -431,15 +427,32 @@ UI 渲染适配层之间按帧传递。详见 `docs/decisions/0010-preview-via-m
 
 ## 任务
 
-- [ ] FFmpeg command builder
-- [ ] ExportJob
-- [ ] FFmpeg process runner
-- [ ] progress parser
-- [ ] cancellation
-- [ ] 单 Segment 导出
-- [ ] 多 Segment 导出
-- [ ] 输出文件验证
-- [ ] 回归测试
+- [x] FFmpeg command builder（`media/export/command.rs`）
+- [x] ExportJob（`application/export.rs`）
+- [x] FFmpeg process runner（`ExportProcess`）
+- [x] progress parser（`-progress pipe:1`）
+- [x] cancellation
+- [x] 单 Segment 导出
+- [ ] 多 Segment 导出（归入 Phase 5）
+- [x] 输出文件验证（codec / 分辨率 / 采样率 / 声道数 / 时长）
+- [x] 回归测试（`tests/export.rs`、`tests/application_export.rs`）
+
+实现语义：
+
+- `-ss` 在 `-i` 前，快速 seek，实际起点回退到此前关键帧。
+- `-t` 在 `-i` 后，使用 Segment 时长。
+- `-map 0 -c copy`，不重新编码。
+- 切开头时加 `-avoid_negative_ts make_zero`。
+- 进度使用 `-progress pipe:1`，不依赖 stderr 文本。
+- 输出路径不能等于源路径；UI 使用 save dialog，默认文件名带 `_export`。
+
+验证记录（2026-10-26）：
+
+- `tests/export.rs`：生成的 1080p30 H.264/AAC 素材，`[2s, 6s)` 导出后 ffprobe 对比 codec、分辨率、采样率、声道数一致；时长约 4 秒。
+- `tests/application_export.rs`：走完整 `Application` 流程（open → in/out → add_segment → start_export → poll），状态为 `Completed`。
+- `cargo test`、`cargo clippy --all-targets --all-features -- -D warnings`、`cargo fmt --check` 全部通过。
+- 未做自动化 UI 交互测试；菜单与进度条通过编译与代码路径验证。
+- 未用 4K60 素材重复测试；按产品要求以 1080p30 为日常回归素材。
 
 ## 研究任务（不复制代码）
 
