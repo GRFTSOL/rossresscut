@@ -341,6 +341,26 @@ tone map 到 SDR。
 - `docs/open-questions.md`：OQ-3/4/5/6/7 标记为方案 D 历史项；
   OQ-10..13 作为方案 F 的待办。
 
+## 旧预览路径的退出条件
+
+`PreviewVideo` 与 `PreviewAudio`（外部 FFmpeg + cpal）目前同时承担三条回退：
+
+1. `mpv-preview` feature 关闭的构建（无 libmpv）。
+2. eframe 没有 wgpu render state。
+3. mpv 启动或帧导入失败。
+
+因此它们不能在 Phase 4C 删除。可以删除的前提是：
+
+1. 项目只提供带 libmpv 的构建，或者回退改为不依赖这两条进程路径的实现。
+2. Windows 与 macOS 的 mpv 导入路径完成实机验证（目前只有 Linux）。
+3. `tests/mpv_gpu_regression.rs` 与 `tests/mpv_preview.rs` 成为发布检查的一部分，
+   覆盖颜色、生命周期、seek 与音频时钟。
+4. OQ-9（长时漂移）、OQ-11（多音轨 / 设备切换）、OQ-13（HDR / 10-bit）
+   已有可接受结论，或明确记录为不阻塞发布。
+
+删除时同步移除 `cpal` 依赖、`PreviewAudio`、`PreviewVideo` 及对应测试，
+并更新 `AGENTS.md`、`PLANS.md` 与 `docs/architecture.md`。
+
 ## 未解决问题
 
 - OQ-9：10 分钟以上 A/V 漂移。

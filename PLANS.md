@@ -2,7 +2,7 @@
 
 ## 当前阶段
 
-**Phase 4C：预览解码实现（方案 F，进行中；步骤 1–7 完成）**
+**Phase 4C：预览解码实现（方案 F，步骤 1–8 完成；旧路径保留为回退）**
 
 - Phase 4A 调查：`docs/investigations/playback-pipeline.md`。
 - Phase 4B 原决策：`docs/decisions/0009-preview-decode-zero-copy.md`（方案 D）。
@@ -15,9 +15,9 @@
 - 步骤 2（`media::preview::mpv` 封装）已完成。
 - 步骤 3（UI 纹理接入、Application mpv 路径、外部 FFmpeg 回退）已完成。
   实测 4K 走 mpv 时 `uploads=0`；`--no-default-features` 回退到外部 FFmpeg
-  时 `uploads>0`。自动 GPU 颜色回归仍待步骤 8。
-- 步骤 4–7（mpv 音频时钟、scrub 状态机、窗格等比 resize、后端标注）已完成；
-  剩余步骤 8。
+  时 `uploads>0`。自动 GPU 颜色 / 生命周期回归见步骤 8。
+- 步骤 4–8（mpv 音频时钟、scrub 状态机、窗格等比 resize、后端标注、
+  自动化回归与文档）已完成；旧预览路径保留，删除条件见 ADR 0010。
 - 无损导出顺延为 Phase 4D。
 - 未解决问题记录在 `docs/open-questions.md`。
 
@@ -314,7 +314,7 @@ cargo fmt --check
 
 # Phase 4：播放链路调查与渲染架构
 
-状态：`Phase 4A 已完成；Phase 4B 已修订；Phase 4C 进行中（步骤 1–7 完成）`
+状态：`Phase 4A 已完成；Phase 4B 已修订；Phase 4C 步骤 1–8 完成（旧路径保留）`
 
 Phase 4 不再直接进入导出。当前实际播放性能与音画同步不可接受，先完成播放链路调查和渲染架构决策，再恢复无损导出。
 
@@ -387,7 +387,7 @@ UI 渲染适配层之间按帧传递。详见 `docs/decisions/0010-preview-via-m
 
 ## Phase 4C：预览解码实现（方案 F）
 
-状态：`进行中（步骤 1–7 完成）`
+状态：`步骤 1–8 完成；旧路径保留为回退`
 
 任务：
 
@@ -396,7 +396,7 @@ UI 渲染适配层之间按帧传递。详见 `docs/decisions/0010-preview-via-m
   帧获取、命令、事件与错误；UI 尚未接入，外部 FFmpeg 回退仍在。
 - [x] 步骤 3：UI 接入 wgpu feature、mpv 纹理注册、Application mpv 路径与
   外部 FFmpeg 回退。运行时已验证 4K mpv 纹理按预览窗格等比适配、`uploads=0`；
-  feature 关闭时回退外部 FFmpeg、`uploads>0`。颜色/生命周期自动化回归待步骤 8。
+  feature 关闭时回退外部 FFmpeg、`uploads>0`。颜色/生命周期自动化回归见步骤 8。
 - [x] 步骤 4：音频切换为 mpv `ao`；`Application::uses_audio_clock` 报告 mpv
   音频路径，`PreviewAudio` / `cpal` 只在外部 FFmpeg 回退路径启动。
 - [x] 步骤 5：`hr-seek=no` 拖动 / `hr-seek=yes` 松手；松手使用指针最终位置，
@@ -406,7 +406,11 @@ UI 渲染适配层之间按帧传递。详见 `docs/decisions/0010-preview-via-m
   尺寸连续变化时等连续两帧一致后再下发，避免窗口拖动时每帧重配置 export。
 - [x] 步骤 7：播放信息区分 `mpv (libmpv)` 与外部 `ffmpeg (...)` 后端；
   无 wgpu render state 时记录回退日志，mpv 失败通过 warning 显示。
-- [ ] 步骤 8：测试、文档与 AGENTS 条款修订；稳定后再删除旧预览路径。
+- [x] 步骤 8：测试与文档修订。新增 `tests/mpv_gpu_regression.rs`（BGRA 通道、
+  不偏色、drop 后纹理可用、连续实例不串帧）与 `tests/mpv_preview.rs`
+  （seek / 暂停恢复 / 音频时钟），均默认 `ignored`。AGENTS、architecture、
+  ADR 0010 已同步。旧预览路径**保留**：它同时承担无 feature / 无 wgpu /
+  mpv 失败三条回退，删除条件见 ADR 0010「旧预览路径的退出条件」。
 
 完成标准：
 
