@@ -142,7 +142,8 @@ FFprobe / FFmpeg。需要帧精确预览时再评估方案 D 或扩展 mpv-engin
 
 **当前状态**：Linux 独立 wgpu 与 eframe 0.37 窗口内显示均已验证；纯红
 `(253,0,0)`、50% 灰 `(127,128,127)` 正确，`Bgra8Unorm` 可直接注册，无需额外 blit。
-剩余窗口 resize / Wayland scale factor 的 `set_export_size` 未验证。
+预览导出尺寸已改为按预览窗格大小等比适配源宽高比（横屏、竖屏均覆盖，且不放大），
+按物理像素下发给 mpv，尺寸不变时不重复配置。剩余窗口缩放过程中的节流验证。
 
 **影响**：若无法直接注册，需要在 GPU 上做一次 BGRA→RGBA blit 或自定义 paint
 callback；不得回退到 CPU 回读。
@@ -150,7 +151,7 @@ callback；不得回退到 CPU 回读。
 **计划时机**：方案 F 评估阶段。
 
 **解除条件**：eframe 窗口中显示正确颜色，且有暂停/seek/resize 的回归测试。
-颜色与暂停/seek 已满足；剩余 resize/scale。
+颜色、暂停/seek 与窗格等比尺寸已满足；剩余窗口缩放的交互验证。
 
 ### OQ-11 mpv 音频与 cpal 主时钟
 
@@ -178,13 +179,16 @@ callback；不得回退到 CPU 回读。
 真实 eframe + 4K + 音频下 `hr-seek=yes` 到 6.0 用时 365 ms，落点 6.039。
 headless/`vo=null`/`audio=no` 下精确 seek 不触发 `PlaybackRestart`，需用
 `position()` 或观察 `time-pos` 兜底；eframe + 音频下事件正常触发。
+实现已在松手时使用指针最终位置发起精确 seek，避免节流目标滞后；
+`PlaybackRestart` 未到达时，精确 seek 落点与目标相差 ≤100 ms 即视为完成。
+`tests/mpv_preview.rs` 覆盖快速/精确 seek 与暂停恢复。
 
 **影响**：拖动体验；不得把预览位置用于 Segment 或导出。
 
 **计划时机**：方案 F 决策后。
 
-**解除条件**：拖动期间的快速 scrub 在真实 eframe + 音频下复测；关键帧列表与
-`frame-step` 行为。
+**解除条件**：拖动期间的快速 scrub 在真实 eframe + 音频下的连续拖动手感复测；
+关键帧列表与 `frame-step` 行为。
 
 ### OQ-13 HDR / 10-bit 预览
 
