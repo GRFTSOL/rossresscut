@@ -135,8 +135,8 @@ libmpv → hwaccel (VAAPI / D3D11VA / VideoToolbox)
   属性选择。
 - UI 的播放位置使用 `Engine::position()`（`time-pos`），不再使用 cpal
   消费样本帧的时钟。
-- 暂停、seek、音量、静音分别映射到 `set_paused`、`seek_absolute` /
-  `seek_relative`、`set_volume`、`mute` 属性。
+- 暂停与 seek 已接入 `set_paused`、`seek_absolute`；音量与静音由 mpv 的
+  `volume` / `mute` 属性承载，UI 尚无控件。
 - 主路径移除 `PreviewAudio` 与 cpal 音频输出；cpal 只保留在外部 FFmpeg
   回退路径中，回退路径删除后一并移除。
 - 不再同时让 mpv 与 cpal 输出音频，避免双声源和两套时钟。
