@@ -18,11 +18,15 @@ jobs:
           sudo apt-get install -y \
             ffmpeg \
             libasound2-dev \
+            libegl-dev \
+            libgbm-dev \
+            libmpv-dev \
             libssl-dev \
             libxcb-render0-dev \
             libxcb-shape0-dev \
             libxcb-xfixes0-dev \
-            libxkbcommon-dev
+            libxkbcommon-dev \
+            pkg-config
 
       - name: Install Rust toolchain
         run: rustup show

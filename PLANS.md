@@ -2,7 +2,7 @@
 
 ## 当前阶段
 
-**Phase 4C：预览解码实现（方案 F，未开始）**
+**Phase 4C：预览解码实现（方案 F，进行中）**
 
 - Phase 4A 调查：`docs/investigations/playback-pipeline.md`。
 - Phase 4B 原决策：`docs/decisions/0009-preview-decode-zero-copy.md`（方案 D）。
@@ -11,6 +11,7 @@
   拖动与松手。
 - Phase 4C 落地 `media/preview/mpv`、mpv-engine 集成、音频切换与 scrubbing；
   外部 FFmpeg 预览保留为回退。
+- 步骤 1（`mpv-engine` 依赖、CI 系统包、headless 链接/平台测试）已完成。
 - 无损导出顺延为 Phase 4D。
 - 未解决问题记录在 `docs/open-questions.md`。
 
@@ -308,7 +309,7 @@ cargo fmt --check
 
 # Phase 4：播放链路调查与渲染架构
 
-状态：`Phase 4A 已完成；Phase 4B 已决策；Phase 4C 未开始`
+状态：`Phase 4A 已完成；Phase 4B 已修订；Phase 4C 进行中（步骤 1 完成）`
 
 Phase 4 不再直接进入导出。当前实际播放性能与音画同步不可接受，先完成播放链路调查和渲染架构决策，再恢复无损导出。
 
@@ -359,40 +360,41 @@ Phase 4 不再直接进入导出。当前实际播放性能与音画同步不可
 
 ## Phase 4B：确定视频渲染架构
 
-状态：`已决策（ADR 0009）；实现未开始`
+状态：`已修订（ADR 0010）；实现未开始`
 
-决策：预览解码改为进程内 `libavformat` + `libavcodec` hwaccel（VAAPI / D3D11VA / VideoToolbox），硬件 surface 经 `media/platform` zero-copy 导入 wgpu。导出、裁切、合并与探测继续使用外部 FFmpeg / FFprobe。
+原决策 ADR 0009 的方案 D（进程内 `libavformat` + `libavcodec` + `media/platform`）
+已被 ADR 0010 取代。当前决策是方案 F：`mpv-engine` 的 `export` + `wgpu`，
+libmpv 负责解码、音频与 seek；导出、裁切、合并与探测继续使用外部 FFmpeg / FFprobe。
 
-`media/platform` 是唯一允许 `unsafe` 的 crate，其余保持 `unsafe_code = "forbid"`。
+项目代码保持 `unsafe_code = "forbid"`；GPU 句柄只在 `media::preview` 与
+UI 渲染适配层之间按帧传递。详见 `docs/decisions/0010-preview-via-mpv-engine.md`。
 
-详见 `docs/decisions/0009-preview-decode-zero-copy.md`。
-
-被否决的方向：
+被否决的方向（相对方案 F）：
 
 - 外部 FFmpeg + `pipe:1`：无法交付 GPU-resident 帧。
-- libmpv SW render：有 GPU → CPU 回读，且偏离自建 media engine。
+- libmpv SW render：有 GPU → CPU 回读。
 - libmpv OpenGL + eframe glow：需要切换渲染栈，GL 状态共享复杂。
-- Slint：UI 框架不是本问题的层面。
+- 自建 libav* + `media/platform`（原方案 D）：工程量与平台风险更高。
 - 自写 demux + 平台媒体 API：容器解析工程量过大。
+- Slint：UI 框架不是本问题的层面。
 
 实现任务见 Phase 4C。
 
-## Phase 4C：预览解码实现
+## Phase 4C：预览解码实现（方案 F）
 
-状态：`未开始`
+状态：`进行中（步骤 1 完成）`
 
 任务：
 
-- [ ] 新增 `media/platform` crate 与 `unsafe_code` 边界。
-- [ ] `libavformat` demux + `libavcodec` hwaccel（VAAPI / D3D11VA / VideoToolbox）。
-- [ ] Linux：DMA-BUF → wgpu。
-- [ ] Windows：D3D11 shared handle → wgpu。
-- [ ] macOS：IOSurface → wgpu。
-- [ ] 预览音频改为进程内 `libavcodec` 解码，PCM 仍由 `cpal` 输出。
-- [ ] 软件解码回退，且在 UI 可见。
-- [ ] 预览时间戳改用源 PTS。
-- [ ] 硬件 / 软件输出一致性测试。
-- [ ] 更新 `media/preview/video.rs` 与 `audio.rs`。
+- [x] 步骤 1：加入 `mpv-engine` 依赖、CI 系统包、headless 链接/平台测试。
+- [ ] 步骤 2：新增 `media::preview::mpv`，实现引擎生命周期、export attach、
+  帧获取、命令与错误；保留外部 FFmpeg 回退。
+- [ ] 步骤 3：UI 接入 wgpu feature、纹理注册、颜色与生命周期回归。
+- [ ] 步骤 4：音频切换为 mpv `ao`，移除 cpal 主路径。
+- [ ] 步骤 5：`hr-seek=no` 拖动 / `hr-seek=yes` 松手，事件与位置兜底。
+- [ ] 步骤 6：resize / Wayland scale 的物理像素处理。
+- [ ] 步骤 7：回退与播放信息显示实际后端。
+- [ ] 步骤 8：测试、文档与 AGENTS 条款修订；稳定后再删除旧预览路径。
 - [ ] 播放信息报告实际生效的解码后端。
 
 完成标准：

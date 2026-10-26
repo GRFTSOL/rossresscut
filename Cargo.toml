@@ -5,11 +5,16 @@ edition = "2024"
 rust-version = "1.99"
 description = "Native lossless media cutting tool built with Rust and egui."
 
+[features]
+default = ["mpv-preview"]
+mpv-preview = ["dep:mpv-engine"]
+
 [dependencies]
 cpal = "0.18"
 eframe = { version = "0.37", features = ["persistence"] }
 env_logger = "0.11"
 log = "0.4"
+mpv-engine = { version = "0.2.1", features = ["wgpu"], optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
