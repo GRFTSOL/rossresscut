@@ -403,7 +403,7 @@ pacfiles -x '.*/libav(codec|format)\.so'
 ┌─────────────────────────────┐
 │      FFmpeg / FFprobe       │
 │ 导出 / 探测：外部进程         │
-│ 预览解码：libav*（进程内）    │
+│ 预览解码：libmpv（进程内）   │
 └─────────────────────────────┘
 ```
 
@@ -423,7 +423,7 @@ Domain
 Media
  ↓
 FFmpeg（外部进程：导出 / 探测）
-libav*（进程内：预览解码）
+libmpv（进程内：预览解码与音频）
 ```
 
 禁止：
@@ -564,9 +564,9 @@ UI 不允许直接修改领域状态。
 两种调用方式并存：
 
 - 导出、裁切、合并与探测：外部 FFmpeg / FFprobe 进程。
-- 预览解码：进程内 `libav*`（`libavformat` + `libavcodec` hwaccel）。
+- 预览解码与音频输出：进程内 `mpv-engine`（libmpv）。
 
-两者都必须使用 FFmpeg 的能力，不允许自写编解码器或容器解析。预览的进程内边界与 zero-copy 规则见 `docs/decisions/0009-preview-decode-zero-copy.md`。
+两者都必须使用 FFmpeg / libmpv 的能力，不允许自写编解码器或容器解析。预览的进程内边界与 zero-copy 规则见 `docs/decisions/0010-preview-via-mpv-engine.md`。
 
 Rust 负责：
 
@@ -604,20 +604,23 @@ FFmpeg
 
 文件路径、参数等必须作为独立进程参数传递。
 
-预览解码使用进程内 `libav*` 绑定，同样不得经由 shell，也不得在 egui 帧内同步调用。
+预览解码与音频使用进程内 `mpv-engine`（libmpv），同样不得经由 shell，也不得在 egui 帧内同步调用。
 
 ---
 
 ## 3. 预览与音频
 
-- 有音频时，播放位置以音频输出设备实际消费的样本帧为时钟；无音轨或音频设备不可用时才使用墙钟。
-- 音频输出只负责 PCM；解码仍由 FFmpeg 完成。
-- 拖动时间轴使用快速关键帧 seek 提供视觉反馈；最终 seek 必须使用精确 seek。
+- 预览主路径使用 `mpv-engine`（libmpv）解码、渲染与音频输出；外部 FFmpeg 预览保留为回退路径。
+- 播放位置使用 libmpv 的 `time-pos`，它跟随音频输出；无音轨时同一时钟仍然有效。
+- 音频由 libmpv 的 `ao` 输出；`cpal` 只在外部 FFmpeg 回退路径使用，不得与 mpv 同时输出音频。
+- 拖动时间轴使用 `hr-seek=no`（落在前一个关键帧）提供视觉反馈；松开时使用指针最终位置并切换 `hr-seek=yes` 做精确 seek。
+- `PlaybackRestart` 事件缺失时，精确 seek 以 `position()` 落点兜底，容差为 100 ms。
 - 快速 scrub 的位置是近似值，不得用于 Segment 边界、编辑结果或导出。
-- 硬件解码默认启用：Linux 使用 VAAPI（`/dev/dri/renderD128`），Windows 使用 D3D11VA，macOS 使用 VideoToolbox。设备不可用时回退软件解码。
-- 解码失败（零帧或进程错误）必须可见；FFmpeg 对不支持的 codec 可能在内部回退到软件解码，该回退当前无法从 UI 区分，播放信息显示请求的后端。
+- 硬件解码由 libmpv 自动选择（`hwdec=auto-safe`）；设备不可用时自动回退软件。
+- 预览导出尺寸按预览窗格大小与源宽高比等比适配，按物理像素下发，且不得超过源分辨率（不放大）。
+- 解码失败或 mpv 启动失败必须可见；播放信息区分 `mpv (libmpv)` 与外部 `ffmpeg (...)` 后端。
 - 预览区点击切换播放 / 暂停；滚轮按关键帧步进（上滚上一个，下滚下一个），按住 mod 键时步进 10 秒。
-- 预览固定为 30fps、最大 960x540；导出与编辑不得依赖预览时间。
+- 预览不保证帧精确；导出与编辑不得依赖预览时间。
 
 ---
 
@@ -873,30 +876,27 @@ let first = segments.first().unwrap();
 - 避免不必要的克隆、分配和中间集合。
 - 抽象必须由真实复用驱动，不为"看起来更通用"引入 trait 或泛型。
 
-## 3. 内存安全：unsafe 仅允许在 `media/platform`
+## 3. 内存安全：项目代码禁止 unsafe
 
-除 `media/platform` 外，本项目禁止使用 `unsafe`、FFI 与裸指针。
+项目内 crate 必须保持 `unsafe_code = "forbid"`，禁止 `unsafe`、FFI、裸指针、
+`transmute`、`union`、`MaybeUninit`、`ManuallyDrop` 与 `static mut`。
 
-`media/platform` 是唯一例外，用于：
+预览使用外部 crate `mpv-engine`（封装 libmpv）与 `wgpu`，它们的 `unsafe` 由依赖内部承担，
+不得因此在本项目中放开 `unsafe`。边界要求：
 
-- 调用 `libav*` 与平台 hwaccel。
-- 把硬件解码 surface（DMA-BUF / D3D11 shared handle / IOSurface）导入 wgpu。
-- 维护上述资源的生命周期。
-
-例外规则：
-
-- 该 crate 允许 `unsafe`；其余 crate 必须保持 `unsafe_code = "forbid"`。
-- 每个 `unsafe` 块必须带独占一行的 `// SAFETY:` 注释，说明成立的不变量。
-- 对外只暴露 safe API。
-- 裸指针、FFI 类型与 `wgpu-hal` 句柄不得越过该 crate 边界。
+- `mpv-engine` 的 exported frame 只以 `wgpu::Texture` 进入 `media::preview`；
+  裸指针、`wgpu-hal` 句柄与 FFI 类型不得出现在项目代码中。
+- GPU 纹理句柄只在 `media::preview` 与 UI 渲染适配层之间按帧传递，
+  不得进入 Domain、编辑状态或持久化。
+- 升级 `mpv-engine` / `wgpu` 时必须重新审查其 safe API 边界是否仍成立。
 - 必须有不依赖具体硬件的测试，以及硬件路径与软件路径的一致性测试（见 §十七）。
 
 ### 理由
 
-预览需要 GPU-resident 的硬件解码帧，而 `wgpu 30` 只提供 `unsafe fn` 的外部纹理导入接口。
-`unsafe` 无法避免，只能隔离。决策与代价见 `docs/decisions/0009-preview-decode-zero-copy.md`。
-
-导出、探测与媒体模型仍然不需要 `unsafe`。
+方案 F（ADR 0010）用 `mpv-engine` 取代了原 `media/platform` 自建 libav* 绑定。
+原本需要项目内 `unsafe` 的外部纹理导入已由依赖完成，项目代码可以保持零 `unsafe`。
+如果未来重新引入自建 FFI 或平台 surface 导入，必须恢复“唯一允许 unsafe 的 crate”规则，
+并先记录 ADR。
 
 ### safe Rust 内的内存安全要求
 
@@ -1183,8 +1183,9 @@ docs/decisions/
 - ❌ 引入 `Electron` / `Tauri` / `WebView` / JS UI 框架 / `Node.js` 运行时。
 - ❌ 在 egui 帧回调中同步执行 FFmpeg、FFprobe、解码或大量文件 I/O。
 - ❌ 用 `f32` / `f64` 秒作为媒体时间的唯一表示。
-- ❌ 在 `media/platform` 之外使用 `unsafe`、FFI、裸指针、`transmute`、`union`、`MaybeUninit`、`ManuallyDrop` 或 `static mut`。
-- ❌ 让 `media/platform` 的裸指针、FFI 类型或 GPU 句柄越过该 crate 边界。
+- ❌ 在项目代码中使用 `unsafe`、FFI、裸指针、`transmute`、`union`、`MaybeUninit`、`ManuallyDrop` 或 `static mut`。
+- ❌ 让 `mpv-engine` / `wgpu` 的裸指针、FFI 类型或底层句柄越过 `media::preview` 与 UI 渲染适配层。
+- ❌ 同时让 mpv 与 cpal 输出音频。
 - ❌ 静默把 `stream copy` 降级为重新编码，或把重编码结果标记为无损。
 - ❌ 通过 shell 拼接命令执行 FFmpeg。
 - ❌ 用 `unwrap()` / `expect()` 处理用户输入或外部进程输出。
@@ -1209,7 +1210,7 @@ docs/decisions/
 - [ ] 公开 API 有 `///` 文档注释
 - [ ] `cargo fmt --all --check` 通过
 - [ ] `cargo clippy --all-targets --all-features -- -D warnings` 通过
-- [ ] `unsafe` 仅存在于 `media/platform`，每个 `unsafe` 块有 `// SAFETY:` 注释，且对外只暴露 safe API
+- [ ] 项目代码无 `unsafe`；外部 GPU 句柄只在 `media::preview` 与 UI 渲染适配层之间传递
 - [ ] 相关文档已经更新
 - [ ] 没有产生无关修改
 - [ ] 功能、重构、格式化、依赖升级没有混在同一次修改中
