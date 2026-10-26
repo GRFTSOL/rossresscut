@@ -3135,6 +3135,7 @@ dependencies = [
  "rfd",
  "serde",
  "serde_json",
+ "wgpu",
 ]
 
 [[package]]

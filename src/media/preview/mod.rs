@@ -1,10 +1,16 @@
-//! Preview backends built on external FFmpeg processes.
+//! Preview backends.
 //!
-//! Video frames are decoded by `ffmpeg` into RGB24 and delivered through a
-//! bounded channel. Audio is decoded by `ffmpeg` into PCM and written to the
-//! system audio device through `cpal`. No process is spawned through a shell.
+//! The primary backend is `mpv-engine`'s exported-frame path (feature
+//! `mpv-preview`): libmpv decodes and renders, and the project imports the
+//! resulting GPU texture. The external FFmpeg video/audio path remains as a
+//! fallback and is still used until the mpv path is wired into the UI.
+//!
+//! No process is spawned through a shell. This module is in the Media layer
+//! and must not depend on `eframe` or `egui`.
 
 mod audio;
+#[cfg(feature = "mpv-preview")]
+mod mpv;
 mod video;
 
 use std::fmt;
@@ -13,6 +19,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr};
 
 pub use audio::{PreviewAudio, PreviewAudioStatus};
+#[cfg(feature = "mpv-preview")]
+pub use mpv::{MpvPreview, MpvPreviewConfig, MpvPreviewError, MpvPreviewEvents};
 pub use video::{
     HardwareAcceleration, PreviewVideo, PreviewVideoConfig, PreviewVideoResult, VideoFrame,
 };

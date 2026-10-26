@@ -2,7 +2,7 @@
 
 ## 当前阶段
 
-**Phase 4C：预览解码实现（方案 F，进行中）**
+**Phase 4C：预览解码实现（方案 F，进行中；步骤 1–2 完成）**
 
 - Phase 4A 调查：`docs/investigations/playback-pipeline.md`。
 - Phase 4B 原决策：`docs/decisions/0009-preview-decode-zero-copy.md`（方案 D）。
@@ -12,6 +12,7 @@
 - Phase 4C 落地 `media/preview/mpv`、mpv-engine 集成、音频切换与 scrubbing；
   外部 FFmpeg 预览保留为回退。
 - 步骤 1（`mpv-engine` 依赖、CI 系统包、headless 链接/平台测试）已完成。
+- 步骤 2（`media::preview::mpv` 封装；尚未接入 UI）已完成。
 - 无损导出顺延为 Phase 4D。
 - 未解决问题记录在 `docs/open-questions.md`。
 
@@ -309,7 +310,7 @@ cargo fmt --check
 
 # Phase 4：播放链路调查与渲染架构
 
-状态：`Phase 4A 已完成；Phase 4B 已修订；Phase 4C 进行中（步骤 1 完成）`
+状态：`Phase 4A 已完成；Phase 4B 已修订；Phase 4C 进行中（步骤 1–2 完成）`
 
 Phase 4 不再直接进入导出。当前实际播放性能与音画同步不可接受，先完成播放链路调查和渲染架构决策，再恢复无损导出。
 
@@ -382,13 +383,13 @@ UI 渲染适配层之间按帧传递。详见 `docs/decisions/0010-preview-via-m
 
 ## Phase 4C：预览解码实现（方案 F）
 
-状态：`进行中（步骤 1 完成）`
+状态：`进行中（步骤 1–2 完成）`
 
 任务：
 
 - [x] 步骤 1：加入 `mpv-engine` 依赖、CI 系统包、headless 链接/平台测试。
-- [ ] 步骤 2：新增 `media::preview::mpv`，实现引擎生命周期、export attach、
-  帧获取、命令与错误；保留外部 FFmpeg 回退。
+- [x] 步骤 2：新增 `media::preview::mpv`，实现引擎生命周期、export attach、
+  帧获取、命令、事件与错误；UI 尚未接入，外部 FFmpeg 回退仍在。
 - [ ] 步骤 3：UI 接入 wgpu feature、纹理注册、颜色与生命周期回归。
 - [ ] 步骤 4：音频切换为 mpv `ao`，移除 cpal 主路径。
 - [ ] 步骤 5：`hr-seek=no` 拖动 / `hr-seek=yes` 松手，事件与位置兜底。

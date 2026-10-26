@@ -222,6 +222,8 @@ mpv-engine = { version = "0.2.1", features = ["wgpu"] }
 
 - libmpv 不可用、`Engine` 初始化失败、export 后端不可用、
   或 device 缺少 DMA-BUF feature 时，回退到现有外部 FFmpeg 预览。
+- mpv-engine 的加载 API 只接受 UTF-8 路径；非 UTF-8 路径必须回退外部 FFmpeg，
+  并在错误信息中说明原因。
 - 回退必须可见：播放信息显示实际后端（mpv / ffmpeg software / ffmpeg vaapi）。
 - 不允许静默把 zero-copy 降级为 CPU 回读；如果使用 `render_sw`，
   必须在 UI 标注。
