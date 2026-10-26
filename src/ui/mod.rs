@@ -92,6 +92,8 @@ pub struct RossresscutApp {
     preview_mpv_size: Option<egui::Vec2>,
     #[cfg(feature = "mpv-preview")]
     preview_bounds: Option<(u32, u32)>,
+    #[cfg(feature = "mpv-preview")]
+    pending_preview_bounds: Option<(u32, u32)>,
     preview_source: Option<PathBuf>,
     scrub_target: Option<Timestamp>,
     scrub_was_playing: bool,
@@ -194,9 +196,14 @@ impl RossresscutApp {
             ..Self::default()
         };
         #[cfg(feature = "mpv-preview")]
-        if let Some(render_state) = context.wgpu_render_state.clone() {
-            app.render_state = Some(render_state);
-            app.application.enable_mpv_preview();
+        match context.wgpu_render_state.clone() {
+            Some(render_state) => {
+                app.render_state = Some(render_state);
+                app.application.enable_mpv_preview();
+            }
+            None => log::warn!(
+                "no wgpu render state is available; falling back to the external FFmpeg preview"
+            ),
         }
         // The diagnostic run overrides the decoder backend without a settings UI.
         if let Ok(value) = std::env::var("ROSS_RESCUT_PREVIEW_HW") {
@@ -476,7 +483,9 @@ impl RossresscutApp {
     /// Tells the application how large the preview pane is in physical pixels.
     ///
     /// The application fits the source into these bounds, so the exported
-    /// texture follows the pane instead of a fixed resolution.
+    /// texture follows the pane instead of a fixed resolution. A new size is
+    /// only forwarded after it repeats for two frames, which avoids
+    /// reconfiguring mpv on every frame while a window edge is dragged.
     #[cfg(feature = "mpv-preview")]
     fn request_preview_bounds(&mut self, size: egui::Vec2, context: &egui::Context) {
         if size.x <= 0.0 || size.y <= 0.0 {
@@ -485,11 +494,27 @@ impl RossresscutApp {
         let pixels_per_point = context.pixels_per_point();
         let width = (size.x * pixels_per_point).round().max(1.0) as u32;
         let height = (size.y * pixels_per_point).round().max(1.0) as u32;
-        if self.preview_bounds == Some((width, height)) {
+        let bounds = (width, height);
+        // Apply the first known pane size immediately so mpv does not allocate
+        // a full-resolution render target before the first resize settles.
+        if self.preview_bounds.is_none() {
+            self.preview_bounds = Some(bounds);
+            self.pending_preview_bounds = None;
+            self.application.set_preview_bounds(width, height);
             return;
         }
-        self.preview_bounds = Some((width, height));
-        self.application.set_preview_bounds(width, height);
+        if self.preview_bounds == Some(bounds) {
+            self.pending_preview_bounds = None;
+            return;
+        }
+        if self.pending_preview_bounds == Some(bounds) {
+            self.preview_bounds = Some(bounds);
+            self.pending_preview_bounds = None;
+            self.application.set_preview_bounds(width, height);
+        } else {
+            self.pending_preview_bounds = Some(bounds);
+            context.request_repaint();
+        }
     }
 
     fn clear_preview_textures(&mut self) {
@@ -869,75 +894,84 @@ impl RossresscutApp {
     }
 
     fn preview_panel(&mut self, ui: &mut egui::Ui) {
-        #[cfg(feature = "mpv-preview")]
-        {
-            let pane = ui.available_rect_before_wrap().size();
-            self.request_preview_bounds(pane, ui.ctx());
-        }
         let strings = self.strings();
-        egui::CentralPanel::default().show(ui, |ui| match self.application.state() {
-            OpenState::Empty => {
-                let response = self.preview_open_response(ui);
-                centered_message(ui, strings.open_media_prompt.as_str());
-                if response.clicked() {
-                    self.start_file_dialog();
-                }
+        egui::CentralPanel::default().show(ui, |ui| {
+            #[cfg(feature = "mpv-preview")]
+            {
+                // Use the panel's inner rect so the exported texture matches
+                // the area the image is actually painted into.
+                let pane = ui.available_rect_before_wrap().size();
+                self.request_preview_bounds(pane, ui.ctx());
             }
-            OpenState::Probing { path } => {
-                let title = file_title(path);
-                self.centered_spinner(ui, fill(&strings.probing_file, &[title.as_str()]));
-            }
-            OpenState::Failed { path, message } => {
-                let title = file_title(path);
-                let response = self.preview_open_response(ui);
-                let mut text = fill(&strings.could_not_open, &[title.as_str(), message.as_str()]);
-                text.push_str("\n\n");
-                text.push_str(&strings.open_media_prompt);
-                centered_message(ui, text);
-                if response.clicked() {
-                    self.start_file_dialog();
-                }
-            }
-            OpenState::Ready => {
-                let mpv_texture: Option<(egui::TextureId, egui::Vec2)> = {
-                    #[cfg(feature = "mpv-preview")]
-                    {
-                        self.preview_mpv_id.zip(self.preview_mpv_size)
-                    }
-                    #[cfg(not(feature = "mpv-preview"))]
-                    {
-                        None
-                    }
-                };
-                let texture = mpv_texture.or_else(|| {
-                    self.preview_texture
-                        .as_ref()
-                        .map(|texture| (texture.id(), texture.size_vec2()))
-                });
-                if let Some((texture_id, texture_size)) = texture {
-                    let rect = ui.available_rect_before_wrap();
-                    let response = ui.allocate_rect(rect, egui::Sense::click());
-                    ui.painter().rect_filled(rect, 0.0, egui::Color32::BLACK);
-
-                    let size = fit_size(texture_size, rect.size());
-                    let image_rect = egui::Rect::from_center_size(rect.center(), size);
-                    ui.painter().image(
-                        texture_id,
-                        image_rect,
-                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                        egui::Color32::WHITE,
-                    );
-
+            match self.application.state() {
+                OpenState::Empty => {
+                    let response = self.preview_open_response(ui);
+                    centered_message(ui, strings.open_media_prompt.as_str());
                     if response.clicked() {
-                        self.application.toggle_playback();
+                        self.start_file_dialog();
                     }
-                    if response.hovered() {
-                        self.handle_wheel(ui);
+                }
+                OpenState::Probing { path } => {
+                    let title = file_title(path);
+                    self.centered_spinner(ui, fill(&strings.probing_file, &[title.as_str()]));
+                }
+                OpenState::Failed { path, message } => {
+                    let title = file_title(path);
+                    let response = self.preview_open_response(ui);
+                    let mut text =
+                        fill(&strings.could_not_open, &[title.as_str(), message.as_str()]);
+                    text.push_str("\n\n");
+                    text.push_str(&strings.open_media_prompt);
+                    centered_message(ui, text);
+                    if response.clicked() {
+                        self.start_file_dialog();
                     }
-                } else if self.application.is_waiting_for_preview() {
-                    self.centered_spinner(ui, strings.loading_preview.clone());
-                } else {
-                    centered_message(ui, strings.no_video_frame.as_str());
+                }
+                OpenState::Ready => {
+                    let mpv_texture: Option<(egui::TextureId, egui::Vec2)> = {
+                        #[cfg(feature = "mpv-preview")]
+                        {
+                            self.preview_mpv_id.zip(self.preview_mpv_size)
+                        }
+                        #[cfg(not(feature = "mpv-preview"))]
+                        {
+                            None
+                        }
+                    };
+                    let texture = mpv_texture.or_else(|| {
+                        self.preview_texture
+                            .as_ref()
+                            .map(|texture| (texture.id(), texture.size_vec2()))
+                    });
+                    if let Some((texture_id, texture_size)) = texture {
+                        let rect = ui.available_rect_before_wrap();
+                        let response = ui.allocate_rect(rect, egui::Sense::click());
+
+                        // The pane follows the media aspect ratio, so portrait and
+                        // landscape sources both keep the image area tight instead
+                        // of painting a fixed black rectangle.
+                        let size = fit_size(texture_size, rect.size());
+                        let image_rect = egui::Rect::from_center_size(rect.center(), size);
+                        ui.painter()
+                            .rect_filled(image_rect, 0.0, egui::Color32::BLACK);
+                        ui.painter().image(
+                            texture_id,
+                            image_rect,
+                            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                            egui::Color32::WHITE,
+                        );
+
+                        if response.clicked() {
+                            self.application.toggle_playback();
+                        }
+                        if response.hovered() {
+                            self.handle_wheel(ui);
+                        }
+                    } else if self.application.is_waiting_for_preview() {
+                        self.centered_spinner(ui, strings.loading_preview.clone());
+                    } else {
+                        centered_message(ui, strings.no_video_frame.as_str());
+                    }
                 }
             }
         });
@@ -1346,6 +1380,9 @@ fn render_playback_info(
 }
 
 fn decoder_label(application: &Application, strings: &Strings) -> String {
+    if application.uses_mpv_preview() {
+        return "mpv (libmpv)".to_owned();
+    }
     match application.hardware_decoder() {
         Some(name) => format!("ffmpeg ({name})"),
         None => format!("ffmpeg ({})", strings.decoder_software),
