@@ -21,8 +21,7 @@ use std::process::{Child, ChildStderr};
 pub use audio::{PreviewAudio, PreviewAudioStatus};
 #[cfg(feature = "mpv-preview")]
 pub use mpv::{MpvPreview, MpvPreviewConfig, MpvPreviewError, MpvPreviewEvents};
-#[cfg(feature = "mpv-preview")]
-pub(crate) use video::preview_dimensions;
+
 pub use video::{
     HardwareAcceleration, PreviewVideo, PreviewVideoConfig, PreviewVideoResult, VideoFrame,
 };

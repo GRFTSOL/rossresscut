@@ -90,6 +90,8 @@ pub struct RossresscutApp {
     preview_mpv_id: Option<egui::TextureId>,
     #[cfg(feature = "mpv-preview")]
     preview_mpv_size: Option<egui::Vec2>,
+    #[cfg(feature = "mpv-preview")]
+    preview_bounds: Option<(u32, u32)>,
     preview_source: Option<PathBuf>,
     scrub_target: Option<Timestamp>,
     scrub_was_playing: bool,
@@ -471,6 +473,25 @@ impl RossresscutApp {
         self.preview_mpv_size = None;
     }
 
+    /// Tells the application how large the preview pane is in physical pixels.
+    ///
+    /// The application fits the source into these bounds, so the exported
+    /// texture follows the pane instead of a fixed resolution.
+    #[cfg(feature = "mpv-preview")]
+    fn request_preview_bounds(&mut self, size: egui::Vec2, context: &egui::Context) {
+        if size.x <= 0.0 || size.y <= 0.0 {
+            return;
+        }
+        let pixels_per_point = context.pixels_per_point();
+        let width = (size.x * pixels_per_point).round().max(1.0) as u32;
+        let height = (size.y * pixels_per_point).round().max(1.0) as u32;
+        if self.preview_bounds == Some((width, height)) {
+            return;
+        }
+        self.preview_bounds = Some((width, height));
+        self.application.set_preview_bounds(width, height);
+    }
+
     fn clear_preview_textures(&mut self) {
         #[cfg(feature = "mpv-preview")]
         {
@@ -844,6 +865,11 @@ impl RossresscutApp {
     }
 
     fn preview_panel(&mut self, ui: &mut egui::Ui) {
+        #[cfg(feature = "mpv-preview")]
+        {
+            let pane = ui.available_rect_before_wrap().size();
+            self.request_preview_bounds(pane, ui.ctx());
+        }
         let strings = self.strings();
         egui::CentralPanel::default().show(ui, |ui| match self.application.state() {
             OpenState::Empty => {

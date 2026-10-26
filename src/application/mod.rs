@@ -19,7 +19,7 @@ use crate::media::preview::{
     PreviewVideoResult, VideoFrame,
 };
 #[cfg(feature = "mpv-preview")]
-use crate::media::preview::{MpvPreview, MpvPreviewConfig, MpvPreviewError, preview_dimensions};
+use crate::media::preview::{MpvPreview, MpvPreviewConfig, MpvPreviewError};
 
 const PREVIEW_FRAME_RATE: u32 = 30;
 
@@ -183,13 +183,62 @@ impl Application {
         Ok(texture)
     }
 
-    /// Changes the mpv export size in physical pixels.
+    /// Sets the preview pane size in physical pixels.
+    ///
+    /// mpv renders into a texture fitted to these bounds: the source aspect
+    /// ratio is preserved and the result never exceeds the source resolution,
+    /// so a small pane costs less scaling and a large one is not upscaled.
+    /// The size is cached and only forwarded to mpv when it actually changes.
     #[cfg(feature = "mpv-preview")]
-    pub fn set_mpv_export_size(&self, width: u32, height: u32) -> Result<(), MpvPreviewError> {
-        match self.playback.mpv.as_ref() {
-            Some(mpv) => mpv.set_export_size(width, height),
-            None => Ok(()),
+    pub fn set_preview_bounds(&mut self, width: u32, height: u32) {
+        if width == 0 || height == 0 {
+            return;
         }
+        let bounds = (width, height);
+        if self.playback.preview_bounds == Some(bounds) {
+            return;
+        }
+        self.playback.preview_bounds = Some(bounds);
+        self.apply_mpv_export_size();
+    }
+
+    /// Forwards the fitted preview size to mpv when it differs from the size
+    /// that is currently rendering.
+    #[cfg(feature = "mpv-preview")]
+    fn apply_mpv_export_size(&mut self) {
+        let Some(size) = self.mpv_target_size() else {
+            return;
+        };
+        let Some(mpv) = self.playback.mpv.as_ref() else {
+            return;
+        };
+        if self.playback.mpv_size == Some(size) {
+            return;
+        }
+        match mpv.set_export_size(size.0, size.1) {
+            Ok(()) => {
+                log::info!("mpv preview size {}x{}", size.0, size.1);
+                self.playback.mpv_size = Some(size);
+                self.playback.mpv_frame_ready = false;
+            }
+            Err(error) => {
+                log::warn!(
+                    "failed to set mpv preview size to {}x{}: {error}",
+                    size.0,
+                    size.1
+                );
+            }
+        }
+    }
+
+    /// Returns the source size fitted into the current preview bounds.
+    #[cfg(feature = "mpv-preview")]
+    fn mpv_target_size(&self) -> Option<(u32, u32)> {
+        let media = self.media.as_ref()?;
+        let video = preview_video_stream(media)?;
+        let source = (video.width?, video.height?);
+        let bounds = self.playback.preview_bounds?;
+        Some(fit_within(source, bounds))
     }
 
     /// Returns the latest preview frame.
@@ -715,6 +764,8 @@ struct Playback {
     #[cfg(feature = "mpv-preview")]
     mpv_size: Option<(u32, u32)>,
     #[cfg(feature = "mpv-preview")]
+    preview_bounds: Option<(u32, u32)>,
+    #[cfg(feature = "mpv-preview")]
     mpv_pending_seek: Option<(Timestamp, bool)>,
     #[cfg(feature = "mpv-preview")]
     mpv_frame_ready: bool,
@@ -743,6 +794,8 @@ impl Default for Playback {
             #[cfg(feature = "mpv-preview")]
             mpv_size: None,
             #[cfg(feature = "mpv-preview")]
+            preview_bounds: None,
+            #[cfg(feature = "mpv-preview")]
             mpv_pending_seek: None,
             #[cfg(feature = "mpv-preview")]
             mpv_frame_ready: false,
@@ -759,13 +812,13 @@ impl Playback {
         let Some(video) = preview_video_stream(media) else {
             return false;
         };
-        let (Some(width), Some(height)) = (video.width, video.height) else {
+        let (Some(source_width), Some(source_height)) = (video.width, video.height) else {
             return false;
         };
-        let Some((width, height)) = preview_dimensions(width, height) else {
-            return false;
+        let (width, height) = match self.preview_bounds {
+            Some(bounds) => fit_within((source_width, source_height), bounds),
+            None => (source_width, source_height),
         };
-
         let config = MpvPreviewConfig {
             path: media.path.clone(),
             width,
@@ -1342,6 +1395,41 @@ fn clamp_position(position: Timestamp, duration: Option<Duration>) -> Timestamp 
     Timestamp::from_micros(position)
 }
 
+/// Fits `source` into `bounds` while preserving its aspect ratio.
+///
+/// The result never exceeds the source size, so the preview is not upscaled
+/// when the pane is larger than the media.
+#[cfg(feature = "mpv-preview")]
+fn fit_within(source: (u32, u32), bounds: (u32, u32)) -> (u32, u32) {
+    let (source_width, source_height) = source;
+    let (bounds_width, bounds_height) = bounds;
+    if source_width == 0 || source_height == 0 || bounds_width == 0 || bounds_height == 0 {
+        return source;
+    }
+    if bounds_width >= source_width && bounds_height >= source_height {
+        return source;
+    }
+
+    let source_width = u64::from(source_width);
+    let source_height = u64::from(source_height);
+    let bounds_width = u64::from(bounds_width);
+    let bounds_height = u64::from(bounds_height);
+
+    // Compare `bounds_width / source_width` and `bounds_height / source_height`
+    // by cross-multiplication to avoid floating point rounding.
+    let (width, height) = if bounds_width * source_height <= bounds_height * source_width {
+        let height = source_height * bounds_width / source_width;
+        (bounds_width, height)
+    } else {
+        let width = source_width * bounds_height / source_height;
+        (width, bounds_height)
+    };
+    (
+        u32::try_from(width.max(1)).unwrap_or(u32::MAX),
+        u32::try_from(height.max(1)).unwrap_or(u32::MAX),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1400,6 +1488,37 @@ mod tests {
             clamp_position(Timestamp::from_micros(3_000_000), None),
             Timestamp::from_micros(3_000_000)
         );
+    }
+
+    #[cfg(feature = "mpv-preview")]
+    #[test]
+    fn fits_landscape_sources_into_the_preview_pane() {
+        assert_eq!(fit_within((1920, 1080), (960, 540)), (960, 540));
+        assert_eq!(fit_within((1920, 1080), (800, 600)), (800, 450));
+        assert_eq!(fit_within((3840, 2160), (1000, 1000)), (1000, 562));
+    }
+
+    #[cfg(feature = "mpv-preview")]
+    #[test]
+    fn fits_portrait_sources_into_the_preview_pane() {
+        assert_eq!(fit_within((1080, 1920), (800, 600)), (337, 600));
+        assert_eq!(fit_within((1080, 1920), (2000, 2000)), (1080, 1920));
+    }
+
+    #[cfg(feature = "mpv-preview")]
+    #[test]
+    fn never_upscales_beyond_the_source() {
+        assert_eq!(fit_within((640, 480), (1920, 1080)), (640, 480));
+        assert_eq!(fit_within((640, 480), (640, 480)), (640, 480));
+    }
+
+    #[cfg(feature = "mpv-preview")]
+    #[test]
+    fn degenerate_sizes_are_returned_unchanged() {
+        assert_eq!(fit_within((0, 480), (100, 100)), (0, 480));
+        assert_eq!(fit_within((640, 0), (100, 100)), (640, 0));
+        assert_eq!(fit_within((640, 480), (0, 100)), (640, 480));
+        assert_eq!(fit_within((640, 480), (100, 0)), (640, 480));
     }
 
     #[test]
