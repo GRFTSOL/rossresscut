@@ -611,12 +611,31 @@ smart cut 在实现前必须先完成技术调查（LosslessCut 的边界判定�
 
 # Phase 9：发布
 
-- [ ] Linux
-- [ ] Windows
-- [ ] macOS
-- [ ] FFmpeg 分发方案(Windows Only, macOS和Linux基本都有合适的ffmpeg安装方式)
+## Linux
+
+- [x] Release build 已验证（`cargo build --release`）
+- [ ] 发布包说明运行时依赖：`libmpv.so.2`、`ffmpeg` / `ffprobe`、XDG desktop portal、EGL / GBM
+- [ ] 打包格式（AppImage / flatpak / 发行版包）
+
+## Windows
+
+- [ ] Windows 文件打开 / 保存对话框；当前 `rfd` 仅作为 Linux 依赖，
+  `FILE_DIALOG_SUPPORTED` 仅 Linux，导致「打开」与「导出」不可用
+- [ ] Windows 版 libmpv：`libmpv-2.dll` 与 import library（GNU `.dll.a` 或 MSVC `mpv.lib`），DLL 随包分发
+- [ ] Windows 版 FFmpeg / FFprobe 分发
+- [ ] 构建方式：`x86_64-pc-windows-gnu` 交叉编译（`mingw-w64-gcc`）或 Windows 原生 MSVC；尚未实测
+- [ ] D3D11VA 硬件解码与 wgpu 预览链路验证
+- [ ] 导出路径选择、章节写入与多段 concat 验证
+
+## macOS
+
+- [ ] libmpv dylib 分发与签名
+- [ ] VideoToolbox 硬件解码验证
+- [ ] 公证与安装包
+
+## 通用
+
 - [ ] License
-- [ ] Release build
 - [ ] 自动发布
 - [ ] 安装包
 
