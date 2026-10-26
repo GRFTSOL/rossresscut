@@ -259,12 +259,14 @@ Cargo 工程建立之后，以下命令是本地与 CI 的共同准入门槛：
 cargo build
 cargo test
 cargo clippy --all-targets --all-features -- -D warnings
+cargo clippy --no-default-features --all-targets -- -D warnings
 cargo fmt --all --check
 ```
 
 ## 规则
 
-- 提交前四条必须全部通过。
+- 提交前上述命令必须全部通过。
+- `--no-default-features` 的 clippy 用于验证无 `mpv-preview` 时的外部 FFmpeg 回退路径仍可编译；它不运行需要 libmpv 的测试。
 - 编译警告零容忍：`unused import`、`dead_code`、`deprecated API` 都必须为零。
 - 格式问题不靠人工审查，交给 `cargo fmt`；`cargo fmt --all --check` 失败即视为未完成。
 - 工具链版本由 `rust-toolchain.toml` 固定，避免不同机器行为差异；升级工具链属于独立变更。
