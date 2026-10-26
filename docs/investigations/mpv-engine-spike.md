@@ -178,6 +178,27 @@ cargo run --release --example scrub_spike -- <4K HEVC>
 - 4K eframe 截图的中心像素是 `(244,244,244)`，因为该素材 6 秒处不是纯红；
   颜色正确性以 `red.mp4` 的 `(253,0,0)` 和 `gray.mp4` 的 `(127,128,127)` 为准。
 
+### 7. GPU 引擎归属（2026-10-26）
+
+用户观察到预览时 GPU encode engine 有占用。`nvtop -s` 快照显示：
+
+```text
+benchmark 期间（4K HEVC 自动播放）:
+  /usr/bin/sunshine          encode=35%  gpu_usage=null
+  ./target/release/rossresscut encode=null  decode=72%  gpu_usage=77%
+
+空闲基线（未启动 rossresscut）:
+  /usr/bin/sunshine          encode=40%
+```
+
+- encode engine 的占用来自 **Sunshine 串流编码**，不是 rossresscut 预览。
+- rossresscut 的预览路径使用 **decode engine（VAAPI HEVC 解码）** 和
+  **GPU 3D/shader**；`encode` 为 `null`。
+- `960x540` 导出限制只影响 FBO 尺寸与 GPU 缩放/带宽，不触发视频编码。
+- 因此“不缩放直接播放源素材”不会省掉一个编码步骤；它只会把缩放从
+  mpv 的 export FBO 移到 egui 绘制阶段，并显著增加导出纹理的显存/带宽
+  （4K BGRA 约 33 MB/帧）。当前 8-bit 裁切预览保留 960x540 输出。
+
 ## 关键事实
 
 - `ExportedFrame` 的公开 API **没有 PTS**。可用字段是 `width`、`height`、
@@ -194,6 +215,8 @@ cargo run --release --example scrub_spike -- <4K HEVC>
   音量、静音、暂停、暂停中 seek 都可用。
 - `hr-seek=no` 是快速关键帧 seek（约 5 秒粒度）；`hr-seek=yes` 是精确 seek，
   在 4K HEVC 上约 200–330 ms。
+- `nvtop` 的 encode 占用可能来自 Sunshine 串流；判断预览负载要看
+  rossresscut 进程的 `decode` 与 `gpu_usage`，以及 `encode` 是否为 `null`。
 
 ## eframe 集成风险
 
