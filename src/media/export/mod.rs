@@ -4,6 +4,7 @@
 //! parsing, and cancellation. The application layer owns export job state and
 //! user-facing errors. No shell is involved and no file is re-encoded.
 
+mod chapters;
 mod command;
 mod concat;
 mod progress;
@@ -19,6 +20,9 @@ use std::time::{Duration as StdDuration, Instant};
 
 use crate::domain::time::Timestamp;
 
+use chapters::TempMetadata;
+
+pub use chapters::ChapterSpec;
 pub use command::{ExportRequest, build_args};
 pub use concat::{
     ExportSegment, ExportStage, MultiExport, MultiExportError, MultiExportEvent, MultiExportRequest,
@@ -44,6 +48,11 @@ pub enum ExportError {
         /// Operating-system error from thread creation.
         source: io::Error,
     },
+    /// Chapter metadata could not be written.
+    Metadata {
+        /// Operating-system error from writing the metadata file.
+        source: io::Error,
+    },
 }
 
 impl fmt::Display for ExportError {
@@ -63,6 +72,9 @@ impl fmt::Display for ExportError {
                     output.display()
                 )
             }
+            Self::Metadata { source } => {
+                write!(formatter, "could not write chapter metadata: {source}")
+            }
         }
     }
 }
@@ -71,6 +83,7 @@ impl std::error::Error for ExportError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Spawn { source, .. } | Self::Worker { source, .. } => Some(source),
+            Self::Metadata { source } => Some(source),
         }
     }
 }
@@ -100,18 +113,36 @@ pub struct ExportProcess {
     events: Receiver<ExportEvent>,
     reader: Option<JoinHandle<()>>,
     started: Instant,
+    _metadata: Option<TempMetadata>,
 }
 
 impl ExportProcess {
     /// Starts FFmpeg for `request`.
     pub fn start(request: &ExportRequest) -> Result<Self, ExportError> {
-        Self::start_with_args(build_args(request), request.output())
+        let metadata = if request.chapters().is_empty() {
+            None
+        } else {
+            Some(
+                TempMetadata::create(request.chapters())
+                    .map_err(|source| ExportError::Metadata { source })?,
+            )
+        };
+        let args = build_args(request, metadata.as_ref().map(TempMetadata::path));
+        Self::start_inner(args, request.output(), metadata)
     }
 
     /// Starts FFmpeg with a caller-provided argument list.
     ///
     /// Used by the concat stage, which does not fit [`ExportRequest`].
     pub fn start_with_args(args: Vec<OsString>, output: &Path) -> Result<Self, ExportError> {
+        Self::start_inner(args, output, None)
+    }
+
+    fn start_inner(
+        args: Vec<OsString>,
+        output: &Path,
+        metadata: Option<TempMetadata>,
+    ) -> Result<Self, ExportError> {
         let mut child = Command::new(FFMPEG)
             .args(args)
             .stdin(Stdio::null())
@@ -146,6 +177,7 @@ impl ExportProcess {
             events,
             reader: Some(reader),
             started: Instant::now(),
+            _metadata: metadata,
         })
     }
 

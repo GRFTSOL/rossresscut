@@ -9,6 +9,8 @@
 
 mod i18n;
 
+use std::collections::BTreeMap;
+use std::fs;
 use std::path::PathBuf;
 #[cfg(feature = "mpv-preview")]
 use std::sync::Arc;
@@ -20,9 +22,7 @@ use eframe::egui;
 use serde::{Deserialize, Serialize};
 
 use crate::application::{Application, ExportCommandError, ExportStage, ExportStatus, OpenState};
-use crate::domain::media::{
-    AudioStream, Disposition, MediaFile, MediaStream, StreamInfo, VideoStream,
-};
+use crate::domain::media::{MediaFile, MediaStream, VideoStream};
 use crate::domain::segment::{Segment, SegmentId};
 use crate::domain::time::{Duration as MediaDuration, Timestamp};
 use crate::media::preview::HardwareAcceleration;
@@ -30,11 +30,13 @@ use crate::media::preview::HardwareAcceleration;
 use i18n::{Language, Strings, fill};
 
 const FILE_DIALOG_SUPPORTED: bool = cfg!(target_os = "linux");
-const SETTINGS_KEY: &str = "ui_settings";
 const WHEEL_STEP_POINTS: f32 = 50.0;
 const WHEEL_LINE_POINTS: f32 = 50.0;
 const WHEEL_PAGE_LINES: f32 = 10.0;
 const TIMELINE_HEIGHT: f32 = 28.0;
+const MIN_FONT_ZOOM: f32 = 0.8;
+const MAX_FONT_ZOOM: f32 = 1.5;
+const FONT_ZOOM_STEP: f32 = 0.05;
 const SEGMENT_COLORS: [egui::Color32; 6] = [
     egui::Color32::from_rgb(86, 132, 176),
     egui::Color32::from_rgb(104, 166, 118),
@@ -53,12 +55,226 @@ enum ThemeChoice {
     Light,
 }
 
-/// UI settings persisted by eframe.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Keyboard actions that can be rebound in settings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ShortcutAction {
+    PlayPause,
+    AddCut,
+    RemoveCut,
+    Split,
+    ClearMarkers,
+    CloseMedia,
+    OpenSettings,
+    GoToStart,
+    PreviousSegment,
+    SegmentStart,
+    PreviousKeyframe,
+    PreviousFrame,
+    NextFrame,
+    NextKeyframe,
+    SegmentEnd,
+    NextSegment,
+    GoToEnd,
+}
+
+impl ShortcutAction {
+    const ALL: [Self; 17] = [
+        Self::PlayPause,
+        Self::AddCut,
+        Self::RemoveCut,
+        Self::Split,
+        Self::ClearMarkers,
+        Self::CloseMedia,
+        Self::OpenSettings,
+        Self::GoToStart,
+        Self::PreviousSegment,
+        Self::SegmentStart,
+        Self::PreviousKeyframe,
+        Self::PreviousFrame,
+        Self::NextFrame,
+        Self::NextKeyframe,
+        Self::SegmentEnd,
+        Self::NextSegment,
+        Self::GoToEnd,
+    ];
+
+    const fn key(self) -> &'static str {
+        match self {
+            Self::PlayPause => "play_pause",
+            Self::AddCut => "add_cut",
+            Self::RemoveCut => "remove_cut",
+            Self::Split => "split",
+            Self::ClearMarkers => "clear_markers",
+            Self::CloseMedia => "close_media",
+            Self::OpenSettings => "open_settings",
+            Self::GoToStart => "go_to_start",
+            Self::PreviousSegment => "previous_segment",
+            Self::SegmentStart => "segment_start",
+            Self::PreviousKeyframe => "previous_keyframe",
+            Self::PreviousFrame => "previous_frame",
+            Self::NextFrame => "next_frame",
+            Self::NextKeyframe => "next_keyframe",
+            Self::SegmentEnd => "segment_end",
+            Self::NextSegment => "next_segment",
+            Self::GoToEnd => "go_to_end",
+        }
+    }
+
+    fn label(self, strings: &Strings) -> String {
+        match self {
+            Self::PlayPause => format!("{} / {}", strings.play, strings.pause),
+            Self::AddCut => strings.add_cut_point.clone(),
+            Self::RemoveCut => strings.remove_cut_point.clone(),
+            Self::Split => strings.split_segment.clone(),
+            Self::ClearMarkers => strings.clear_markers.clone(),
+            Self::CloseMedia => strings.close_media.clone(),
+            Self::OpenSettings => strings.settings.clone(),
+            Self::GoToStart => strings.go_to_start.clone(),
+            Self::PreviousSegment => strings.select_previous_segment.clone(),
+            Self::SegmentStart => strings.go_to_segment_start.clone(),
+            Self::PreviousKeyframe => strings.previous_keyframe.clone(),
+            Self::PreviousFrame => strings.previous_frame.clone(),
+            Self::NextFrame => strings.next_frame.clone(),
+            Self::NextKeyframe => strings.next_keyframe.clone(),
+            Self::SegmentEnd => strings.go_to_segment_end.clone(),
+            Self::NextSegment => strings.select_next_segment.clone(),
+            Self::GoToEnd => strings.go_to_end.clone(),
+        }
+    }
+
+    const fn default_binding(self) -> &'static str {
+        match self {
+            Self::PlayPause => "Space",
+            Self::AddCut => "I",
+            Self::RemoveCut => "O",
+            Self::Split => "Enter",
+            Self::ClearMarkers => "Escape",
+            Self::CloseMedia => "Ctrl+W",
+            Self::OpenSettings => "Ctrl+,",
+            Self::GoToStart
+            | Self::PreviousSegment
+            | Self::SegmentStart
+            | Self::PreviousKeyframe
+            | Self::PreviousFrame
+            | Self::NextFrame
+            | Self::NextKeyframe
+            | Self::SegmentEnd
+            | Self::NextSegment
+            | Self::GoToEnd => "",
+        }
+    }
+}
+
+/// One parsed keyboard shortcut.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Shortcut {
+    key: egui::Key,
+    command: bool,
+    shift: bool,
+    alt: bool,
+}
+
+impl Shortcut {
+    fn parse(text: &str) -> Option<Self> {
+        let text = text.trim();
+        if text.is_empty() {
+            return None;
+        }
+        let mut command = false;
+        let mut shift = false;
+        let mut alt = false;
+        let mut key = None;
+        for part in text.split('+') {
+            let part = part.trim();
+            match part.to_ascii_lowercase().as_str() {
+                "ctrl" | "control" | "cmd" | "command" | "super" => command = true,
+                "shift" => shift = true,
+                "alt" | "option" => alt = true,
+                _ => {
+                    key = Some(egui::Key::from_name(part)?);
+                }
+            }
+        }
+        Some(Self {
+            key: key?,
+            command,
+            shift,
+            alt,
+        })
+    }
+
+    fn matches(self, input: &egui::InputState) -> bool {
+        // `command` is Ctrl on Linux/Windows and Cmd on macOS; accept a raw Ctrl
+        // too so the documented `Ctrl+...` bindings work everywhere.
+        let command = input.modifiers.command || input.modifiers.ctrl;
+        input.key_pressed(self.key)
+            && command == self.command
+            && input.modifiers.shift == self.shift
+            && input.modifiers.alt == self.alt
+    }
+
+    fn label(self) -> String {
+        let mut parts: Vec<&str> = Vec::with_capacity(4);
+        if self.command {
+            parts.push("Ctrl");
+        }
+        if self.shift {
+            parts.push("Shift");
+        }
+        if self.alt {
+            parts.push("Alt");
+        }
+        parts.push(key_label(self.key));
+        parts.join("+")
+    }
+}
+
+fn key_label(key: egui::Key) -> &'static str {
+    match key {
+        // `Key::name` calls this key "Comma"; the punctuation form is what
+        // users type and what matches the documented `Ctrl+,` binding.
+        egui::Key::Comma => ",",
+        other => other.name(),
+    }
+}
+
+fn default_shortcuts() -> BTreeMap<String, String> {
+    ShortcutAction::ALL
+        .iter()
+        .map(|action| (action.key().to_owned(), action.default_binding().to_owned()))
+        .collect()
+}
+
+/// UI settings persisted to `config.toml`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct UiSettings {
     follow_system_theme: bool,
     theme: ThemeChoice,
     language: Language,
+    #[serde(default = "default_true")]
+    export_chapters: bool,
+    #[serde(default = "default_font_zoom")]
+    font_zoom: f32,
+    #[serde(default = "default_shortcuts")]
+    shortcuts: BTreeMap<String, String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_font_zoom() -> f32 {
+    1.0
+}
+
+impl UiSettings {
+    fn binding(&self, action: ShortcutAction) -> &str {
+        self.shortcuts.get(action.key()).map_or("", String::as_str)
+    }
+
+    fn shortcut(&self, action: ShortcutAction) -> Option<Shortcut> {
+        Shortcut::parse(self.binding(action))
+    }
 }
 
 impl Default for UiSettings {
@@ -67,6 +283,9 @@ impl Default for UiSettings {
             follow_system_theme: true,
             theme: ThemeChoice::Dark,
             language: Language::English,
+            export_chapters: true,
+            font_zoom: 1.0,
+            shortcuts: default_shortcuts(),
         }
     }
 }
@@ -104,10 +323,15 @@ pub struct RossresscutApp {
     export_dialog: Option<Receiver<Option<PathBuf>>>,
     export_error: Option<String>,
     settings: UiSettings,
+    font_zoom_draft: f32,
+    recording_shortcut: Option<ShortcutAction>,
     settings_open: bool,
     about_open: bool,
     wheel_accumulator: f32,
     segment_error: Option<String>,
+    segment_start_input: String,
+    segment_end_input: String,
+    segment_input_segment: Option<SegmentId>,
     diagnostics: Option<RenderDiagnostics>,
     diagnostic_autoplay: bool,
     diagnostic_autoplay_started: bool,
@@ -187,12 +411,11 @@ impl RossresscutApp {
             .egui_ctx
             .options_mut(|options| options.input_options.zoom_modifier = egui::Modifiers::NONE);
 
-        let settings = context
-            .storage
-            .and_then(|storage| eframe::get_value(storage, SETTINGS_KEY))
-            .unwrap_or_default();
+        let settings = load_settings();
+        let font_zoom_draft = settings.font_zoom;
         let mut app = Self {
             settings,
+            font_zoom_draft,
             diagnostics: RenderDiagnostics::from_environment(),
             diagnostic_autoplay: std::env::var_os("ROSS_RESCUT_DIAG_AUTOPLAY").is_some(),
             ..Self::default()
@@ -241,6 +464,8 @@ impl RossresscutApp {
             }
         };
         context.set_theme(preference);
+        // `set_zoom_factor` scales text and widgets relative to the system DPI.
+        context.set_zoom_factor(self.settings.font_zoom.clamp(MIN_FONT_ZOOM, MAX_FONT_ZOOM));
     }
 
     fn poll_file_dialog(&mut self) {
@@ -273,7 +498,10 @@ impl RossresscutApp {
         match receiver.try_recv() {
             Ok(Some(path)) => {
                 self.export_error = None;
-                if let Err(error) = self.application.start_export(path) {
+                if let Err(error) = self
+                    .application
+                    .start_export(path, self.settings.export_chapters)
+                {
                     self.export_error = Some(export_command_message(self.strings(), &error));
                 }
             }
@@ -364,52 +592,166 @@ impl RossresscutApp {
         self.last_scrub_start = None;
     }
 
-    fn create_segment(&mut self) {
-        match self.application.add_segment() {
-            Ok(_) => self.segment_error = None,
-            Err(error) => self.segment_error = Some(error.to_string()),
+    fn sync_segment_inputs(&mut self) {
+        let selected = self.application.selected_segment();
+        if selected == self.segment_input_segment {
+            return;
+        }
+        self.segment_input_segment = selected;
+        match selected.and_then(|id| self.application.timeline().get(id).copied()) {
+            Some(segment) => {
+                self.segment_start_input = segment.start().to_string();
+                self.segment_end_input = segment.end().to_string();
+            }
+            None => {
+                self.segment_start_input.clear();
+                self.segment_end_input.clear();
+            }
         }
     }
 
+    fn apply_segment_start_input(&mut self) {
+        let Some(time) = parse_time_input(&self.segment_start_input) else {
+            self.segment_error = Some("invalid time".to_owned());
+            return;
+        };
+        if let Err(error) = self.application.set_selected_segment_start(time) {
+            self.segment_error = Some(error.to_string());
+            return;
+        }
+        self.application.seek(time);
+        self.segment_input_segment = None;
+        self.segment_error = None;
+    }
+
+    fn apply_segment_end_input(&mut self) {
+        let Some(time) = parse_time_input(&self.segment_end_input) else {
+            self.segment_error = Some("invalid time".to_owned());
+            return;
+        };
+        if let Err(error) = self.application.set_selected_segment_end(time) {
+            self.segment_error = Some(error.to_string());
+            return;
+        }
+        self.segment_input_segment = None;
+        self.segment_error = None;
+    }
+
     fn handle_shortcuts(&mut self, context: &egui::Context) {
+        if self.recording_shortcut.is_some() {
+            self.capture_shortcut(context);
+            return;
+        }
         if context.egui_wants_keyboard_input() {
             return;
         }
 
-        let (play_pause, set_in, set_out, add, delete, escape) = context.input(|input| {
-            (
-                input.key_pressed(egui::Key::Space),
-                input.key_pressed(egui::Key::I),
-                input.key_pressed(egui::Key::O),
-                input.key_pressed(egui::Key::Enter),
-                input.key_pressed(egui::Key::Delete),
-                input.key_pressed(egui::Key::Escape),
-            )
+        let actions: Vec<ShortcutAction> = context.input(|input| {
+            ShortcutAction::ALL
+                .iter()
+                .copied()
+                .filter(|action| {
+                    self.settings
+                        .shortcut(*action)
+                        .is_some_and(|shortcut| shortcut.matches(input))
+                })
+                .collect()
         });
+        for action in actions {
+            self.run_shortcut(action);
+        }
+    }
 
-        let position = self.application.position();
-        if set_in {
-            self.application.set_in_point(position);
-            self.segment_error = None;
+    fn run_shortcut(&mut self, action: ShortcutAction) {
+        match action {
+            ShortcutAction::PlayPause => self.application.toggle_playback(),
+            ShortcutAction::AddCut => {
+                let position = self.application.position();
+                if let Err(error) = self.application.add_cut_point(position) {
+                    self.segment_error = Some(error.to_string());
+                } else {
+                    self.segment_error = None;
+                    self.segment_input_segment = None;
+                }
+            }
+            ShortcutAction::RemoveCut => {
+                self.application.remove_cut_point();
+                self.segment_error = None;
+                self.segment_input_segment = None;
+            }
+            ShortcutAction::Split => {
+                if let Err(error) = self.application.split_selected_segment() {
+                    self.segment_error = Some(error.to_string());
+                } else {
+                    self.segment_error = None;
+                    self.segment_input_segment = None;
+                }
+            }
+            ShortcutAction::ClearMarkers => {
+                self.application.clear_markers();
+                self.segment_error = None;
+            }
+            ShortcutAction::CloseMedia => {
+                if !matches!(self.application.state(), OpenState::Empty) {
+                    self.application.close_media();
+                    self.reset_scrub();
+                    self.segment_error = None;
+                }
+            }
+            ShortcutAction::OpenSettings => self.settings_open = true,
+            ShortcutAction::GoToStart => self.application.seek_to_start(),
+            ShortcutAction::PreviousSegment => self.application.select_previous_segment(),
+            ShortcutAction::SegmentStart => self.application.seek_to_selected_segment_start(),
+            ShortcutAction::PreviousKeyframe => self.application.step_keyframe(false),
+            ShortcutAction::PreviousFrame => self.application.step_frame(false),
+            ShortcutAction::NextFrame => self.application.step_frame(true),
+            ShortcutAction::NextKeyframe => self.application.step_keyframe(true),
+            ShortcutAction::SegmentEnd => self.application.seek_to_selected_segment_end(),
+            ShortcutAction::NextSegment => self.application.select_next_segment(),
+            ShortcutAction::GoToEnd => self.application.seek_to_end(),
         }
-        if set_out {
-            self.application.set_out_point(position);
-            self.segment_error = None;
+    }
+
+    fn capture_shortcut(&mut self, context: &egui::Context) {
+        let Some(action) = self.recording_shortcut else {
+            return;
+        };
+        let captured = context.input(|input| {
+            input.events.iter().find_map(|event| match event {
+                egui::Event::Key {
+                    key,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } => Some(Shortcut {
+                    key: *key,
+                    command: modifiers.command,
+                    shift: modifiers.shift,
+                    alt: modifiers.alt,
+                }),
+                _ => None,
+            })
+        });
+        if let Some(shortcut) = captured {
+            self.settings
+                .shortcuts
+                .insert(action.key().to_owned(), shortcut.label());
+            self.recording_shortcut = None;
         }
-        if play_pause {
-            self.application.toggle_playback();
+    }
+
+    fn shortcut_tooltip(&self, label: &str, action: ShortcutAction) -> String {
+        let binding = self.settings.binding(action);
+        if binding.is_empty() {
+            label.to_owned()
+        } else {
+            format!("{label} ({binding})")
         }
-        if add && self.application.media().is_some() {
-            self.create_segment();
-        }
-        if delete {
-            self.application.remove_selected_segment();
-            self.segment_error = None;
-        }
-        if escape {
-            self.application.clear_markers();
-            self.segment_error = None;
-        }
+    }
+
+    fn set_font_zoom(&mut self, zoom: f32) {
+        self.settings.font_zoom = zoom.clamp(MIN_FONT_ZOOM, MAX_FONT_ZOOM);
+        self.font_zoom_draft = self.settings.font_zoom;
     }
 
     fn scrub_to(&mut self, target: Timestamp) {
@@ -608,6 +950,7 @@ impl RossresscutApp {
         let strings = self.strings();
         egui::Panel::top("menu_bar").show(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
+                ui.spacing_mut().button_padding = egui::vec2(10.0, 6.0);
                 ui.menu_button(strings.menu_file.as_str(), |ui| {
                     let dialog_open = self.file_dialog.is_some();
                     let open_enabled = FILE_DIALOG_SUPPORTED && !dialog_open;
@@ -622,7 +965,8 @@ impl RossresscutApp {
                             strings.open_in_progress.as_str()
                         } else {
                             strings.open_disabled.as_str()
-                        });
+                        })
+                        .on_hover_text(strings.open.as_str());
                     if open.clicked() {
                         self.start_file_dialog();
                         ui.close();
@@ -631,6 +975,7 @@ impl RossresscutApp {
                     let has_media = !matches!(self.application.state(), OpenState::Empty);
                     if ui
                         .add_enabled(has_media, egui::Button::new(strings.close_media.as_str()))
+                        .on_hover_text(strings.close_media.as_str())
                         .clicked()
                     {
                         self.application.close_media();
@@ -639,47 +984,69 @@ impl RossresscutApp {
                         ui.close();
                     }
 
-                    let has_enabled_segment = self
-                        .application
-                        .timeline()
-                        .segments()
-                        .iter()
-                        .any(|segment| segment.enabled());
-                    let exporting = self.application.export_status().is_running();
-                    let export_enabled = FILE_DIALOG_SUPPORTED
-                        && !dialog_open
-                        && self.export_dialog.is_none()
-                        && has_enabled_segment
-                        && !exporting;
-                    let export_label = if self.export_dialog.is_some() {
-                        strings.exporting.as_str()
-                    } else {
-                        strings.export_segment.as_str()
-                    };
+                    ui.separator();
                     if ui
-                        .add_enabled(export_enabled, egui::Button::new(export_label))
-                        .on_disabled_hover_text(strings.export_no_segment.as_str())
+                        .button(strings.quit.as_str())
+                        .on_hover_text(strings.quit.as_str())
                         .clicked()
                     {
-                        self.start_export_dialog();
-                        ui.close();
-                    }
-
-                    ui.separator();
-                    if ui.button(strings.quit.as_str()).clicked() {
                         ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                 });
 
                 ui.menu_button(strings.menu_view.as_str(), |ui| {
-                    if ui.button(strings.settings.as_str()).clicked() {
-                        self.settings_open = true;
+                    let fullscreen = ui
+                        .ctx()
+                        .input(|input| input.viewport().fullscreen.unwrap_or(false));
+                    let fullscreen_label = if fullscreen {
+                        strings.exit_fullscreen.as_str()
+                    } else {
+                        strings.fullscreen.as_str()
+                    };
+                    if ui
+                        .button(fullscreen_label)
+                        .on_hover_text(fullscreen_label)
+                        .clicked()
+                    {
+                        ui.ctx()
+                            .send_viewport_cmd(egui::ViewportCommand::Fullscreen(!fullscreen));
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui
+                        .button(strings.reset_font_size.as_str())
+                        .on_hover_text(strings.reset_font_size.as_str())
+                        .clicked()
+                    {
+                        self.set_font_zoom(1.0);
+                        ui.close();
+                    }
+                    if ui
+                        .button(strings.increase_font_size.as_str())
+                        .on_hover_text(strings.increase_font_size.as_str())
+                        .clicked()
+                    {
+                        let zoom = self.settings.font_zoom + FONT_ZOOM_STEP;
+                        self.set_font_zoom(zoom);
+                        ui.close();
+                    }
+                    if ui
+                        .button(strings.decrease_font_size.as_str())
+                        .on_hover_text(strings.decrease_font_size.as_str())
+                        .clicked()
+                    {
+                        let zoom = self.settings.font_zoom - FONT_ZOOM_STEP;
+                        self.set_font_zoom(zoom);
                         ui.close();
                     }
                 });
 
                 ui.menu_button(strings.menu_help.as_str(), |ui| {
-                    if ui.button(strings.about.as_str()).clicked() {
+                    if ui
+                        .button(strings.about.as_str())
+                        .on_hover_text(strings.about.as_str())
+                        .clicked()
+                    {
                         self.about_open = true;
                         ui.close();
                     }
@@ -687,8 +1054,11 @@ impl RossresscutApp {
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
-                        .button("⚙")
-                        .on_hover_text(strings.settings.as_str())
+                        .add(egui::Button::new("⚙").min_size(egui::vec2(32.0, 28.0)))
+                        .on_hover_text(self.shortcut_tooltip(
+                            strings.settings.as_str(),
+                            ShortcutAction::OpenSettings,
+                        ))
                         .clicked()
                     {
                         self.settings_open = true;
@@ -710,15 +1080,18 @@ impl RossresscutApp {
         let mut open = self.settings_open;
 
         egui::Window::new(strings.settings.as_str())
+            .id(egui::Id::unique("settings_window"))
             .open(&mut open)
             .resizable(false)
             .collapsible(false)
+            .default_width(460.0)
             .show(context, |ui| {
-                ui.heading(strings.appearance.as_str());
+                ui.heading(strings.general.as_str());
                 ui.checkbox(
                     &mut self.settings.follow_system_theme,
                     strings.follow_system_theme.as_str(),
-                );
+                )
+                .on_hover_text(strings.follow_system_theme.as_str());
                 ui.add_enabled_ui(!self.settings.follow_system_theme, |ui| {
                     egui::ComboBox::from_label(strings.theme.as_str())
                         .selected_text(theme_label(strings, self.settings.theme))
@@ -736,17 +1109,95 @@ impl RossresscutApp {
                         });
                 });
 
+                ui.horizontal(|ui| {
+                    ui.label(strings.language.as_str());
+                    egui::ComboBox::from_id_salt("language")
+                        .selected_text(self.settings.language.label())
+                        .show_ui(ui, |ui| {
+                            for language in Language::ALL {
+                                ui.selectable_value(
+                                    &mut self.settings.language,
+                                    language,
+                                    language.label(),
+                                );
+                            }
+                        });
+                });
+
+                ui.horizontal(|ui| {
+                    ui.label(strings.font_size.as_str());
+                    let slider = ui.add(
+                        egui::Slider::new(&mut self.font_zoom_draft, MIN_FONT_ZOOM..=MAX_FONT_ZOOM)
+                            .step_by(f64::from(FONT_ZOOM_STEP))
+                            .fixed_decimals(2),
+                    );
+                    // The preview only follows a released slider; this avoids
+                    // rebuilding the font atlas on every drag frame.
+                    if slider.drag_stopped() || (slider.changed() && !slider.dragged()) {
+                        self.settings.font_zoom =
+                            self.font_zoom_draft.clamp(MIN_FONT_ZOOM, MAX_FONT_ZOOM);
+                    }
+                    if ui
+                        .button(strings.reset_font_size.as_str())
+                        .on_hover_text(strings.reset_font_size.as_str())
+                        .clicked()
+                    {
+                        self.set_font_zoom(1.0);
+                    }
+                });
+
                 ui.separator();
-                ui.heading(strings.language.as_str());
-                egui::ComboBox::from_label(strings.language.as_str())
-                    .selected_text(self.settings.language.label())
-                    .show_ui(ui, |ui| {
-                        for language in Language::ALL {
-                            ui.selectable_value(
-                                &mut self.settings.language,
-                                language,
-                                language.label(),
-                            );
+                ui.heading(strings.export.as_str());
+                ui.checkbox(
+                    &mut self.settings.export_chapters,
+                    strings.export_chapters.as_str(),
+                )
+                .on_hover_text(strings.export_chapters_hint.as_str());
+
+                ui.separator();
+                ui.heading(strings.shortcuts.as_str());
+                egui::ScrollArea::vertical()
+                    .max_height(320.0)
+                    .show(ui, |ui| {
+                        for action in ShortcutAction::ALL {
+                            ui.horizontal(|ui| {
+                                ui.add_sized(
+                                    [190.0, 20.0],
+                                    egui::Label::new(action.label(strings)).truncate(),
+                                );
+                                let recording = self.recording_shortcut == Some(action);
+                                let binding = self.settings.binding(action).to_owned();
+                                let text = if recording {
+                                    strings.shortcut_press_keys.clone()
+                                } else if binding.is_empty() {
+                                    strings.shortcut_unassigned.clone()
+                                } else {
+                                    binding.clone()
+                                };
+                                if ui
+                                    .add(egui::Button::new(text).min_size(egui::vec2(130.0, 22.0)))
+                                    .on_hover_text(strings.shortcut_press_keys.as_str())
+                                    .clicked()
+                                {
+                                    self.recording_shortcut =
+                                        if recording { None } else { Some(action) };
+                                }
+                                if ui
+                                    .add_enabled(
+                                        !binding.is_empty(),
+                                        egui::Button::new("×").min_size(egui::vec2(24.0, 22.0)),
+                                    )
+                                    .on_hover_text(strings.shortcut_clear.as_str())
+                                    .clicked()
+                                {
+                                    self.settings
+                                        .shortcuts
+                                        .insert(action.key().to_owned(), String::new());
+                                    if recording {
+                                        self.recording_shortcut = None;
+                                    }
+                                }
+                            });
                         }
                     });
             });
@@ -762,6 +1213,7 @@ impl RossresscutApp {
         let mut open = self.about_open;
 
         egui::Window::new(strings.about.as_str())
+            .id(egui::Id::unique("about_window"))
             .open(&mut open)
             .resizable(false)
             .collapsible(false)
@@ -769,6 +1221,8 @@ impl RossresscutApp {
                 ui.heading("rossresscut");
                 ui.label(strings.about_description.as_str());
                 ui.label(fill(&strings.about_version, &[env!("CARGO_PKG_VERSION")]));
+                ui.label(fill(&strings.about_commit, &[env!("GIT_COMMIT")]));
+                ui.label(fill(&strings.about_phase, &[crate::PHASE]));
             });
 
         self.about_open = open;
@@ -779,28 +1233,8 @@ impl RossresscutApp {
         egui::Panel::bottom("media_timeline").show(ui, |ui| {
             ui.add_space(4.0);
             self.timeline_bar(ui);
-
-            ui.horizontal(|ui| {
-                let can_play = self.application.media().is_some();
-                let playing = self.application.is_playing();
-                let label = if playing {
-                    strings.pause.as_str()
-                } else {
-                    strings.play.as_str()
-                };
-                if ui.add_enabled(can_play, egui::Button::new(label)).clicked() {
-                    self.application.toggle_playback();
-                }
-
-                let position = self
-                    .scrub_target
-                    .unwrap_or_else(|| self.application.position());
-                let duration = self.application.duration().map_or_else(
-                    || strings.duration_unavailable.clone(),
-                    |value| value.to_string(),
-                );
-                ui.monospace(format!("{position} / {duration}"));
-            });
+            self.control_buttons(ui, strings);
+            self.export_row(ui, strings);
 
             if let Some(error) = &self.dialog_error {
                 let message = match error {
@@ -819,6 +1253,223 @@ impl RossresscutApp {
         });
     }
 
+    fn control_buttons(&mut self, ui: &mut egui::Ui, strings: &'static Strings) {
+        let has_media = self.application.media().is_some();
+        let has_selection = self.application.selected_segment().is_some();
+
+        // `horizontal_wrapped` shrinks to its content height. A free
+        // `with_layout` would claim the panel's remaining height and collapse
+        // the preview pane.
+        let estimated_row_width = 740.0 * ui.ctx().zoom_factor();
+        let padding = ((ui.available_width() - estimated_row_width) * 0.5).max(0.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.add_space(padding);
+            ui.spacing_mut().button_padding = egui::vec2(7.0, 4.0);
+            if symbol_button(
+                ui,
+                "|<",
+                has_media,
+                &self.shortcut_tooltip(strings.go_to_start.as_str(), ShortcutAction::GoToStart),
+            ) {
+                self.application.seek_to_start();
+            }
+            if symbol_button(
+                ui,
+                "[<",
+                has_media && has_selection,
+                &self.shortcut_tooltip(
+                    strings.select_previous_segment.as_str(),
+                    ShortcutAction::PreviousSegment,
+                ),
+            ) {
+                self.application.select_previous_segment();
+            }
+            if symbol_button(
+                ui,
+                "<|",
+                has_media && has_selection,
+                &self.shortcut_tooltip(
+                    strings.go_to_segment_start.as_str(),
+                    ShortcutAction::SegmentStart,
+                ),
+            ) {
+                self.application.seek_to_selected_segment_start();
+            }
+            if symbol_button(
+                ui,
+                "[",
+                has_media && has_selection,
+                strings.set_start_from_playhead.as_str(),
+            ) {
+                let position = self.application.position();
+                if let Err(error) = self.application.set_selected_segment_start(position) {
+                    self.segment_error = Some(error.to_string());
+                } else {
+                    self.segment_input_segment = None;
+                    self.segment_error = None;
+                }
+            }
+
+            let start_response = ui
+                .add_enabled(
+                    has_selection,
+                    egui::TextEdit::singleline(&mut self.segment_start_input).desired_width(86.0),
+                )
+                .on_hover_text(strings.segment_start.as_str());
+            if start_response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter))
+            {
+                self.apply_segment_start_input();
+            }
+
+            if symbol_button(
+                ui,
+                "<<",
+                has_media,
+                &self.shortcut_tooltip(
+                    strings.previous_keyframe.as_str(),
+                    ShortcutAction::PreviousKeyframe,
+                ),
+            ) {
+                self.application.step_keyframe(false);
+            }
+            if symbol_button(
+                ui,
+                "<",
+                has_media,
+                &self.shortcut_tooltip(
+                    strings.previous_frame.as_str(),
+                    ShortcutAction::PreviousFrame,
+                ),
+            ) {
+                self.application.step_frame(false);
+            }
+
+            let (play_label, play_tooltip) = if self.application.is_playing() {
+                ("||", strings.pause.as_str())
+            } else {
+                ("▶", strings.play.as_str())
+            };
+            if symbol_button(
+                ui,
+                play_label,
+                has_media,
+                &self.shortcut_tooltip(play_tooltip, ShortcutAction::PlayPause),
+            ) {
+                self.application.toggle_playback();
+            }
+
+            if symbol_button(
+                ui,
+                ">",
+                has_media,
+                &self.shortcut_tooltip(strings.next_frame.as_str(), ShortcutAction::NextFrame),
+            ) {
+                self.application.step_frame(true);
+            }
+            if symbol_button(
+                ui,
+                ">>",
+                has_media,
+                &self
+                    .shortcut_tooltip(strings.next_keyframe.as_str(), ShortcutAction::NextKeyframe),
+            ) {
+                self.application.step_keyframe(true);
+            }
+
+            let end_response = ui
+                .add_enabled(
+                    has_selection,
+                    egui::TextEdit::singleline(&mut self.segment_end_input).desired_width(86.0),
+                )
+                .on_hover_text(strings.segment_end.as_str());
+            if end_response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) {
+                self.apply_segment_end_input();
+            }
+
+            if symbol_button(
+                ui,
+                "]",
+                has_media && has_selection,
+                strings.set_end_from_playhead.as_str(),
+            ) {
+                let position = self.application.position();
+                if let Err(error) = self.application.set_selected_segment_end(position) {
+                    self.segment_error = Some(error.to_string());
+                } else {
+                    self.segment_input_segment = None;
+                    self.segment_error = None;
+                }
+            }
+            if symbol_button(
+                ui,
+                "|>",
+                has_media && has_selection,
+                &self.shortcut_tooltip(
+                    strings.go_to_segment_end.as_str(),
+                    ShortcutAction::SegmentEnd,
+                ),
+            ) {
+                self.application.seek_to_selected_segment_end();
+            }
+            if symbol_button(
+                ui,
+                ">]",
+                has_media && has_selection,
+                &self.shortcut_tooltip(
+                    strings.select_next_segment.as_str(),
+                    ShortcutAction::NextSegment,
+                ),
+            ) {
+                self.application.select_next_segment();
+            }
+            if symbol_button(
+                ui,
+                ">|",
+                has_media,
+                &self.shortcut_tooltip(strings.go_to_end.as_str(), ShortcutAction::GoToEnd),
+            ) {
+                self.application.seek_to_end();
+            }
+        });
+    }
+
+    fn export_row(&mut self, ui: &mut egui::Ui, strings: &'static Strings) {
+        let position = self
+            .scrub_target
+            .unwrap_or_else(|| self.application.position());
+        let duration = self.application.duration().map_or_else(
+            || strings.duration_unavailable.clone(),
+            |value| value.to_string(),
+        );
+        ui.horizontal(|ui| {
+            ui.monospace(format!("{position} / {duration}"));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let has_enabled_segment = self
+                    .application
+                    .timeline()
+                    .segments()
+                    .iter()
+                    .any(|segment| segment.enabled());
+                let exporting = self.application.export_status().is_running();
+                let enabled = FILE_DIALOG_SUPPORTED
+                    && self.export_dialog.is_none()
+                    && has_enabled_segment
+                    && !exporting;
+                if ui
+                    .add_enabled(
+                        enabled,
+                        egui::Button::new(strings.export.as_str())
+                            .min_size(egui::vec2(120.0, 30.0)),
+                    )
+                    .on_hover_text(strings.export_segment.as_str())
+                    .clicked()
+                {
+                    self.start_export_dialog();
+                }
+            });
+        });
+    }
+
     fn export_status(&mut self, ui: &mut egui::Ui) {
         let strings = self.strings();
         let status = self.application.export_status().clone();
@@ -830,7 +1481,11 @@ impl RossresscutApp {
                         egui::ProgressBar::new(status.progress().unwrap_or_default())
                             .show_percentage(),
                     );
-                    if ui.button(strings.cancel_export.as_str()).clicked() {
+                    if ui
+                        .button(strings.cancel_export.as_str())
+                        .on_hover_text(strings.cancel_export.as_str())
+                        .clicked()
+                    {
                         self.application.cancel_export();
                     }
                 });
@@ -916,7 +1571,7 @@ impl RossresscutApp {
         }
 
         let selected = self.application.selected_segment();
-        for segment in self.application.timeline().segments().iter() {
+        for (index, segment) in self.application.timeline().segments().iter().enumerate() {
             let left = x_for_time(rect, segment.start(), duration);
             let right = x_for_time(rect, segment.end(), duration);
             if right <= left {
@@ -926,11 +1581,9 @@ impl RossresscutApp {
                 egui::pos2(left, rect.top() + 2.0),
                 egui::pos2(right, rect.bottom() - 2.0),
             );
-            painter.rect_filled(
-                segment_rect,
-                2.0,
-                segment_color(segment.id(), segment.enabled(), visuals),
-            );
+            let color = segment_color(segment.id(), segment.enabled(), visuals);
+            painter.rect_filled(segment_rect, 2.0, color);
+            draw_segment_number(&painter, rect, segment_rect, index + 1, color);
             if selected == Some(segment.id()) {
                 painter.rect_stroke(
                     segment_rect,
@@ -983,22 +1636,14 @@ impl RossresscutApp {
 
         if response.drag_stopped() {
             // The throttled scrub target can lag behind the pointer, so the
-            // release position is the authoritative final target.
+            // release position is the authoritative final target. Dragging
+            // only moves the playhead; it does not change the selection.
             let target = response
                 .interact_pointer_pos()
                 .map(|pointer| timestamp_at_x(rect, pointer.x, duration))
                 .or(self.scrub_target)
                 .unwrap_or_else(|| self.application.position());
-            let selected = self
-                .application
-                .timeline()
-                .segments()
-                .iter()
-                .rev()
-                .find(|segment| segment.contains(target))
-                .map(|segment| segment.id());
             self.finish_scrub(target);
-            self.application.select_segment(selected);
         } else if response.clicked()
             && let Some(pointer) = response.interact_pointer_pos()
         {
@@ -1057,7 +1702,7 @@ impl RossresscutApp {
                 OpenState::Empty => {
                     let response = self.preview_open_response(ui);
                     centered_message(ui, strings.open_media_prompt.as_str());
-                    if response.clicked() {
+                    if FILE_DIALOG_SUPPORTED && response.clicked() {
                         self.start_file_dialog();
                     }
                 }
@@ -1073,7 +1718,7 @@ impl RossresscutApp {
                     text.push_str("\n\n");
                     text.push_str(&strings.open_media_prompt);
                     centered_message(ui, text);
-                    if response.clicked() {
+                    if FILE_DIALOG_SUPPORTED && response.clicked() {
                         self.start_file_dialog();
                     }
                 }
@@ -1141,100 +1786,84 @@ impl RossresscutApp {
 
     fn segments_panel(&mut self, ui: &mut egui::Ui, strings: &'static Strings) {
         let has_media = self.application.media().is_some();
+        let has_selection = self.application.selected_segment().is_some();
         ui.heading(fill(
             &strings.segments,
             &[&self.application.timeline().len().to_string()],
         ));
 
         ui.horizontal_wrapped(|ui| {
-            let set_in = ui
-                .add_enabled(has_media, egui::Button::new(strings.set_in.as_str()))
-                .on_hover_text(format!("{} (I)", strings.set_in));
-            if set_in.clicked() {
-                let position = self.application.position();
-                self.application.set_in_point(position);
-                self.segment_error = None;
-            }
-
-            let set_out = ui
-                .add_enabled(has_media, egui::Button::new(strings.set_out.as_str()))
-                .on_hover_text(format!("{} (O)", strings.set_out));
-            if set_out.clicked() {
-                let position = self.application.position();
-                self.application.set_out_point(position);
-                self.segment_error = None;
-            }
-
-            let add = ui
-                .add_enabled(has_media, egui::Button::new(strings.add_segment.as_str()))
-                .on_hover_text(format!("{} (Enter)", strings.add_segment));
-            if add.clicked() {
-                self.create_segment();
-            }
-
-            let has_markers =
-                self.application.in_point().is_some() || self.application.out_point().is_some();
             if ui
-                .add_enabled(
-                    has_markers,
-                    egui::Button::new(strings.clear_markers.as_str()),
+                .add_enabled(has_media, egui::Button::new(strings.add_cut_point.as_str()))
+                .on_hover_text(
+                    self.shortcut_tooltip(strings.add_cut_point.as_str(), ShortcutAction::AddCut),
                 )
                 .clicked()
             {
-                self.application.clear_markers();
-                self.segment_error = None;
+                let position = self.application.position();
+                if let Err(error) = self.application.add_cut_point(position) {
+                    self.segment_error = Some(error.to_string());
+                } else {
+                    self.segment_error = None;
+                    self.segment_input_segment = None;
+                }
             }
 
-            let can_sort = self.application.timeline().len() > 1;
             if ui
-                .add_enabled(can_sort, egui::Button::new(strings.sort_segments.as_str()))
+                .add_enabled(
+                    has_media,
+                    egui::Button::new(strings.remove_cut_point.as_str()),
+                )
+                .on_hover_text(
+                    self.shortcut_tooltip(
+                        strings.remove_cut_point.as_str(),
+                        ShortcutAction::RemoveCut,
+                    ),
+                )
                 .clicked()
             {
-                self.application.sort_segments();
+                self.application.remove_cut_point();
+                self.segment_error = None;
+                self.segment_input_segment = None;
+            }
+
+            if ui
+                .add_enabled(has_selection, egui::Button::new(strings.move_up.as_str()))
+                .on_hover_text(strings.move_up.as_str())
+                .clicked()
+            {
+                self.application.move_selected_segment_up();
+            }
+
+            if ui
+                .add_enabled(has_selection, egui::Button::new(strings.move_down.as_str()))
+                .on_hover_text(strings.move_down.as_str())
+                .clicked()
+            {
+                self.application.move_selected_segment_down();
+            }
+
+            if ui
+                .add_enabled(
+                    has_selection,
+                    egui::Button::new(strings.split_segment.as_str()),
+                )
+                .on_hover_text(
+                    self.shortcut_tooltip(strings.split_segment.as_str(), ShortcutAction::Split),
+                )
+                .clicked()
+            {
+                if let Err(error) = self.application.split_selected_segment() {
+                    self.segment_error = Some(error.to_string());
+                } else {
+                    self.segment_error = None;
+                    self.segment_input_segment = None;
+                }
             }
         });
 
-        ui.horizontal(|ui| {
-            ui.label(format!(
-                "{}: {}",
-                strings.in_point,
-                dash(self.application.in_point())
-            ));
-            ui.label(format!(
-                "{}: {}",
-                strings.out_point,
-                dash(self.application.out_point())
-            ));
-        });
-
-        if self.application.selected_segment().is_some() {
-            ui.horizontal_wrapped(|ui| {
-                if ui
-                    .button(strings.set_start_from_playhead.as_str())
-                    .clicked()
-                {
-                    let position = self.application.position();
-                    if let Err(error) = self.application.set_selected_segment_start(position) {
-                        self.segment_error = Some(error.to_string());
-                    }
-                }
-                if ui.button(strings.set_end_from_playhead.as_str()).clicked() {
-                    let position = self.application.position();
-                    if let Err(error) = self.application.set_selected_segment_end(position) {
-                        self.segment_error = Some(error.to_string());
-                    }
-                }
-                if ui.button(strings.delete_segment.as_str()).clicked() {
-                    self.application.remove_selected_segment();
-                    self.segment_error = None;
-                }
-                if ui.button(strings.move_up.as_str()).clicked() {
-                    self.application.move_selected_segment_up();
-                }
-                if ui.button(strings.move_down.as_str()).clicked() {
-                    self.application.move_selected_segment_down();
-                }
-            });
+        if let Some(in_point) = self.application.in_point() {
+            ui.label(format!("{}: {in_point}", strings.segment_start));
         }
 
         let segments: Vec<(usize, Segment)> = self
@@ -1266,15 +1895,26 @@ impl RossresscutApp {
                         segment.end(),
                         segment.duration()
                     );
-                    if ui.selectable_label(selected, label).clicked() {
+                    let color = segment_color(segment.id(), segment.enabled(), ui.visuals());
+                    // Unselected segments keep the same hue at half strength so
+                    // the list still maps onto the timeline colours.
+                    let fill = if selected {
+                        color
+                    } else {
+                        color.gamma_multiply(0.5)
+                    };
+                    let mut button = egui::Button::new(label).fill(fill);
+                    if selected {
+                        button =
+                            button.stroke(egui::Stroke::new(1.5, ui.visuals().strong_text_color()));
+                    }
+                    if ui.add(button).clicked() {
                         self.application.select_segment(Some(segment.id()));
                         self.application.seek(segment.start());
                     }
                 });
             }
         }
-
-        ui.small(strings.segment_shortcuts.as_str());
 
         if let Some(error) = &self.segment_error {
             ui.colored_label(ui.visuals().error_fg_color, error);
@@ -1354,38 +1994,10 @@ impl RossresscutApp {
                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     ui.heading(strings.playback.as_str());
-                    render_playback_info(ui, &self.application, self.scrub_target, strings);
+                    render_playback_info(ui, &self.application, strings);
                     ui.separator();
 
                     self.segments_panel(ui, strings);
-                    ui.separator();
-
-                    ui.heading(strings.media.as_str());
-                    ui.separator();
-                    match self.application.state() {
-                        OpenState::Empty => {
-                            ui.label(strings.no_media_loaded.as_str());
-                        }
-                        OpenState::Probing { path } => {
-                            ui.horizontal(|ui| {
-                                ui.spinner();
-                                ui.label(strings.reading_media.as_str());
-                            });
-                            ui.monospace(path.display().to_string());
-                        }
-                        OpenState::Failed { path, message } => {
-                            ui.colored_label(
-                                ui.visuals().error_fg_color,
-                                path.display().to_string(),
-                            );
-                            ui.label(message);
-                        }
-                        OpenState::Ready => {
-                            if let Some(media) = self.application.media() {
-                                render_media_info(ui, media, strings);
-                            }
-                        }
-                    }
                 });
             });
     }
@@ -1399,6 +2011,7 @@ impl eframe::App for RossresscutApp {
         self.apply_theme(ui.ctx());
         self.poll_file_dialog();
         self.poll_export_dialog();
+        self.sync_segment_inputs();
         self.handle_shortcuts(ui.ctx());
 
         if self.application.update() {
@@ -1446,8 +2059,8 @@ impl eframe::App for RossresscutApp {
         self.about_window(ui.ctx());
     }
 
-    fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        eframe::set_value(storage, SETTINGS_KEY, &self.settings);
+    fn save(&mut self, _storage: &mut dyn eframe::Storage) {
+        save_settings(&self.settings);
     }
 }
 
@@ -1495,37 +2108,13 @@ pub fn run(initial_path: Option<PathBuf>) -> Result<(), eframe::Error> {
     )
 }
 
-fn render_playback_info(
-    ui: &mut egui::Ui,
-    application: &Application,
-    scrub_target: Option<Timestamp>,
-    strings: &Strings,
-) {
-    let scrubbing = scrub_target.is_some();
-    let displayed_position = scrub_target.unwrap_or_else(|| application.position());
-
+fn render_playback_info(ui: &mut egui::Ui, application: &Application, strings: &Strings) {
     egui::Grid::new("playback_info")
         .num_columns(2)
         .min_col_width(115.0)
         .striped(true)
         .show(ui, |ui| {
-            row(
-                ui,
-                &strings.state,
-                playback_state(application, scrubbing, strings),
-            );
-            row(
-                ui,
-                &strings.position,
-                format!("{} / {}", displayed_position, dash(application.duration())),
-            );
-            row(
-                ui,
-                &strings.sync,
-                playback_sync(application, scrubbing, strings),
-            );
             row(ui, &strings.decoder, decoder_label(application, strings));
-            row(ui, &strings.preview, strings.preview_summary.clone());
             row(ui, &strings.frame, frame_summary(application));
             row(ui, &strings.video, video_summary(application.media()));
             row(ui, &strings.audio, audio_summary(application.media()));
@@ -1534,43 +2123,14 @@ fn render_playback_info(
 
 fn decoder_label(application: &Application, strings: &Strings) -> String {
     if application.uses_mpv_preview() {
-        return "mpv (libmpv)".to_owned();
+        return match application.decoder_name() {
+            Some(name) => format!("mpv ({name})"),
+            None => "mpv (libmpv)".to_owned(),
+        };
     }
     match application.hardware_decoder() {
         Some(name) => format!("ffmpeg ({name})"),
         None => format!("ffmpeg ({})", strings.decoder_software),
-    }
-}
-
-fn playback_state(application: &Application, scrubbing: bool, strings: &Strings) -> String {
-    if scrubbing {
-        return strings.state_scrubbing.clone();
-    }
-    match application.state() {
-        OpenState::Empty => strings.state_no_media.clone(),
-        OpenState::Probing { .. } => strings.state_probing.clone(),
-        OpenState::Failed { .. } => strings.state_failed.clone(),
-        OpenState::Ready => {
-            if application.is_playing() {
-                strings.state_playing.clone()
-            } else {
-                strings.state_paused.clone()
-            }
-        }
-    }
-}
-
-fn playback_sync(application: &Application, scrubbing: bool, strings: &Strings) -> String {
-    if scrubbing {
-        strings.sync_scrub.clone()
-    } else if application.is_playing() {
-        if application.uses_audio_clock() {
-            strings.sync_audio_clock.clone()
-        } else {
-            strings.sync_wall_clock.clone()
-        }
-    } else {
-        "-".to_owned()
     }
 }
 
@@ -1625,173 +2185,11 @@ fn audio_summary(media: Option<&MediaFile>) -> String {
     format!("{codec}, {sample_rate}, {channels}")
 }
 
-fn render_media_info(ui: &mut egui::Ui, media: &MediaFile, strings: &Strings) {
-    let file_name = media.path.file_name().map_or_else(
-        || media.path.display().to_string(),
-        |name| name.to_string_lossy().into_owned(),
-    );
-    ui.heading(file_name);
-    ui.monospace(media.path.display().to_string());
-    ui.separator();
-
-    ui.heading(strings.format.as_str());
-    egui::Grid::new("media_format")
-        .num_columns(2)
-        .min_col_width(115.0)
-        .striped(true)
-        .show(ui, |ui| {
-            row(ui, &strings.container, media.format.name.clone());
-            row(
-                ui,
-                &strings.long_name,
-                dash(media.format.long_name.as_deref()),
-            );
-            row(ui, &strings.duration, dash(media.duration));
-            row(ui, &strings.start_time, dash(media.start_time));
-            row(
-                ui,
-                &strings.size,
-                dash(media.format.size.map(|size| format!("{size} bytes"))),
-            );
-            row(
-                ui,
-                &strings.bit_rate,
-                dash(media.format.bit_rate.map(|rate| format!("{rate} bit/s"))),
-            );
-        });
-
-    ui.separator();
-    ui.heading(fill(&strings.streams, &[&media.streams.len().to_string()]));
-    for stream in &media.streams {
-        egui::CollapsingHeader::new(stream_title(stream, strings))
-            .default_open(false)
-            .id_salt(("stream", stream.info().index))
-            .show(ui, |ui| render_stream_details(ui, stream, strings));
+fn resolution_text(video: &VideoStream) -> String {
+    match (video.width, video.height) {
+        (Some(width), Some(height)) => format!("{width}x{height}"),
+        _ => "-".to_owned(),
     }
-
-    if !media.chapters.is_empty() {
-        ui.separator();
-        ui.heading(fill(
-            &strings.chapters,
-            &[&media.chapters.len().to_string()],
-        ));
-        egui::Grid::new("media_chapters")
-            .num_columns(4)
-            .min_col_width(45.0)
-            .striped(true)
-            .show(ui, |ui| {
-                ui.label(strings.id.as_str());
-                ui.label(strings.start_time.as_str());
-                ui.label(strings.end.as_str());
-                ui.label(strings.title.as_str());
-                ui.end_row();
-
-                for chapter in &media.chapters {
-                    ui.label(chapter.id.to_string());
-                    ui.label(chapter.start.to_string());
-                    ui.label(chapter.end.to_string());
-                    ui.label(chapter.title.as_deref().unwrap_or("-"));
-                    ui.end_row();
-                }
-            });
-    }
-}
-
-fn render_stream_details(ui: &mut egui::Ui, stream: &MediaStream, strings: &Strings) {
-    let info = stream.info();
-
-    egui::Grid::new(format!("stream_shared_{}", info.index))
-        .num_columns(2)
-        .min_col_width(115.0)
-        .striped(true)
-        .show(ui, |ui| {
-            row(ui, &strings.codec, dash(info.codec_name.as_deref()));
-            row(
-                ui,
-                &strings.codec_name,
-                dash(info.codec_long_name.as_deref()),
-            );
-            row(ui, &strings.profile, dash(info.profile.as_deref()));
-            row(ui, &strings.language, dash(info.language.as_deref()));
-            row(ui, &strings.title, dash(info.title.as_deref()));
-            row(
-                ui,
-                &strings.bit_rate,
-                dash(info.bit_rate.map(|rate| format!("{rate} bit/s"))),
-            );
-            row(ui, &strings.time_base, dash(info.time_base));
-            row(ui, &strings.start_time, dash(info.start_time));
-            row(ui, &strings.duration, dash(info.duration));
-            row(
-                ui,
-                &strings.disposition,
-                disposition_text(&info.disposition, strings),
-            );
-        });
-
-    match stream {
-        MediaStream::Video(video) => render_video_details(ui, video, strings),
-        MediaStream::Audio(audio) => render_audio_details(ui, audio, strings),
-        MediaStream::Subtitle(_) | MediaStream::Other(_) => {}
-    }
-}
-
-fn render_video_details(ui: &mut egui::Ui, video: &VideoStream, strings: &Strings) {
-    egui::Grid::new(format!("stream_video_{}", video.info.index))
-        .num_columns(2)
-        .min_col_width(115.0)
-        .striped(true)
-        .show(ui, |ui| {
-            row(ui, &strings.resolution, resolution_text(video));
-            row(
-                ui,
-                &strings.pixel_format,
-                dash(video.pixel_format.as_deref()),
-            );
-            row(ui, &strings.frame_rate, dash(video.frame_rate));
-            row(
-                ui,
-                &strings.average_frame_rate,
-                dash(video.average_frame_rate),
-            );
-            row(ui, &strings.color_range, dash(video.color_range.as_deref()));
-            row(ui, &strings.color_space, dash(video.color_space.as_deref()));
-            row(
-                ui,
-                &strings.color_transfer,
-                dash(video.color_transfer.as_deref()),
-            );
-            row(
-                ui,
-                &strings.color_primaries,
-                dash(video.color_primaries.as_deref()),
-            );
-        });
-}
-
-fn render_audio_details(ui: &mut egui::Ui, audio: &AudioStream, strings: &Strings) {
-    egui::Grid::new(format!("stream_audio_{}", audio.info.index))
-        .num_columns(2)
-        .min_col_width(115.0)
-        .striped(true)
-        .show(ui, |ui| {
-            row(
-                ui,
-                &strings.sample_rate,
-                dash(audio.sample_rate.map(|rate| format!("{rate} Hz"))),
-            );
-            row(ui, &strings.channels, dash(audio.channels));
-            row(
-                ui,
-                &strings.channel_layout,
-                dash(audio.channel_layout.as_deref()),
-            );
-            row(
-                ui,
-                &strings.sample_format,
-                dash(audio.sample_format.as_deref()),
-            );
-        });
 }
 
 fn row(ui: &mut egui::Ui, label: &str, value: impl Into<String>) {
@@ -1800,62 +2198,11 @@ fn row(ui: &mut egui::Ui, label: &str, value: impl Into<String>) {
     ui.end_row();
 }
 
-fn dash<T: std::fmt::Display>(value: Option<T>) -> String {
-    value.map_or_else(|| "-".to_owned(), |value| value.to_string())
-}
-
-fn stream_title(stream: &MediaStream, strings: &Strings) -> String {
-    let info = stream.info();
-    let kind = match stream {
-        MediaStream::Video(_) => &strings.stream_video,
-        MediaStream::Audio(_) => &strings.stream_audio,
-        MediaStream::Subtitle(_) => &strings.stream_subtitle,
-        MediaStream::Other(_) => &strings.stream_other,
-    };
-    format!("{kind} #{} - {}", info.index, codec_label(info))
-}
-
-fn codec_label(info: &StreamInfo) -> &str {
-    info.codec_name.as_deref().unwrap_or("unknown")
-}
-
-fn resolution_text(video: &VideoStream) -> String {
-    match (video.width, video.height) {
-        (Some(width), Some(height)) => format!("{width}x{height}"),
-        _ => "-".to_owned(),
-    }
-}
-
-fn disposition_text(disposition: &Disposition, strings: &Strings) -> String {
-    let mut flags = Vec::new();
-    if disposition.default {
-        flags.push(strings.flag_default.as_str());
-    }
-    if disposition.forced {
-        flags.push(strings.flag_forced.as_str());
-    }
-    if disposition.hearing_impaired {
-        flags.push(strings.flag_hearing_impaired.as_str());
-    }
-    if disposition.visual_impaired {
-        flags.push(strings.flag_visual_impaired.as_str());
-    }
-    if disposition.attached_pic {
-        flags.push(strings.flag_attached_pic.as_str());
-    }
-
-    if flags.is_empty() {
-        "-".to_owned()
-    } else {
-        flags.join(", ")
-    }
-}
-
 fn centered_message(ui: &mut egui::Ui, message: impl Into<String>) {
     ui.with_layout(
         egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
         |ui| {
-            ui.add(egui::Label::new(message.into()).wrap());
+            ui.add(egui::Label::new(message.into()).wrap().selectable(false));
         },
     );
 }
@@ -1886,6 +2233,35 @@ fn segment_color(id: SegmentId, enabled: bool, visuals: &egui::Visuals) -> egui:
     } else {
         visuals.weak_text_color().gamma_multiply(0.5)
     }
+}
+
+fn draw_segment_number(
+    painter: &egui::Painter,
+    timeline: egui::Rect,
+    segment_rect: egui::Rect,
+    number: usize,
+    background: egui::Color32,
+) {
+    let luminance = 0.2126 * f32::from(background.r())
+        + 0.7152 * f32::from(background.g())
+        + 0.0722 * f32::from(background.b());
+    let color = if luminance > 140.0 {
+        egui::Color32::from_rgb(24, 24, 24)
+    } else {
+        egui::Color32::from_rgb(236, 236, 236)
+    };
+    let galley =
+        painter.layout_no_wrap(number.to_string(), egui::FontId::proportional(11.0), color);
+    let size = galley.size();
+    let center = segment_rect.center();
+    // Short segments cannot fit their number, so it moves to the left of the
+    // block while staying inside the timeline.
+    let x = if segment_rect.width() >= size.x + 8.0 {
+        center.x - size.x / 2.0
+    } else {
+        (segment_rect.left() - size.x - 2.0).max(timeline.left() + 1.0)
+    };
+    painter.galley(egui::pos2(x, center.y - size.y / 2.0), galley, color);
 }
 
 fn draw_marker(painter: &egui::Painter, rect: egui::Rect, x: f32, color: egui::Color32) {
@@ -1936,6 +2312,96 @@ fn wheel_direction(steps: f32) -> i64 {
     if steps > 0.0 { 1 } else { -1 }
 }
 
+fn settings_path() -> Option<PathBuf> {
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))?;
+    Some(base.join("rossresscut").join("config.toml"))
+}
+
+fn load_settings() -> UiSettings {
+    let Some(path) = settings_path() else {
+        return UiSettings::default();
+    };
+    match fs::read_to_string(&path) {
+        Ok(text) => match toml::from_str(&text) {
+            Ok(settings) => settings,
+            Err(error) => {
+                log::warn!("could not parse {}: {error}", path.display());
+                UiSettings::default()
+            }
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => UiSettings::default(),
+        Err(error) => {
+            log::warn!("could not read {}: {error}", path.display());
+            UiSettings::default()
+        }
+    }
+}
+
+fn save_settings(settings: &UiSettings) {
+    let Some(path) = settings_path() else {
+        log::warn!("no config directory; settings will not persist");
+        return;
+    };
+    if let Some(parent) = path.parent()
+        && let Err(error) = fs::create_dir_all(parent)
+    {
+        log::warn!("could not create {}: {error}", parent.display());
+        return;
+    }
+    match toml::to_string_pretty(settings) {
+        Ok(text) => {
+            if let Err(error) = fs::write(&path, text) {
+                log::warn!("could not write {}: {error}", path.display());
+            }
+        }
+        Err(error) => log::warn!("could not serialize settings: {error}"),
+    }
+}
+
+fn symbol_button(ui: &mut egui::Ui, label: &str, enabled: bool, tooltip: &str) -> bool {
+    ui.add_enabled(
+        enabled,
+        egui::Button::new(label).min_size(egui::vec2(32.0, 24.0)),
+    )
+    .on_hover_text(tooltip)
+    .clicked()
+}
+
+/// Parses `HH:MM:SS.mmm` or decimal seconds from a segment input field.
+fn parse_time_input(text: &str) -> Option<Timestamp> {
+    let text = text.trim();
+    if text.is_empty() {
+        return None;
+    }
+    if let Some(time) = Timestamp::from_seconds(text) {
+        return Some(time);
+    }
+
+    let (clock, fraction) = text.split_once('.').unwrap_or((text, "0"));
+    let parts: Vec<&str> = clock.split(':').collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    let hours: i64 = parts[0].parse().ok()?;
+    let minutes: i64 = parts[1].parse().ok()?;
+    let seconds: i64 = parts[2].parse().ok()?;
+    if hours < 0 || minutes < 0 || seconds < 0 || minutes >= 60 || seconds >= 60 {
+        return None;
+    }
+    let fraction: String = fraction.chars().take(3).collect();
+    let millis: i64 = format!("{fraction:0<3}").parse().ok()?;
+    let total_seconds = hours
+        .checked_mul(3600)?
+        .checked_add(minutes.checked_mul(60)?)?
+        .checked_add(seconds)?;
+    let micros = total_seconds
+        .checked_mul(1_000_000)?
+        .checked_add(millis.checked_mul(1_000)?)?;
+    Some(Timestamp::from_micros(micros))
+}
+
 #[cfg(target_os = "linux")]
 fn pick_media_file() -> Option<PathBuf> {
     rfd::FileDialog::new()
@@ -1979,25 +2445,6 @@ fn export_command_message(strings: &Strings, error: &ExportCommandError) -> Stri
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[derive(Default)]
-    struct MemoryStorage(std::collections::BTreeMap<String, String>);
-
-    impl eframe::Storage for MemoryStorage {
-        fn get_string(&self, key: &str) -> Option<String> {
-            self.0.get(key).cloned()
-        }
-
-        fn set_string(&mut self, key: &str, value: String) {
-            self.0.insert(key.to_owned(), value);
-        }
-
-        fn remove_string(&mut self, key: &str) {
-            self.0.remove(key);
-        }
-
-        fn flush(&mut self) {}
-    }
 
     #[test]
     fn converts_timeline_fractions_to_microseconds() {
@@ -2047,16 +2494,105 @@ mod tests {
             follow_system_theme: false,
             theme: ThemeChoice::Light,
             language: Language::English,
+            export_chapters: true,
+            font_zoom: 1.0,
+            shortcuts: default_shortcuts(),
         };
 
         for language in Language::ALL {
             settings.language = language;
-            let mut storage = MemoryStorage::default();
-            eframe::set_value(&mut storage, SETTINGS_KEY, &settings);
-            let parsed: Option<UiSettings> = eframe::get_value(&storage, SETTINGS_KEY);
+            let text = toml::to_string(&settings).expect("serialize settings");
+            let parsed: UiSettings = toml::from_str(&text).expect("parse settings");
 
-            assert_eq!(parsed, Some(settings));
+            assert_eq!(parsed, settings);
         }
+    }
+
+    #[test]
+    fn parses_and_renders_shortcuts() {
+        let cases = [
+            ("Space", egui::Key::Space, false, false, false),
+            ("Ctrl+W", egui::Key::W, true, false, false),
+            ("Ctrl+,", egui::Key::Comma, true, false, false),
+            ("Ctrl+Shift+I", egui::Key::I, true, true, false),
+            ("Alt+Left", egui::Key::ArrowLeft, false, false, true),
+        ];
+        for (text, key, command, shift, alt) in cases {
+            let shortcut = Shortcut::parse(text).expect("parse shortcut");
+            assert_eq!(shortcut.key, key);
+            assert_eq!(shortcut.command, command);
+            assert_eq!(shortcut.shift, shift);
+            assert_eq!(shortcut.alt, alt);
+            assert_eq!(shortcut.label(), text);
+        }
+        assert!(Shortcut::parse("").is_none());
+        assert!(Shortcut::parse("Ctrl+NotAKey").is_none());
+    }
+
+    #[test]
+    fn default_shortcuts_cover_every_action() {
+        let shortcuts = default_shortcuts();
+        for action in ShortcutAction::ALL {
+            assert!(
+                shortcuts.contains_key(action.key()),
+                "missing default for {}",
+                action.key()
+            );
+        }
+        let settings = UiSettings::default();
+        assert_eq!(settings.binding(ShortcutAction::PlayPause), "Space");
+        assert_eq!(
+            settings.shortcut(ShortcutAction::OpenSettings),
+            Shortcut::parse("Ctrl+,")
+        );
+    }
+
+    fn press_shortcut(
+        context: &egui::Context,
+        app: &mut RossresscutApp,
+        key: egui::Key,
+        modifiers: egui::Modifiers,
+    ) {
+        let mut input = egui::RawInput::default();
+        input.events.push(egui::Event::ModifiersChanged(modifiers));
+        input.events.push(egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        });
+        context
+            .run_pass(input, |context| {
+                app.handle_shortcuts(context);
+            })
+            .drop_without_applying_deltas();
+    }
+
+    #[test]
+    fn open_settings_shortcut_uses_the_configured_binding() {
+        let mut app = RossresscutApp::default();
+        let context = egui::Context::default();
+
+        press_shortcut(&context, &mut app, egui::Key::Comma, egui::Modifiers::CTRL);
+        assert!(app.settings_open, "default Ctrl+, must open settings");
+
+        app.settings_open = false;
+        app.settings
+            .shortcuts
+            .insert("open_settings".to_owned(), "F1".to_owned());
+        press_shortcut(&context, &mut app, egui::Key::Comma, egui::Modifiers::CTRL);
+        assert!(!app.settings_open, "the old binding must stop working");
+
+        press_shortcut(&context, &mut app, egui::Key::F1, egui::Modifiers::NONE);
+        assert!(app.settings_open, "the new binding must work immediately");
+
+        app.settings_open = false;
+        app.settings
+            .shortcuts
+            .insert("open_settings".to_owned(), String::new());
+        press_shortcut(&context, &mut app, egui::Key::F1, egui::Modifiers::NONE);
+        assert!(!app.settings_open, "an empty binding must do nothing");
     }
 
     #[test]

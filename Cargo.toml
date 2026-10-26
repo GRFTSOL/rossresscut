@@ -17,6 +17,7 @@ log = "0.4"
 mpv-engine = { version = "0.2.1", features = ["wgpu"], optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+toml = "0.8"
 wgpu = { version = "30", default-features = false, optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]

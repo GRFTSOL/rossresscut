@@ -148,7 +148,7 @@ fn exports_the_first_enabled_segment_through_the_application() {
         .expect("create a segment from the markers");
 
     application
-        .start_export(output.clone())
+        .start_export(output.clone(), true)
         .expect("start export");
 
     wait_for_export(&mut application);
@@ -165,6 +165,7 @@ fn exports_the_first_enabled_segment_through_the_application() {
     assert_eq!(after.0, before.0);
     assert_eq!(after.1, before.1);
     assert_eq!(after.2, before.2);
+    assert_eq!(chapter_count(&output), 1, "one chapter for one segment");
 
     if let Err(error) = fs::remove_dir_all(&directory) {
         eprintln!("could not remove {}: {error}", directory.display());
@@ -213,6 +214,60 @@ fn dominant(rgb: (u8, u8, u8)) -> &'static str {
     }
 }
 
+fn chapter_count(path: &Path) -> usize {
+    let output = Command::new("ffprobe")
+        .args(["-v", "error", "-show_chapters", "-of", "json"])
+        .arg(path)
+        .output()
+        .expect("run ffprobe for chapters");
+    assert!(output.status.success(), "ffprobe failed on chapters");
+    let value: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("parse chapter json");
+    value["chapters"].as_array().map_or(0, Vec::len)
+}
+
+#[test]
+fn cut_points_create_and_split_segments() {
+    let directory = fixture_directory();
+    let source = directory.join("source.mp4");
+    generate_fixture(&source);
+
+    let mut application = Application::new();
+    application.open_media(source.clone());
+    wait_for_ready(&mut application);
+
+    application
+        .add_cut_point(Timestamp::from_micros(2_000_000))
+        .expect("add the first cut point");
+    assert!(application.timeline().is_empty());
+    assert_eq!(
+        application.in_point(),
+        Some(Timestamp::from_micros(2_000_000))
+    );
+
+    application
+        .add_cut_point(Timestamp::from_micros(4_000_000))
+        .expect("add the second cut point");
+    assert_eq!(application.timeline().len(), 1);
+    let segment = application.timeline().segments()[0];
+    assert_eq!(segment.start(), Timestamp::from_micros(2_000_000));
+    assert_eq!(segment.end(), Timestamp::from_micros(4_000_000));
+
+    application.select_segment(Some(segment.id()));
+    application.seek(Timestamp::from_micros(3_000_000));
+    application
+        .split_selected_segment()
+        .expect("split at the playhead");
+    assert_eq!(application.timeline().len(), 2);
+
+    application.remove_cut_point();
+    assert_eq!(application.timeline().len(), 1);
+
+    if let Err(error) = fs::remove_dir_all(&directory) {
+        eprintln!("could not remove {}: {error}", directory.display());
+    }
+}
+
 #[test]
 fn exports_enabled_segments_in_timeline_order() {
     let directory = fixture_directory();
@@ -234,7 +289,7 @@ fn exports_enabled_segments_in_timeline_order() {
     }
 
     application
-        .start_export(output.clone())
+        .start_export(output.clone(), true)
         .expect("start multi-segment export");
     wait_for_export(&mut application);
 
@@ -251,6 +306,7 @@ fn exports_enabled_segments_in_timeline_order() {
         ("blue", "red", "green"),
         "application export must follow timeline order"
     );
+    assert_eq!(chapter_count(&output), 3, "one chapter per segment");
 
     if let Err(error) = fs::remove_dir_all(&directory) {
         eprintln!("could not remove {}: {error}", directory.display());

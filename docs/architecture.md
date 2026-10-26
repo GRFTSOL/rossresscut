@@ -155,10 +155,15 @@ media::preview 导入为 wgpu::Texture
   → ffmpeg -ss before -i -t -map 0 -c copy -avoid_negative_ts make_zero
 
 多 Segment
-  → 每个 Segment 切片到临时文件（额外 -shortest）
+  → 每个 Segment 切片到临时文件
+  → ffprobe 读取每个临时片段的实际时长
+  → 用实际时长生成章节（起点回退到关键帧，请求时长不等于实际时长）
   → ffmpeg -f concat -safe 0 -i list -map 0 -c copy
   → 临时目录在成功 / 失败 / 取消后删除
 ```
+
+切片不使用 `-shortest`：源文件带有附加图片或字幕流时，它会让 FFmpeg
+在最短流处提前结束，产物可能近乎为空。各段长度由 `-t` 控制。
 
 多段顺序只来自 `Timeline.segments()`；不得按 `start` 重新排序。
 拼接语义与已知间隙见 `docs/investigations/multi-segment-concat.md`。
@@ -465,8 +470,8 @@ UI 布局：
 ```text
 顶部：菜单栏（File / View / Help）、设置按钮、当前媒体标题（不含扩展名）
 中央：视频预览（点击切换播放 / 暂停，滚轮按关键帧步进）
-右侧：播放信息（mpv Tab 风格）在上，Segment 列表（输出顺序，可上移 / 下移）、媒体信息与默认折叠的流信息在下
-底部：自定义时间轴与精确播放头、播放 / 暂停、时间与警告
+右侧：播放信息（mpv Tab 风格）在上；Segment 列表（输出顺序，添加切点 / 删除切点 / 上移 / 下移 / 分割）在下
+底部：时间轴单独一行；下方是播放控制（15 个符号按钮 + 片段起止时间输入框）；右下角为 Export 按钮
 ```
 
 设置页：

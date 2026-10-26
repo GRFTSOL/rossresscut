@@ -117,6 +117,38 @@ fn duration_seconds(path: &Path) -> f64 {
         .expect("numeric duration")
 }
 
+fn chapters(path: &Path) -> Vec<(f64, f64)> {
+    let output = Command::new("ffprobe")
+        .args(["-v", "error", "-show_chapters", "-of", "json"])
+        .arg(path)
+        .output()
+        .expect("run ffprobe for chapters");
+    assert!(output.status.success(), "ffprobe failed on chapters");
+    let value: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("parse chapter json");
+    value["chapters"]
+        .as_array()
+        .map(|chapters| {
+            chapters
+                .iter()
+                .map(|chapter| {
+                    let start = chapter["start_time"]
+                        .as_str()
+                        .expect("chapter start")
+                        .parse()
+                        .expect("numeric chapter start");
+                    let end = chapter["end_time"]
+                        .as_str()
+                        .expect("chapter end")
+                        .parse()
+                        .expect("numeric chapter end");
+                    (start, end)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn frame_at(path: &Path, seconds: &str) -> Vec<u8> {
     let output = Command::new("ffmpeg")
         .args(["-v", "error", "-i"])
@@ -158,6 +190,62 @@ fn dominant(rgb: (u8, u8, u8)) -> &'static str {
         "blue"
     } else {
         "other"
+    }
+}
+
+#[test]
+fn chapters_follow_actual_part_lengths() {
+    let directory = fixture_directory();
+    let source = directory.join("source.mp4");
+    let output = directory.join("chapters.mkv");
+    generate_fixture(&source);
+
+    // Neither start is a keyframe, so FFmpeg falls back to the previous
+    // keyframe and makes each part longer than requested.
+    let segments = vec![
+        ExportSegment::new(
+            Timestamp::from_micros(500_000),
+            Timestamp::from_micros(2_500_000),
+        )
+        .expect("valid segment"),
+        ExportSegment::new(
+            Timestamp::from_micros(5_200_000),
+            Timestamp::from_micros(6_400_000),
+        )
+        .expect("valid segment"),
+    ];
+    let request = MultiExportRequest::new(&source, segments, &output)
+        .expect("valid request")
+        .with_chapters(true);
+    let mut export = MultiExport::start(request).expect("start multi export");
+    let error = run_export(&mut export);
+    assert!(error.is_none(), "multi export failed: {error:?}");
+    drop(export);
+
+    let chapters = chapters(&output);
+    assert_eq!(chapters.len(), 2, "one chapter per segment");
+    assert!(chapters[0].0.abs() < 0.01, "first chapter starts at zero");
+    assert!(
+        (chapters[1].0 - chapters[0].1).abs() < 0.01,
+        "chapters must be contiguous: {chapters:?}"
+    );
+
+    let output_duration = duration_seconds(&output);
+    assert!(
+        (chapters[1].1 - output_duration).abs() < 0.35,
+        "last chapter must reach the output end: {chapters:?}, output {output_duration}"
+    );
+    assert!(
+        chapters[0].1 > 2.2,
+        "keyframe fallback should lengthen the first part: {chapters:?}"
+    );
+    assert!(
+        chapters[1].1 > 3.2,
+        "chapters must use produced lengths, not requested ones: {chapters:?}"
+    );
+
+    if let Err(error) = fs::remove_dir_all(&directory) {
+        eprintln!("could not remove {}: {error}", directory.display());
     }
 }
 

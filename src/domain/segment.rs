@@ -307,6 +307,35 @@ impl Timeline {
     pub fn sort_by_start(&mut self) {
         self.segments.sort_by_key(|segment| segment.start());
     }
+
+    /// Splits `id` at `at` and returns the new second segment's ID.
+    ///
+    /// The original segment keeps its ID for the first part. Both parts keep
+    /// the enabled flag and the second part is inserted immediately after the
+    /// first, preserving timeline order.
+    ///
+    /// Returns `InvalidRange` unless `at` is strictly inside the segment.
+    pub fn split(&mut self, id: SegmentId, at: Timestamp) -> Result<SegmentId, TimelineError> {
+        let index = self.index_of(id).ok_or(TimelineError::NotFound)?;
+        let segment = self.segments[index];
+        if at <= segment.start || at >= segment.end {
+            return Err(TimelineError::InvalidRange);
+        }
+
+        let second_id = SegmentId::new(self.next_id);
+        let first = Segment::new(id, segment.start, at).ok_or(TimelineError::InvalidRange)?;
+        let second = Segment::new(second_id, at, segment.end).ok_or(TimelineError::InvalidRange)?;
+        let next_id = self
+            .next_id
+            .checked_add(1)
+            .ok_or(TimelineError::IdExhausted)?;
+
+        self.next_id = next_id;
+        self.segments[index] = first.with_enabled(segment.enabled);
+        self.segments
+            .insert(index + 1, second.with_enabled(segment.enabled));
+        Ok(second_id)
+    }
 }
 
 #[cfg(test)]
@@ -551,5 +580,49 @@ mod tests {
         timeline.clear();
         assert_eq!(timeline.source(), None);
         assert!(timeline.is_empty());
+    }
+
+    #[test]
+    fn splits_a_segment_at_an_interior_time() {
+        let mut timeline = Timeline::new(PathBuf::from("source.mp4"));
+        let original = timeline
+            .push(timestamp(1_000_000), timestamp(5_000_000))
+            .expect("valid");
+
+        let second = timeline
+            .split(original, timestamp(3_000_000))
+            .expect("split");
+
+        assert_eq!(timeline.segments().len(), 2);
+        assert_eq!(
+            timeline.segments(),
+            &[
+                segment(original.get(), 1_000_000, 3_000_000),
+                segment(second.get(), 3_000_000, 5_000_000),
+            ]
+        );
+        assert_ne!(second, original);
+    }
+
+    #[test]
+    fn rejects_splits_on_or_outside_the_bounds() {
+        let mut timeline = Timeline::new(PathBuf::from("source.mp4"));
+        let id = timeline
+            .push(timestamp(1_000_000), timestamp(5_000_000))
+            .expect("valid");
+
+        assert_eq!(
+            timeline.split(id, timestamp(1_000_000)),
+            Err(TimelineError::InvalidRange)
+        );
+        assert_eq!(
+            timeline.split(id, timestamp(5_000_000)),
+            Err(TimelineError::InvalidRange)
+        );
+        assert_eq!(
+            timeline.split(SegmentId::new(99), timestamp(3_000_000)),
+            Err(TimelineError::NotFound)
+        );
+        assert_eq!(timeline.segments().len(), 1);
     }
 }

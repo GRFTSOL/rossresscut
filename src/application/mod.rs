@@ -14,7 +14,7 @@ use crate::domain::segment::{Segment, SegmentId, Timeline, TimelineError};
 use crate::domain::time::{Duration, Timestamp};
 use crate::error::AppError;
 use crate::media::export::{
-    ExportProcess, ExportRequest, ExportSegment, MultiExport, MultiExportRequest,
+    ChapterSpec, ExportProcess, ExportRequest, ExportSegment, MultiExport, MultiExportRequest,
 };
 use crate::media::ffprobe::{self, ProbeError};
 use crate::media::preview::{
@@ -307,6 +307,27 @@ impl Application {
         )
     }
 
+    /// Decoder reported by the active preview backend.
+    ///
+    /// The mpv path returns what libmpv actually selected, for example
+    /// `vaapi`, `vaapi-copy`, `d3d11va`, `videotoolbox` or `no` for software.
+    /// The external FFmpeg fallback returns the requested accelerator.
+    pub fn decoder_name(&self) -> Option<String> {
+        #[cfg(feature = "mpv-preview")]
+        if self.playback.mpv_present() {
+            return Some(
+                self.playback
+                    .mpv_decoder
+                    .clone()
+                    .unwrap_or_else(|| "libmpv".to_owned()),
+            );
+        }
+        self.playback.video.as_ref().map_or_else(
+            || self.playback.hardware.name().map(str::to_owned),
+            |video| video.hardware().name().map(str::to_owned),
+        )
+    }
+
     /// Overrides the hardware backend used by subsequently started preview
     /// decoders.
     ///
@@ -334,7 +355,11 @@ impl Application {
     /// part to a temporary file and join them with the concat demuxer. Both
     /// paths use stream copy. Seeking uses an input seek, so each segment may
     /// start at the keyframe before its requested start.
-    pub fn start_export(&mut self, output: PathBuf) -> Result<(), ExportCommandError> {
+    pub fn start_export(
+        &mut self,
+        output: PathBuf,
+        chapters: bool,
+    ) -> Result<(), ExportCommandError> {
         if !matches!(self.state, OpenState::Ready) {
             return Err(ExportCommandError::NoMedia);
         }
@@ -364,6 +389,15 @@ impl Application {
                 ExportRequest::new(source, segment.start(), segment.end(), output.clone())
                     .ok_or(ExportCommandError::InvalidOutput)?;
             let duration = request.duration();
+            let request = if chapters {
+                request.with_chapters(vec![ChapterSpec {
+                    start: Duration::ZERO,
+                    end: duration,
+                    title: "Segment 1".to_owned(),
+                }])
+            } else {
+                request
+            };
             let process = ExportProcess::start(&request).map_err(ExportCommandError::Start)?;
 
             self.export_status = ExportStatus::Running {
@@ -384,7 +418,8 @@ impl Application {
             })
             .collect::<Result<_, _>>()?;
         let request = MultiExportRequest::new(source, export_segments, output.clone())
-            .ok_or(ExportCommandError::InvalidOutput)?;
+            .ok_or(ExportCommandError::InvalidOutput)?
+            .with_chapters(chapters);
         let duration = request.total_duration();
         let process = MultiExport::start(request).map_err(ExportCommandError::StartMulti)?;
 
@@ -475,6 +510,91 @@ impl Application {
         self.selected_segment = Some(id);
         self.markers = Markers::default();
         Ok(id)
+    }
+
+    /// Adds a cut point at `position`.
+    ///
+    /// The first point becomes the pending segment start. A later point at a
+    /// greater position becomes the end and creates the segment immediately.
+    /// A point at or before the pending start replaces it.
+    pub fn add_cut_point(&mut self, position: Timestamp) -> Result<(), SegmentCommandError> {
+        let Some(media) = self.media.as_ref() else {
+            return Err(SegmentCommandError::NoMedia);
+        };
+        let position = clamp_position(position, media.duration);
+        match self.markers.in_point {
+            None => {
+                self.markers.in_point = Some(position);
+                self.markers.out_point = None;
+                Ok(())
+            }
+            Some(start) if position > start => {
+                self.markers.out_point = Some(position);
+                self.add_segment().map(|_| ())
+            }
+            Some(_) => {
+                self.markers.in_point = Some(position);
+                self.markers.out_point = None;
+                Ok(())
+            }
+        }
+    }
+
+    /// Removes pending cut points, or the selected segment when none is
+    /// pending.
+    pub fn remove_cut_point(&mut self) {
+        if self.markers.in_point.is_some() || self.markers.out_point.is_some() {
+            self.clear_markers();
+        } else {
+            self.remove_selected_segment();
+        }
+    }
+
+    /// Splits the selected segment at the current playback position.
+    ///
+    /// The new second part becomes selected.
+    pub fn split_selected_segment(&mut self) -> Result<SegmentId, SegmentCommandError> {
+        let id = self
+            .selected_segment
+            .ok_or(SegmentCommandError::NoSelection)?;
+        let second =
+            self.timeline
+                .split(id, self.playback.position)
+                .map_err(|error| match error {
+                    TimelineError::NotFound => SegmentCommandError::NoSelection,
+                    TimelineError::InvalidRange => SegmentCommandError::EmptyRange,
+                    TimelineError::IdExhausted => SegmentCommandError::IdExhausted,
+                })?;
+        self.selected_segment = Some(second);
+        Ok(second)
+    }
+
+    /// Selects the previous segment in timeline order.
+    pub fn select_previous_segment(&mut self) {
+        let segments = self.timeline.segments();
+        if segments.is_empty() {
+            return;
+        }
+        let index = self
+            .selected_segment
+            .and_then(|id| self.timeline.index_of(id))
+            .and_then(|index| index.checked_sub(1))
+            .unwrap_or(0);
+        self.selected_segment = Some(segments[index].id());
+    }
+
+    /// Selects the next segment in timeline order.
+    pub fn select_next_segment(&mut self) {
+        let segments = self.timeline.segments();
+        if segments.is_empty() {
+            return;
+        }
+        let index = self
+            .selected_segment
+            .and_then(|id| self.timeline.index_of(id))
+            .map(|index| (index + 1).min(segments.len() - 1))
+            .unwrap_or(segments.len() - 1);
+        self.selected_segment = Some(segments[index].id());
     }
 
     /// Removes the selected segment.
@@ -715,6 +835,67 @@ impl Application {
         self.playback.seek(target, media);
     }
 
+    /// Seeks to the start of the media.
+    pub fn seek_to_start(&mut self) {
+        self.seek(Timestamp::ZERO);
+    }
+
+    /// Seeks to the end of the media.
+    pub fn seek_to_end(&mut self) {
+        if let Some(duration) = self.duration() {
+            self.seek(Timestamp::from_micros(
+                i64::try_from(duration.micros()).unwrap_or(i64::MAX),
+            ));
+        }
+    }
+
+    /// Seeks to the selected segment's start.
+    pub fn seek_to_selected_segment_start(&mut self) {
+        let Some(segment) = self
+            .selected_segment
+            .and_then(|id| self.timeline.get(id).copied())
+        else {
+            return;
+        };
+        self.seek(segment.start());
+    }
+
+    /// Seeks to the selected segment's end.
+    pub fn seek_to_selected_segment_end(&mut self) {
+        let Some(segment) = self
+            .selected_segment
+            .and_then(|id| self.timeline.get(id).copied())
+        else {
+            return;
+        };
+        self.seek(segment.end());
+    }
+
+    /// Pauses playback and moves by one source frame.
+    pub fn step_frame(&mut self, forward: bool) {
+        if self.playback.playing {
+            self.pause();
+        }
+        let micros = i64::try_from(self.frame_duration().micros()).unwrap_or(33_333);
+        self.skip(if forward { micros } else { -micros });
+    }
+
+    fn frame_duration(&self) -> Duration {
+        let rate = self.media.as_ref().and_then(|media| {
+            media.streams.iter().find_map(|stream| match stream {
+                MediaStream::Video(video) => video.frame_rate,
+                _ => None,
+            })
+        });
+        rate.and_then(|rate| {
+            let numerator = u128::from(rate.numerator());
+            let denominator = u128::from(rate.denominator());
+            let micros = denominator.checked_mul(1_000_000)? / numerator;
+            u64::try_from(micros).ok().map(Duration::from_micros)
+        })
+        .unwrap_or(Duration::from_micros(33_333))
+    }
+
     /// Moves the playback position by `delta_micros` and clamps it to the media.
     pub fn skip(&mut self, delta_micros: i64) {
         let Some(media) = self.media.as_ref() else {
@@ -926,6 +1107,10 @@ struct Playback {
     mpv_pending_seek: Option<(Timestamp, bool)>,
     #[cfg(feature = "mpv-preview")]
     mpv_frame_ready: bool,
+    #[cfg(feature = "mpv-preview")]
+    mpv_decoder: Option<String>,
+    #[cfg(feature = "mpv-preview")]
+    mpv_decoder_checked_at: Option<Instant>,
 }
 
 impl Default for Playback {
@@ -956,6 +1141,10 @@ impl Default for Playback {
             mpv_pending_seek: None,
             #[cfg(feature = "mpv-preview")]
             mpv_frame_ready: false,
+            #[cfg(feature = "mpv-preview")]
+            mpv_decoder: None,
+            #[cfg(feature = "mpv-preview")]
+            mpv_decoder_checked_at: None,
         }
     }
 }
@@ -1061,6 +1250,8 @@ impl Playback {
             self.mpv_size = None;
             self.mpv_pending_seek = None;
             self.mpv_frame_ready = false;
+            self.mpv_decoder = None;
+            self.mpv_decoder_checked_at = None;
         }
     }
 
@@ -1099,6 +1290,16 @@ impl Playback {
             self.mpv_pending_seek = None;
         }
         let failed = events.failed.clone();
+        // `hwdec-current` is stable for the lifetime of a decoder, so a slow
+        // poll is enough and keeps libmpv property reads out of the frame path.
+        let now = Instant::now();
+        if self
+            .mpv_decoder_checked_at
+            .is_none_or(|last| now.duration_since(last) >= std::time::Duration::from_millis(500))
+        {
+            self.mpv_decoder = mpv.hardware_decoder();
+            self.mpv_decoder_checked_at = Some(now);
+        }
         if let Some(message) = failed.as_deref() {
             log::warn!("mpv preview failed: {message}");
             self.warning = Some(format!("mpv preview failed: {message}"));
@@ -1728,7 +1929,7 @@ mod tests {
         let mut application = Application::new();
 
         let error = application
-            .start_export(PathBuf::from("out.mkv"))
+            .start_export(PathBuf::from("out.mkv"), false)
             .expect_err("export must fail without media");
 
         assert!(matches!(error, ExportCommandError::NoMedia));

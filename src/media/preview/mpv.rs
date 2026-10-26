@@ -170,6 +170,10 @@ impl MpvPreview {
         let engine = Engine::video()
             .property("keep-open", "no")
             .property("hr-seek", "yes")
+            // `auto-safe` picks the platform media engine (VAAPI on Linux,
+            // D3D11VA on Windows, VideoToolbox on macOS) and falls back to
+            // software when no device is available.
+            .property("hwdec", "auto-safe")
             .property("pause", if config.start_paused { "yes" } else { "no" })
             .build()
             .map_err(|error| MpvPreviewError::Engine {
@@ -258,6 +262,12 @@ impl MpvPreview {
         self.engine
             .set_export_size(width, height)
             .map_err(|error| command_error("set export size", error))
+    }
+
+    /// Hardware decoder mpv is actually using, for example `vaapi`,
+    /// `vaapi-copy`, `d3d11va` or `no` after falling back to software.
+    pub fn hardware_decoder(&self) -> Option<String> {
+        self.engine.get_property::<String>("hwdec-current").ok()
     }
 
     /// Drains pending mpv events into project-owned flags.

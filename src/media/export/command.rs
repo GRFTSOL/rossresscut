@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 
 use crate::domain::time::{Duration, Timestamp};
 
+use super::chapters::ChapterSpec;
+
 /// A validated request for one lossless segment export.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExportRequest {
@@ -17,7 +19,7 @@ pub struct ExportRequest {
     start: Timestamp,
     end: Timestamp,
     output: PathBuf,
-    shortest: bool,
+    chapters: Vec<ChapterSpec>,
 }
 
 impl ExportRequest {
@@ -41,17 +43,19 @@ impl ExportRequest {
             start,
             end,
             output,
-            shortest: false,
+            chapters: Vec::new(),
         })
     }
 
-    /// Stops at the shortest stream when enabled.
-    ///
-    /// Multi-segment export uses this to keep each part's audio and video
-    /// lengths close, which reduces the join gap between parts.
-    pub const fn with_shortest(mut self, shortest: bool) -> Self {
-        self.shortest = shortest;
+    /// Attaches chapters written to the output container.
+    pub fn with_chapters(mut self, chapters: Vec<ChapterSpec>) -> Self {
+        self.chapters = chapters;
         self
+    }
+
+    /// Returns the chapters to write.
+    pub fn chapters(&self) -> &[ChapterSpec] {
+        &self.chapters
     }
 
     /// Returns the media file being exported.
@@ -83,9 +87,10 @@ impl ExportRequest {
 /// Builds the FFmpeg argument list for a stream-copy export.
 ///
 /// `-ss` is placed before `-i` for a fast keyframe seek. `-t` is placed after
-/// `-i` and uses the requested segment length. `-c copy` applies to every
-/// mapped stream.
-pub fn build_args(request: &ExportRequest) -> Vec<OsString> {
+/// all inputs and uses the requested segment length. `-c copy` applies to every
+/// mapped stream. When `metadata` is provided it is a `ffmetadata` input at
+/// index 1 and its chapters are mapped to the output.
+pub fn build_args(request: &ExportRequest, metadata: Option<&Path>) -> Vec<OsString> {
     let mut args: Vec<OsString> = vec![
         "-nostdin".into(),
         "-hide_banner".into(),
@@ -105,6 +110,11 @@ pub fn build_args(request: &ExportRequest) -> Vec<OsString> {
     args.push("-i".into());
     args.push(request.source.as_os_str().to_owned());
 
+    if let Some(metadata) = metadata {
+        args.push("-i".into());
+        args.push(metadata.as_os_str().to_owned());
+    }
+
     args.push("-t".into());
     args.push(format_duration(request.duration()).into());
 
@@ -113,14 +123,15 @@ pub fn build_args(request: &ExportRequest) -> Vec<OsString> {
     args.push("-c".into());
     args.push("copy".into());
 
+    if metadata.is_some() {
+        args.push("-map_chapters".into());
+        args.push("1".into());
+    }
+
     if cuts_start {
         // Rebase the output to zero so the saved segment starts at 0.
         args.push("-avoid_negative_ts".into());
         args.push("make_zero".into());
-    }
-
-    if request.shortest {
-        args.push("-shortest".into());
     }
 
     args.push("-ignore_unknown".into());
@@ -161,7 +172,7 @@ mod tests {
     }
 
     fn args(request: &ExportRequest) -> Vec<String> {
-        build_args(request)
+        build_args(request, None)
             .into_iter()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect()
@@ -235,7 +246,7 @@ mod tests {
         let values = args(&request(1_000_000, 2_000_000));
         assert_eq!(values.last().map(String::as_str), Some("output.mp4"));
         assert_eq!(
-            build_args(&request(1_000_000, 2_000_000))
+            build_args(&request(1_000_000, 2_000_000), None)
                 .last()
                 .map(OsString::as_os_str),
             Some(OsStr::new("output.mp4"))

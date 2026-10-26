@@ -149,6 +149,18 @@ ADR 0004 §1 的 cpal 主时钟与 §3 的 FFmpeg scrub 设计由本节取代。
 - 暂停、暂停中 seek、恢复、音量、静音均已在 spike 中验证。
 - 多音轨、设备切换、真实扬声器延迟与 10 分钟以上漂移仍是 OQ-11 / OQ-9。
 
+## 硬件解码
+
+预览启动时显式设置 `hwdec=auto-safe`：
+
+- Linux 默认 VAAPI，Windows 默认 D3D11VA，macOS 默认 VideoToolbox；
+- 设备不可用时由 mpv 回退软件解码；
+- 解码器不可用时不得静默失败，播放信息必须显示实际后端。
+
+UI 通过 `hwdec-current` 显示实际后端（例如 `vaapi`、`vaapi-copy`、
+`videotoolbox`、`no`）。该属性由 `Application` 每 500 ms 读取一次并缓存，
+不放在 egui 帧的同步路径上。
+
 ## 快速 scrub 与精确 seek
 
 交互规则：

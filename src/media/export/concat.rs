@@ -12,10 +12,14 @@ use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::domain::time::{Duration, Timestamp};
+use crate::media::ffprobe;
 
+use super::chapters::{ChapterSpec, render_ffmetadata};
 use super::{ExportError, ExportEvent, ExportProcess, ExportRequest};
 
 /// One source-time range in a multi-segment export.
@@ -53,6 +57,7 @@ pub struct MultiExportRequest {
     source: PathBuf,
     segments: Vec<ExportSegment>,
     output: PathBuf,
+    chapters: bool,
 }
 
 impl MultiExportRequest {
@@ -74,7 +79,19 @@ impl MultiExportRequest {
             source,
             segments,
             output,
+            chapters: false,
         })
+    }
+
+    /// Enables or disables generated chapters.
+    pub const fn with_chapters(mut self, chapters: bool) -> Self {
+        self.chapters = chapters;
+        self
+    }
+
+    /// Returns whether chapters should be generated.
+    pub const fn chapters(&self) -> bool {
+        self.chapters
     }
 
     /// Returns the source file.
@@ -181,8 +198,10 @@ pub struct MultiExport {
     output: PathBuf,
     parts: Vec<PathBuf>,
     work_dir: TempDir,
+    chapters: bool,
     total_duration: Duration,
     completed_duration: Duration,
+    part_durations: Vec<Duration>,
     stage: Option<Stage>,
 }
 
@@ -190,6 +209,9 @@ enum Stage {
     Cutting {
         index: usize,
         process: ExportProcess,
+    },
+    ProbingDurations {
+        durations: Receiver<Vec<Duration>>,
     },
     Concatenating {
         process: ExportProcess,
@@ -207,10 +229,11 @@ impl MultiExport {
             .extension()
             .and_then(|extension| extension.to_str())
             .unwrap_or("mkv");
-        let parts = (0..request.segments.len())
+        let parts: Vec<PathBuf> = (0..request.segments.len())
             .map(|index| work_dir.path().join(format!("part-{index:04}.{extension}")))
             .collect();
         let total_duration = request.total_duration();
+        let part_durations = vec![Duration::ZERO; parts.len()];
 
         let mut export = Self {
             source: request.source,
@@ -218,8 +241,10 @@ impl MultiExport {
             output: request.output,
             parts,
             work_dir,
+            chapters: request.chapters,
             total_duration,
             completed_duration: Duration::ZERO,
+            part_durations,
             stage: None,
         };
         export.start_cut(0)?;
@@ -274,7 +299,34 @@ impl MultiExport {
                                     error: Some(error.to_string()),
                                 });
                             }
-                        } else if let Err(error) = self.start_concat() {
+                        } else {
+                            if let Err(error) = self.start_probing_durations() {
+                                self.stage = Some(Stage::Failed);
+                                return Some(MultiExportEvent::Finished {
+                                    error: Some(error.to_string()),
+                                });
+                            }
+                        }
+                    }
+                },
+                Stage::ProbingDurations { durations } => match durations.try_recv() {
+                    Ok(found) => {
+                        self.part_durations = found;
+                        if let Err(error) = self.start_concat() {
+                            self.stage = Some(Stage::Failed);
+                            return Some(MultiExportEvent::Finished {
+                                error: Some(error.to_string()),
+                            });
+                        }
+                    }
+                    Err(TryRecvError::Empty) => {
+                        self.stage = Some(Stage::ProbingDurations { durations });
+                        return None;
+                    }
+                    Err(TryRecvError::Disconnected) => {
+                        // The probe thread panicked or was torn down. Keep the
+                        // requested lengths rather than failing the export.
+                        if let Err(error) = self.start_concat() {
                             self.stage = Some(Stage::Failed);
                             return Some(MultiExportEvent::Finished {
                                 error: Some(error.to_string()),
@@ -339,10 +391,53 @@ impl MultiExport {
             segment.end(),
             &self.parts[index],
         )
-        .ok_or(MultiExportError::InvalidPart { index })?
-        .with_shortest(true);
+        .ok_or(MultiExportError::InvalidPart { index })?;
         let process = ExportProcess::start(&request).map_err(MultiExportError::Export)?;
         self.stage = Some(Stage::Cutting { index, process });
+        Ok(())
+    }
+
+    /// Probes the produced parts on a worker thread.
+    ///
+    /// Chapters must use the real part lengths: `-ss` falls back to the
+    /// previous keyframe, so a part is usually longer than its request.
+    fn start_probing_durations(&mut self) -> Result<(), MultiExportError> {
+        let parts = self.parts.clone();
+        let requested: Vec<Duration> = self
+            .segments
+            .iter()
+            .map(|segment| segment.duration())
+            .collect();
+        let (sender, receiver) = mpsc::channel();
+        let spawned = thread::Builder::new()
+            .name("export-chapter-probe".to_owned())
+            .spawn(move || {
+                let durations = parts
+                    .iter()
+                    .zip(requested)
+                    .map(|(part, requested)| match ffprobe::probe(part) {
+                        Ok(media) => media.duration.unwrap_or(requested),
+                        Err(error) => {
+                            log::warn!(
+                                "could not probe {} for chapter timing: {error}",
+                                part.display()
+                            );
+                            requested
+                        }
+                    })
+                    .collect();
+                // The receiver is dropped when the export is cancelled.
+                let _ = sender.send(durations);
+            });
+        if let Err(error) = spawned {
+            log::warn!(
+                "could not start the chapter probe thread: {error}; using requested lengths"
+            );
+            return self.start_concat();
+        }
+        self.stage = Some(Stage::ProbingDurations {
+            durations: receiver,
+        });
         Ok(())
     }
 
@@ -355,9 +450,38 @@ impl MultiExport {
         }
         fs::write(&list_path, list).map_err(MultiExportError::TempFile)?;
 
-        let process =
-            ExportProcess::start_with_args(concat_args(&list_path, &self.output), &self.output)
-                .map_err(MultiExportError::Export)?;
+        let metadata_path = if self.chapters {
+            let mut chapters = Vec::with_capacity(self.segments.len());
+            let mut start = Duration::ZERO;
+            for (index, _segment) in self.segments.iter().enumerate() {
+                let duration = self.part_durations[index];
+                // A part whose progress stream reported nothing falls back to
+                // the requested length so chapters never collapse.
+                let duration = if duration.micros() == 0 {
+                    self.segments[index].duration()
+                } else {
+                    duration
+                };
+                let end = start.checked_add(duration).unwrap_or(start);
+                chapters.push(ChapterSpec {
+                    start,
+                    end,
+                    title: format!("Segment {}", index + 1),
+                });
+                start = end;
+            }
+            let path = self.work_dir.path().join("chapters.txt");
+            fs::write(&path, render_ffmetadata(&chapters)).map_err(MultiExportError::TempFile)?;
+            Some(path)
+        } else {
+            None
+        };
+
+        let process = ExportProcess::start_with_args(
+            concat_args(&list_path, &self.output, metadata_path.as_deref()),
+            &self.output,
+        )
+        .map_err(MultiExportError::Export)?;
         self.stage = Some(Stage::Concatenating { process });
         Ok(())
     }
@@ -373,14 +497,14 @@ impl Drop for MultiExport {
                         log::warn!("could not reap the ffmpeg part process: {error}");
                     }
                 }
-                Stage::Done | Stage::Failed => {}
+                Stage::Done | Stage::Failed | Stage::ProbingDurations { .. } => {}
             }
         }
     }
 }
 
-fn concat_args(list: &Path, output: &Path) -> Vec<OsString> {
-    vec![
+fn concat_args(list: &Path, output: &Path, metadata: Option<&Path>) -> Vec<OsString> {
+    let mut args: Vec<OsString> = vec![
         "-nostdin".into(),
         "-hide_banner".into(),
         "-loglevel".into(),
@@ -394,16 +518,29 @@ fn concat_args(list: &Path, output: &Path) -> Vec<OsString> {
         "0".into(),
         "-i".into(),
         list.as_os_str().to_owned(),
-        "-map".into(),
-        "0".into(),
-        "-c".into(),
-        "copy".into(),
+    ];
+
+    if let Some(metadata) = metadata {
+        args.push("-i".into());
+        args.push(metadata.as_os_str().to_owned());
+    }
+
+    args.extend(["-map".into(), "0".into(), "-c".into(), "copy".into()]);
+
+    if metadata.is_some() {
+        args.push("-map_chapters".into());
+        args.push("1".into());
+    }
+
+    args.extend([
         "-ignore_unknown".into(),
         "-avoid_negative_ts".into(),
         "make_zero".into(),
         "-y".into(),
         output.as_os_str().to_owned(),
-    ]
+    ]);
+
+    args
 }
 
 fn concat_line(path: &Path) -> String {
