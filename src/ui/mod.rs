@@ -807,8 +807,12 @@ impl RossresscutApp {
         }
 
         if response.drag_stopped() {
-            let target = self
-                .scrub_target
+            // The throttled scrub target can lag behind the pointer, so the
+            // release position is the authoritative final target.
+            let target = response
+                .interact_pointer_pos()
+                .map(|pointer| timestamp_at_x(rect, pointer.x, duration))
+                .or(self.scrub_target)
                 .unwrap_or_else(|| self.application.position());
             let selected = self
                 .application

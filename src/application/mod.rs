@@ -23,6 +23,11 @@ use crate::media::preview::{MpvPreview, MpvPreviewConfig, MpvPreviewError};
 
 const PREVIEW_FRAME_RATE: u32 = 30;
 
+/// Distance at which a precise mpv seek is considered to have landed even if
+/// the `PlaybackRestart` event was dropped.
+#[cfg(feature = "mpv-preview")]
+const SEEK_ARRIVAL_TOLERANCE_MICROS: u64 = 100_000;
+
 /// State of the media-opening workflow.
 #[derive(Debug, Default)]
 pub enum OpenState {
@@ -931,6 +936,15 @@ impl Playback {
                     .set_precise_seek(precise)
                     .and_then(|()| mpv.seek(target));
             }
+        }
+        // `PlaybackRestart` can be dropped by the event queue; a precise seek
+        // that already landed means the deferred command is no longer needed.
+        if let Some((target, true)) = self.mpv_pending_seek
+            && position.is_some_and(|position| {
+                position.micros().abs_diff(target.micros()) <= SEEK_ARRIVAL_TOLERANCE_MICROS
+            })
+        {
+            self.mpv_pending_seek = None;
         }
         let failed = events.failed.clone();
         if let Some(message) = failed.as_deref() {
