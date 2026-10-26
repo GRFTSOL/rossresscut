@@ -18,6 +18,8 @@ use crate::media::preview::{
     HardwareAcceleration, PreviewAudio, PreviewAudioStatus, PreviewVideo, PreviewVideoConfig,
     PreviewVideoResult, VideoFrame,
 };
+#[cfg(feature = "mpv-preview")]
+use crate::media::preview::{MpvPreview, MpvPreviewConfig, MpvPreviewError, preview_dimensions};
 
 const PREVIEW_FRAME_RATE: u32 = 30;
 
@@ -138,12 +140,56 @@ impl Application {
 
     /// Returns whether the playback clock is currently driven by audio output.
     pub fn uses_audio_clock(&self) -> bool {
-        self.playback.audio.is_some()
+        self.playback.audio.is_some() || self.playback.uses_mpv_audio()
     }
 
     /// Returns whether a seek/load preview frame is still being decoded.
     pub fn is_waiting_for_preview(&self) -> bool {
-        !self.playback.playing && self.playback.video.is_some()
+        !self.playback.playing && (self.playback.video.is_some() || self.playback.mpv_needs_frame())
+    }
+
+    /// Returns whether the mpv preview backend is currently driving the preview.
+    pub fn uses_mpv_preview(&self) -> bool {
+        self.playback.mpv_present()
+    }
+
+    /// Enables the mpv preview backend for subsequently opened media.
+    ///
+    /// When the feature is disabled this is a no-op and the external FFmpeg
+    /// preview remains in use.
+    pub fn enable_mpv_preview(&mut self) {
+        #[cfg(feature = "mpv-preview")]
+        {
+            self.playback.mpv_enabled = true;
+        }
+    }
+
+    /// Takes the newest exported mpv frame as a wgpu texture.
+    ///
+    /// The caller owns the texture for as long as egui needs it. This method
+    /// is only meaningful while [`Self::uses_mpv_preview`] is true.
+    #[cfg(feature = "mpv-preview")]
+    pub fn acquire_mpv_texture(
+        &mut self,
+        device: &wgpu::Device,
+    ) -> Result<Option<wgpu::Texture>, MpvPreviewError> {
+        let texture = match self.playback.mpv.as_ref() {
+            Some(mpv) => mpv.acquire_texture(device)?,
+            None => None,
+        };
+        if texture.is_some() {
+            self.playback.mpv_frame_ready = true;
+        }
+        Ok(texture)
+    }
+
+    /// Changes the mpv export size in physical pixels.
+    #[cfg(feature = "mpv-preview")]
+    pub fn set_mpv_export_size(&self, width: u32, height: u32) -> Result<(), MpvPreviewError> {
+        match self.playback.mpv.as_ref() {
+            Some(mpv) => mpv.set_export_size(width, height),
+            None => Ok(()),
+        }
     }
 
     /// Returns the latest preview frame.
@@ -157,11 +203,20 @@ impl Application {
             .frame
             .as_ref()
             .map(|frame| (frame.width, frame.height))
+            .or_else(|| self.playback.mpv_frame_size())
     }
 
     /// Returns the timestamp of the latest preview frame.
     pub fn frame_timestamp(&self) -> Option<Timestamp> {
-        self.playback.frame.as_ref().map(|frame| frame.timestamp)
+        self.playback
+            .frame
+            .as_ref()
+            .map(|frame| frame.timestamp)
+            .or_else(|| {
+                self.playback
+                    .mpv_present()
+                    .then_some(self.playback.position)
+            })
     }
 
     /// Returns a non-fatal preview warning, if any.
@@ -177,6 +232,9 @@ impl Application {
     /// Returns the FFmpeg hardware accelerator in use, or `None` for software
     /// decoding.
     pub fn hardware_decoder(&self) -> Option<&'static str> {
+        if self.playback.mpv_present() {
+            return Some("mpv-engine");
+        }
         self.playback.video.as_ref().map_or_else(
             || self.playback.hardware.name(),
             |video| video.hardware().name(),
@@ -646,6 +704,20 @@ struct Playback {
     audio: Option<PreviewAudio>,
     warning: Option<String>,
     hardware: HardwareAcceleration,
+    #[cfg(feature = "mpv-preview")]
+    mpv: Option<MpvPreview>,
+    #[cfg(feature = "mpv-preview")]
+    mpv_enabled: bool,
+    #[cfg(feature = "mpv-preview")]
+    mpv_failed: bool,
+    #[cfg(feature = "mpv-preview")]
+    mpv_has_audio: bool,
+    #[cfg(feature = "mpv-preview")]
+    mpv_size: Option<(u32, u32)>,
+    #[cfg(feature = "mpv-preview")]
+    mpv_pending_seek: Option<(Timestamp, bool)>,
+    #[cfg(feature = "mpv-preview")]
+    mpv_frame_ready: bool,
 }
 
 impl Default for Playback {
@@ -660,12 +732,179 @@ impl Default for Playback {
             audio: None,
             warning: None,
             hardware: HardwareAcceleration::default_for_platform(),
+            #[cfg(feature = "mpv-preview")]
+            mpv: None,
+            #[cfg(feature = "mpv-preview")]
+            mpv_enabled: false,
+            #[cfg(feature = "mpv-preview")]
+            mpv_failed: false,
+            #[cfg(feature = "mpv-preview")]
+            mpv_has_audio: false,
+            #[cfg(feature = "mpv-preview")]
+            mpv_size: None,
+            #[cfg(feature = "mpv-preview")]
+            mpv_pending_seek: None,
+            #[cfg(feature = "mpv-preview")]
+            mpv_frame_ready: false,
         }
     }
 }
 
 impl Playback {
+    #[cfg(feature = "mpv-preview")]
+    fn start_mpv(&mut self, media: &MediaFile, start_paused: bool) -> bool {
+        if !self.mpv_enabled || self.mpv_failed {
+            return false;
+        }
+        let Some(video) = preview_video_stream(media) else {
+            return false;
+        };
+        let (Some(width), Some(height)) = (video.width, video.height) else {
+            return false;
+        };
+        let Some((width, height)) = preview_dimensions(width, height) else {
+            return false;
+        };
+
+        let config = MpvPreviewConfig {
+            path: media.path.clone(),
+            width,
+            height,
+            start_paused,
+        };
+        // The UI polls at 16/50 ms while mpv is active; no egui dependency is
+        // allowed in this layer, so no repaint callback is installed here.
+        match MpvPreview::start(config, || {}, || {}) {
+            Ok(mpv) => {
+                log::info!(
+                    "using mpv preview backend for {} at {width}x{height}",
+                    media.path.display()
+                );
+                self.mpv = Some(mpv);
+                self.mpv_has_audio = has_audio(media);
+                self.mpv_size = Some((width, height));
+                true
+            }
+            Err(error) => {
+                log::warn!("{error}");
+                self.mpv_failed = true;
+                self.warning = Some(error.to_string());
+                false
+            }
+        }
+    }
+
+    #[cfg(not(feature = "mpv-preview"))]
+    fn start_mpv(&mut self, _media: &MediaFile, _start_paused: bool) -> bool {
+        false
+    }
+
+    fn mpv_present(&self) -> bool {
+        #[cfg(feature = "mpv-preview")]
+        {
+            self.mpv.is_some()
+        }
+        #[cfg(not(feature = "mpv-preview"))]
+        {
+            false
+        }
+    }
+
+    fn uses_mpv_audio(&self) -> bool {
+        #[cfg(feature = "mpv-preview")]
+        {
+            self.mpv_has_audio
+        }
+        #[cfg(not(feature = "mpv-preview"))]
+        {
+            false
+        }
+    }
+
+    fn mpv_needs_frame(&self) -> bool {
+        #[cfg(feature = "mpv-preview")]
+        {
+            self.mpv.is_some() && !self.mpv_frame_ready
+        }
+        #[cfg(not(feature = "mpv-preview"))]
+        {
+            false
+        }
+    }
+
+    fn mpv_frame_size(&self) -> Option<(u32, u32)> {
+        #[cfg(feature = "mpv-preview")]
+        {
+            self.mpv_size
+        }
+        #[cfg(not(feature = "mpv-preview"))]
+        {
+            None
+        }
+    }
+
+    fn stop_mpv(&mut self) {
+        #[cfg(feature = "mpv-preview")]
+        {
+            self.mpv = None;
+            self.mpv_has_audio = false;
+            self.mpv_size = None;
+            self.mpv_pending_seek = None;
+            self.mpv_frame_ready = false;
+        }
+    }
+
+    #[cfg(feature = "mpv-preview")]
+    fn update_mpv(&mut self, duration: Option<Duration>) -> bool {
+        let Some(mpv) = self.mpv.as_ref() else {
+            return false;
+        };
+        let events = mpv.poll_events();
+        let position = mpv.position();
+        let mut changed = false;
+
+        if let Some(position) = position
+            && position != self.position
+        {
+            self.position = position;
+            changed = true;
+        }
+        if events.loaded || events.restarted {
+            changed = true;
+            if let Some((target, precise)) = self.mpv_pending_seek.take() {
+                log::info!("applying deferred mpv seek to {target}");
+                self.mpv_frame_ready = false;
+                let _ = mpv
+                    .set_precise_seek(precise)
+                    .and_then(|()| mpv.seek(target));
+            }
+        }
+        let failed = events.failed.clone();
+        if let Some(message) = failed.as_deref() {
+            log::warn!("mpv preview failed: {message}");
+            self.warning = Some(format!("mpv preview failed: {message}"));
+            self.playing = false;
+            changed = true;
+        }
+        if events.ended {
+            self.playing = false;
+            if let Some(end) = duration_end(duration) {
+                self.position = Timestamp::from_micros(end);
+            }
+            changed = true;
+        }
+        if failed.is_some() {
+            self.stop_mpv();
+        }
+        changed
+    }
+
     fn update(&mut self, duration: Option<Duration>) -> bool {
+        #[cfg(feature = "mpv-preview")]
+        if self.mpv.is_some() {
+            return self.update_mpv(duration);
+        }
+
         let mut changed = false;
         if self.playing {
             changed |= self.poll_audio(duration);
@@ -683,10 +922,34 @@ impl Playback {
         if duration_end(media.duration).is_some_and(|end| self.position.micros() >= end) {
             self.position = Timestamp::ZERO;
             self.frame = None;
+            #[cfg(feature = "mpv-preview")]
+            if let Some(mpv) = &self.mpv {
+                let _ = mpv.set_precise_seek(true);
+                let _ = mpv.seek(Timestamp::ZERO);
+            }
         }
 
         self.pending_frame = None;
         self.warning = None;
+
+        #[cfg(feature = "mpv-preview")]
+        if let Some(mpv) = &self.mpv {
+            if let Err(error) = mpv.set_paused(false) {
+                log::warn!("{error}");
+                self.warning = Some(error.to_string());
+                return;
+            }
+            self.playing = true;
+            self.last_update = Instant::now();
+            return;
+        }
+
+        if self.start_mpv(media, false) {
+            self.playing = true;
+            self.last_update = Instant::now();
+            return;
+        }
+
         self.stop_video();
         self.stop_audio();
         self.start_video(media);
@@ -697,6 +960,21 @@ impl Playback {
 
     fn pause(&mut self, duration: Option<Duration>) {
         if !self.playing {
+            return;
+        }
+
+        #[cfg(feature = "mpv-preview")]
+        if let Some(mpv) = &self.mpv {
+            if let Err(error) = mpv.set_paused(true) {
+                log::warn!("{error}");
+                self.warning = Some(error.to_string());
+            }
+            if let Some(position) = mpv.position() {
+                self.position = position;
+            }
+            self.playing = false;
+            self.pending_frame = None;
+            self.last_update = Instant::now();
             return;
         }
 
@@ -712,16 +990,32 @@ impl Playback {
         self.position = target;
         self.pending_frame = None;
         self.warning = None;
-        self.stop_video();
-        self.stop_audio();
 
         if duration_end(media.duration).is_some_and(|end| target.micros() >= end) {
             self.playing = false;
             self.frame = None;
+            self.stop_video();
+            self.stop_audio();
+            self.stop_mpv();
             self.last_update = Instant::now();
             return;
         }
 
+        #[cfg(feature = "mpv-preview")]
+        if let Some(mpv) = &self.mpv {
+            self.mpv_frame_ready = false;
+            if let Err(error) = mpv.set_precise_seek(true).and_then(|()| mpv.seek(target)) {
+                log::warn!("{error}; deferring seek until mpv is ready");
+                self.mpv_pending_seek = Some((target, true));
+            } else {
+                self.mpv_pending_seek = None;
+            }
+            self.last_update = Instant::now();
+            return;
+        }
+
+        self.stop_video();
+        self.stop_audio();
         self.start_video(media);
         if self.playing {
             self.start_audio(media);
@@ -734,27 +1028,63 @@ impl Playback {
         self.playing = false;
         self.pending_frame = None;
         self.warning = None;
-        self.stop_video();
-        self.stop_audio();
 
         if duration_end(media.duration).is_some_and(|end| target.micros() >= end) {
             self.frame = None;
+            self.stop_video();
+            self.stop_audio();
+            self.stop_mpv();
             self.last_update = Instant::now();
             return;
         }
 
+        #[cfg(feature = "mpv-preview")]
+        if let Some(mpv) = &self.mpv {
+            self.mpv_frame_ready = false;
+            let _ = mpv.set_paused(true);
+            if let Err(error) = mpv.set_precise_seek(false).and_then(|()| mpv.seek(target)) {
+                log::warn!("{error}; deferring scrub until mpv is ready");
+                self.mpv_pending_seek = Some((target, false));
+            } else {
+                self.mpv_pending_seek = None;
+            }
+            self.last_update = Instant::now();
+            return;
+        }
+
+        self.stop_video();
+        self.stop_audio();
         self.start_video_with_seek(media, true);
         self.last_update = Instant::now();
     }
 
     fn load(&mut self, media: &MediaFile) {
         self.reset();
+        if self.start_mpv(media, true) {
+            #[cfg(feature = "mpv-preview")]
+            {
+                self.mpv_frame_ready = false;
+            }
+            #[cfg(feature = "mpv-preview")]
+            if let Some(mpv) = &self.mpv {
+                let _ = mpv.set_paused(true);
+            }
+            self.position = Timestamp::ZERO;
+            self.playing = false;
+            self.frame = None;
+            return;
+        }
         self.start_video(media);
     }
 
     fn reset(&mut self) {
         self.stop_video();
         self.stop_audio();
+        self.stop_mpv();
+        #[cfg(feature = "mpv-preview")]
+        {
+            self.mpv_failed = false;
+        }
         self.position = Timestamp::ZERO;
         self.playing = false;
         self.pending_frame = None;

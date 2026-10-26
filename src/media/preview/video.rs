@@ -415,7 +415,7 @@ fn frame_size(width: u32, height: u32) -> Option<usize> {
     width.checked_mul(height)?.checked_mul(3)
 }
 
-fn preview_dimensions(width: u32, height: u32) -> Option<(u32, u32)> {
+pub(crate) fn preview_dimensions(width: u32, height: u32) -> Option<(u32, u32)> {
     if width == 0 || height == 0 {
         return None;
     }

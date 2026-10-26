@@ -23,6 +23,8 @@ pub struct MpvPreviewConfig {
     pub width: u32,
     /// Export height in physical pixels.
     pub height: u32,
+    /// Start paused after loading; used when opening media before the first play.
+    pub start_paused: bool,
 }
 
 /// Project-owned playback events drained from mpv.
@@ -165,6 +167,7 @@ impl MpvPreview {
         let engine = Engine::video()
             .property("keep-open", "no")
             .property("hr-seek", "yes")
+            .property("pause", if config.start_paused { "yes" } else { "no" })
             .build()
             .map_err(|error| MpvPreviewError::Engine {
                 path: path.clone(),
@@ -359,6 +362,7 @@ mod tests {
                 path: PathBuf::from("unused.mp4"),
                 width: 0,
                 height: 720,
+                start_paused: true,
             },
             || {},
             || {},

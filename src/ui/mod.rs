@@ -10,6 +10,8 @@
 mod i18n;
 
 use std::path::PathBuf;
+#[cfg(feature = "mpv-preview")]
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -80,6 +82,14 @@ pub struct RossresscutApp {
     application: Application,
     preview_texture: Option<egui::TextureHandle>,
     preview_texture_timestamp: Option<i64>,
+    #[cfg(feature = "mpv-preview")]
+    render_state: Option<eframe::egui_wgpu::RenderState>,
+    #[cfg(feature = "mpv-preview")]
+    preview_mpv_texture: Option<eframe::wgpu::Texture>,
+    #[cfg(feature = "mpv-preview")]
+    preview_mpv_id: Option<egui::TextureId>,
+    #[cfg(feature = "mpv-preview")]
+    preview_mpv_size: Option<egui::Vec2>,
     preview_source: Option<PathBuf>,
     scrub_target: Option<Timestamp>,
     scrub_was_playing: bool,
@@ -181,6 +191,11 @@ impl RossresscutApp {
             diagnostic_autoplay: std::env::var_os("ROSS_RESCUT_DIAG_AUTOPLAY").is_some(),
             ..Self::default()
         };
+        #[cfg(feature = "mpv-preview")]
+        if let Some(render_state) = context.wgpu_render_state.clone() {
+            app.render_state = Some(render_state);
+            app.application.enable_mpv_preview();
+        }
         // The diagnostic run overrides the decoder backend without a settings UI.
         if let Ok(value) = std::env::var("ROSS_RESCUT_PREVIEW_HW") {
             let hardware = match value.as_str() {
@@ -347,17 +362,26 @@ impl RossresscutApp {
 
     fn sync_preview_texture(&mut self, context: &egui::Context) {
         if !matches!(self.application.state(), OpenState::Ready) {
-            self.preview_texture = None;
-            self.preview_texture_timestamp = None;
+            self.clear_preview_textures();
             self.preview_source = None;
             return;
         }
 
         let source = self.application.media().map(|media| media.path.clone());
         if source != self.preview_source {
-            self.preview_texture = None;
-            self.preview_texture_timestamp = None;
+            self.clear_preview_textures();
             self.preview_source = source;
+        }
+
+        #[cfg(feature = "mpv-preview")]
+        {
+            if self.application.uses_mpv_preview() {
+                self.sync_mpv_texture();
+                return;
+            }
+            if self.preview_mpv_id.is_some() {
+                self.clear_mpv_texture();
+            }
         }
 
         let Some(frame) = self.application.frame() else {
@@ -394,6 +418,66 @@ impl RossresscutApp {
             diagnostics.upload(upload_start.elapsed());
         }
         self.preview_texture_timestamp = Some(frame.timestamp.micros());
+    }
+
+    #[cfg(feature = "mpv-preview")]
+    fn sync_mpv_texture(&mut self) {
+        let Some(render_state) = &self.render_state else {
+            return;
+        };
+
+        match self.application.acquire_mpv_texture(&render_state.device) {
+            Ok(Some(texture)) => {
+                let width = texture.width();
+                let height = texture.height();
+                let view = texture.create_view(&eframe::wgpu::TextureViewDescriptor::default());
+                let mut renderer = render_state.renderer.write();
+                let first_frame = self.preview_mpv_id.is_none();
+                if let Some(id) = self.preview_mpv_id {
+                    renderer.update_egui_texture_from_wgpu_texture(
+                        &render_state.device,
+                        &view,
+                        eframe::wgpu::FilterMode::Linear,
+                        id,
+                    );
+                } else {
+                    let id = renderer.register_native_texture(
+                        &render_state.device,
+                        &view,
+                        eframe::wgpu::FilterMode::Linear,
+                    );
+                    self.preview_mpv_id = Some(id);
+                }
+                drop(renderer);
+                if first_frame {
+                    log::info!("registered mpv preview texture {width}x{height}");
+                }
+                let _previous = self.preview_mpv_texture.replace(texture);
+                self.preview_texture = None;
+                self.preview_texture_timestamp = None;
+                self.preview_mpv_size = Some(egui::vec2(width as f32, height as f32));
+            }
+            Ok(None) => {}
+            Err(error) => log::warn!("{error}"),
+        }
+    }
+
+    #[cfg(feature = "mpv-preview")]
+    fn clear_mpv_texture(&mut self) {
+        if let (Some(render_state), Some(id)) = (&self.render_state, self.preview_mpv_id.take()) {
+            render_state.renderer.write().free_texture(&id);
+        }
+        self.preview_mpv_texture = None;
+        self.preview_mpv_size = None;
+    }
+
+    fn clear_preview_textures(&mut self) {
+        #[cfg(feature = "mpv-preview")]
+        {
+            self.clear_mpv_texture();
+        }
+        self.preview_texture = None;
+        self.preview_texture_timestamp = None;
     }
 
     fn media_title(&self) -> Option<String> {
@@ -785,10 +869,21 @@ impl RossresscutApp {
                 }
             }
             OpenState::Ready => {
-                let texture = self
-                    .preview_texture
-                    .as_ref()
-                    .map(|texture| (texture.id(), texture.size_vec2()));
+                let mpv_texture: Option<(egui::TextureId, egui::Vec2)> = {
+                    #[cfg(feature = "mpv-preview")]
+                    {
+                        self.preview_mpv_id.zip(self.preview_mpv_size)
+                    }
+                    #[cfg(not(feature = "mpv-preview"))]
+                    {
+                        None
+                    }
+                };
+                let texture = mpv_texture.or_else(|| {
+                    self.preview_texture
+                        .as_ref()
+                        .map(|texture| (texture.id(), texture.size_vec2()))
+                });
                 if let Some((texture_id, texture_size)) = texture {
                     let rect = ui.available_rect_before_wrap();
                     let response = ui.allocate_rect(rect, egui::Sense::click());
@@ -1143,12 +1238,33 @@ impl eframe::App for RossresscutApp {
 ///
 /// Must be called from the main thread.
 pub fn run(initial_path: Option<PathBuf>) -> Result<(), eframe::Error> {
-    let options = eframe::NativeOptions {
+    // `options.wgpu_options` is only assigned when mpv-preview is enabled.
+    #[allow(unused_mut)]
+    let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([960.0, 640.0])
             .with_min_inner_size([720.0, 480.0]),
         ..Default::default()
     };
+
+    #[cfg(feature = "mpv-preview")]
+    {
+        let mut create_new = eframe::egui_wgpu::WgpuSetupCreateNew::without_display_handle();
+        create_new.instance_descriptor.backends = mpv_engine::WGPU_BACKEND;
+        create_new.device_descriptor = Arc::new(|_adapter| eframe::wgpu::DeviceDescriptor {
+            label: Some("rossresscut preview device"),
+            required_features: mpv_engine::REQUIRED_WGPU_FEATURES,
+            required_limits: eframe::wgpu::Limits {
+                max_texture_dimension_2d: 8192,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        options.wgpu_options = eframe::egui_wgpu::WgpuConfiguration {
+            wgpu_setup: eframe::egui_wgpu::WgpuSetup::CreateNew(create_new),
+            ..Default::default()
+        };
+    }
 
     eframe::run_native(
         "rossresscut",
