@@ -2,7 +2,7 @@
 
 ## 当前阶段
 
-**Phase 4C：预览解码实现（方案 F，进行中；步骤 1–3 完成）**
+**Phase 4C：预览解码实现（方案 F，进行中；步骤 1–7 完成）**
 
 - Phase 4A 调查：`docs/investigations/playback-pipeline.md`。
 - Phase 4B 原决策：`docs/decisions/0009-preview-decode-zero-copy.md`（方案 D）。
@@ -16,6 +16,8 @@
 - 步骤 3（UI 纹理接入、Application mpv 路径、外部 FFmpeg 回退）已完成。
   实测 4K 走 mpv 时 `uploads=0`；`--no-default-features` 回退到外部 FFmpeg
   时 `uploads>0`。自动 GPU 颜色回归仍待步骤 8。
+- 步骤 4–7（mpv 音频时钟、scrub 状态机、窗格等比 resize、后端标注）已完成；
+  剩余步骤 8。
 - 无损导出顺延为 Phase 4D。
 - 未解决问题记录在 `docs/open-questions.md`。
 
@@ -172,17 +174,16 @@ cargo fmt --check
 
 ## 已知限制
 
-- A/V 同步由音频输出设备消费的样本帧驱动；仍受设备缓冲延迟影响（通常数十毫秒）。
-- 运行环境需要 `ffmpeg`、`ffprobe` 与音频输出设备；不再需要 `ffplay`。
-- 仅支持 f32 音频输出格式；设备不支持时回退墙钟并显示 warning。
-- 硬件解码默认启用。Linux 只检测 `/dev/dri/renderD128`；设备不存在时使用软件解码。
-- 播放信息中的 Decoder 显示请求的后端；FFmpeg 对某些 codec 可能在内部回退到软件解码，当前没有解析实际使用的解码器。
+- A/V 同步由 mpv 的 `time-pos` 驱动，它跟随音频输出；仍受设备缓冲延迟影响（通常数十毫秒）。
+- 运行环境需要 `ffmpeg`、`ffprobe`、libmpv 与音频输出设备；不再需要 `ffplay`。
+- 音频输出由 libmpv `ao` 完成；`cpal` 仅在外部 FFmpeg 回退路径使用。
+- 硬件解码由 libmpv 自动选择（`hwdec=auto-safe`）；设备不可用时回退软件。
+- 播放信息区分 `mpv (libmpv)` 与外部 `ffmpeg (...)`；mpv 内部实际 decoder 不单独报告。
 - 关键帧索引在打开媒体后于后台生成；索引完成前滚轮回退为 1 秒步进。
 - 时间轴尚未按 Segment 着色；播放头与拖动已实现，Segment 颜色随 Phase 3 落地。
-- 4K HEVC 精确 seek 仍可能耗时数秒；测试机 CPU 受限，不能代表一般硬件。快速 seek 调研见下节。
-- A/V 同步由音频时钟驱动，但设备输出缓冲可能让时钟领先实际听到的音频；待办见下节。
+- 4K HEVC 精确 seek 仍可能耗时数百毫秒；测试机 CPU 受限，不能代表一般硬件。快速 seek 调研见下节。
 - 快速 scrub 可能显示目标时间之前的关键帧；只能用于视觉反馈，不能用于 Segment 或导出。
-- 预览固定 30fps、最大 960x540，不保证帧精确；非方形 SAR 尚未补偿。
+- 预览尺寸按预览窗格与源宽高比等比适配，不放大；预览不保证帧精确，不作为编辑或导出依据。
 - 暂无音量、音频设备选择、音轨选择。
 - UI 字符串已本地化；应用层 warning 与媒体层错误仍为英文。
 - 文件门户仅在 Linux 实现；其他平台暂时禁用 Open。
@@ -254,9 +255,9 @@ cargo fmt --check
 - 关键帧索引已存在（`KeyframeIndex`），可作为 Segment 边界与导航的候选；但 keyframe 不等于用户期望的精确切点。
 - 时间轴已按 Segment 着色并显示精确播放头；Segment 边界拖拽尚未实现。
 - 硬件解码默认启用。不要为了预览计时而在后续阶段默认关闭它；预览解码路径与导出路径必须保持分离。
-- 4K HEVC 精确 seek 可能耗时数秒；timeline 交互需要接受该延迟，或先引入代理文件 / GPU 零拷贝预览方案。
+- 4K HEVC 精确 seek 可能耗时数百毫秒；timeline 交互需要接受该延迟，或先引入代理文件 / GPU 零拷贝预览方案。
 - 保持 `Timestamp` 为整数微秒；UI 只做坐标转换，不引入浮点作为媒体时间表示。
-- 预览固定 30fps / 最大 960x540，不能作为编辑或导出精度的依据。
+- 预览不保证帧精确，不能作为编辑或导出精度的依据。
 
 ---
 
@@ -313,7 +314,7 @@ cargo fmt --check
 
 # Phase 4：播放链路调查与渲染架构
 
-状态：`Phase 4A 已完成；Phase 4B 已修订；Phase 4C 进行中（步骤 1–3 完成）`
+状态：`Phase 4A 已完成；Phase 4B 已修订；Phase 4C 进行中（步骤 1–7 完成）`
 
 Phase 4 不再直接进入导出。当前实际播放性能与音画同步不可接受，先完成播放链路调查和渲染架构决策，再恢复无损导出。
 
@@ -386,7 +387,7 @@ UI 渲染适配层之间按帧传递。详见 `docs/decisions/0010-preview-via-m
 
 ## Phase 4C：预览解码实现（方案 F）
 
-状态：`进行中（步骤 1–3 完成）`
+状态：`进行中（步骤 1–7 完成）`
 
 任务：
 
@@ -394,20 +395,24 @@ UI 渲染适配层之间按帧传递。详见 `docs/decisions/0010-preview-via-m
 - [x] 步骤 2：新增 `media::preview::mpv`，实现引擎生命周期、export attach、
   帧获取、命令、事件与错误；UI 尚未接入，外部 FFmpeg 回退仍在。
 - [x] 步骤 3：UI 接入 wgpu feature、mpv 纹理注册、Application mpv 路径与
-  外部 FFmpeg 回退。运行时已验证 4K mpv 纹理 `960x540`、`uploads=0`；
+  外部 FFmpeg 回退。运行时已验证 4K mpv 纹理按预览窗格等比适配、`uploads=0`；
   feature 关闭时回退外部 FFmpeg、`uploads>0`。颜色/生命周期自动化回归待步骤 8。
-- [ ] 步骤 4：音频切换为 mpv `ao`，移除 cpal 主路径。
-- [ ] 步骤 5：`hr-seek=no` 拖动 / `hr-seek=yes` 松手，事件与位置兜底。
-- [ ] 步骤 6：resize / Wayland scale 的物理像素处理。
-- [ ] 步骤 7：回退与播放信息显示实际后端。
+- [x] 步骤 4：音频切换为 mpv `ao`；`Application::uses_audio_clock` 报告 mpv
+  音频路径，`PreviewAudio` / `cpal` 只在外部 FFmpeg 回退路径启动。
+- [x] 步骤 5：`hr-seek=no` 拖动 / `hr-seek=yes` 松手；松手使用指针最终位置，
+  精确 seek 在 `PlaybackRestart` 缺失时以落点 ≤100 ms 兜底。
+  `tests/mpv_preview.rs` 覆盖落点与暂停恢复。
+- [x] 步骤 6：按预览窗格物理像素等比适配源尺寸（横竖屏均覆盖、不放大）；
+  尺寸连续变化时等连续两帧一致后再下发，避免窗口拖动时每帧重配置 export。
+- [x] 步骤 7：播放信息区分 `mpv (libmpv)` 与外部 `ffmpeg (...)` 后端；
+  无 wgpu render state 时记录回退日志，mpv 失败通过 warning 显示。
 - [ ] 步骤 8：测试、文档与 AGENTS 条款修订；稳定后再删除旧预览路径。
-- [ ] 播放信息报告实际生效的解码后端。
 
 完成标准：
 
 - 4K HEVC 在 VAAPI 下保持 GPU-resident，无每帧同步下载。
 - 硬件不可用时自动回退软件，且 UI 可见。
-- 预览时间与源 PTS 一致，可用于 Segment 边界判断。
+- 预览时间只用于视觉反馈，不得用于 Segment 边界或导出；实际编辑时间来自源流。
 - `cargo fmt --check`、`cargo clippy -D warnings`、`cargo test` 全部通过。
 
 未解决问题见 `docs/open-questions.md`。

@@ -131,27 +131,26 @@ ExportRequest
 - 进度解析
 - 取消
 - 媒体操作
-- 预览视频帧解码（Phase 4B 决策：进程内 `libav*` + 平台 hwaccel，zero-copy 到 wgpu；尚未实现）
-- 预览音频 PCM 输出（Phase 4B 决策：进程内 `libavcodec` 解码，`cpal` 输出；尚未实现）
+- 预览视频帧解码（`mpv-engine` / libmpv，进程内，GPU-resident）
+- 预览音频输出（libmpv `ao`）
 - 关键帧索引（外部 ffprobe 读取 packet flags，不输入解码）
-- `media/platform`：唯一允许 `unsafe` 的 crate，封装 `libav*` 与 surface → wgpu 导入
 
-Phase 4B 的预览边界：
+Phase 4B 修订后的预览边界（ADR 0010）：
 
 ```text
-libavformat → libavcodec hwaccel → hardware surface
-                                      ↓
-                              media/platform
-                                      ↓
-                              wgpu external texture
+libmpv（mpv-engine，进程内）
+        ↓ decoded frame (export)
+      wgpu external texture
+        ↓
+media::preview 导入为 wgpu::Texture
 ```
 
 导出、裁切、合并与探测仍使用外部 FFmpeg / FFprobe 进程。
-详见 `docs/decisions/0009-preview-decode-zero-copy.md`。
+详见 `docs/decisions/0010-preview-via-mpv-engine.md`。
 
 媒体层不得依赖 egui。
 
-`cpal` 只负责音频 PCM 输出；解码仍由 FFmpeg 完成。
+`cpal` 只在外部 FFmpeg 回退路径负责音频 PCM 输出；主路径音频由 libmpv `ao` 输出。
 
 ---
 
@@ -162,9 +161,9 @@ libavformat → libavcodec hwaccel → hardware surface
 ```text
 FFprobe
 FFmpeg export / probe (external process)
-Preview decode (libav* hwaccel, in-process)
+Preview decode (libmpv via mpv-engine, in-process)
 Keyframe indexing
-Audio decode (libavcodec, in-process) / cpal output
+Audio output (libmpv ao; cpal only in the FFmpeg fallback)
 Thumbnail
 Waveform
 Scene Detection
@@ -334,7 +333,7 @@ docs/decisions/
 
 ---
 
-# 十一、当前代码结构（Phase 3；Phase 4B 尚未实现）
+# 十一、当前代码结构（Phase 4C；方案 F 已接入）
 
 ```text
 src/
@@ -342,8 +341,8 @@ src/
 ├── lib.rs                     库根：导出各层模块
 ├── error.rs                   应用错误类型（上下文 + source 链）
 ├── logging.rs                 进程级日志初始化
-├── application/mod.rs         Application、OpenState、播放状态机、音频主时钟、
-│                              关键帧后台索引与导航
+├── application/mod.rs         Application、OpenState、mpv 播放状态机与回退路径、
+│                              音频时钟、关键帧后台索引与导航
 ├── domain/
 │   ├── media.rs               MediaFile / MediaFormat / 流 / Chapter / KeyframeIndex
 │   ├── segment.rs             Segment / SegmentId / Timeline（有序 EDL、稳定身份）
@@ -356,8 +355,9 @@ src/
 │   │   └── keyframes.rs       packet flags → 关键帧索引
 │   └── preview/
 │       ├── mod.rs             PreviewError、共享进程清理与参数格式化
-│       ├── video.rs           ffmpeg RGB 帧解码、硬件解码选择、背压、快速/精确 seek
-│       └── audio.rs           ffmpeg PCM 解码 + cpal 输出、音频主时钟
+│       ├── mpv.rs             mpv-engine 封装：生命周期、export、帧获取、命令与事件
+│       ├── video.rs           回退路径：ffmpeg RGB 帧解码、硬件解码选择、背压、seek
+│       └── audio.rs           回退路径：ffmpeg PCM 解码 + cpal 输出
 └── ui/
     ├── mod.rs                 egui 窗口、菜单栏、预览 texture、时间轴、
     │                          Segment 列表、播放/媒体侧栏、设置页、XDG portal、
@@ -375,7 +375,8 @@ locales/
 - `ui` → `eframe`、`application`、`domain`（只读领域状态）；Linux 下 → `rfd`
 - `ui::i18n` → 嵌入的 locale JSON、`serde`
 - `application` → `domain`、`media::ffprobe`、`media::preview`、`error`
-- `media` → `domain`、外部 FFmpeg / FFprobe 进程、`cpal`
+- `media` → `domain`、外部 FFmpeg / FFprobe 进程、`mpv-engine`（预览主路径）、
+  `cpal`（仅在外部 FFmpeg 回退路径）
 - `domain` → 标准库、`serde`；不得依赖 `eframe`、`egui`、FFprobe JSON
 - `ffprobe::raw` 只在 `ffprobe` 模块内部可见
 
@@ -405,13 +406,14 @@ KeyframeIndex
 UI Play / Pause / Seek / ScrubPreview / StepKeyframe / Skip
         ↓
 Application
-        ├── PreviewVideo（ffmpeg → RGB24 raw frames，容量 4 的通道）
-        │   └── 平台默认硬件解码（VAAPI / D3D11VA / VideoToolbox）
-        └── PreviewAudio（ffmpeg → f32le PCM → cpal）
+        ├── MpvPreview（libmpv：解码 + ao + seek）
+        │   └── export → wgpu texture（GPU-resident，无 CPU 回读）
+        └── 回退：PreviewVideo（ffmpeg → RGB24）
+                   + PreviewAudio（ffmpeg → PCM → cpal）
         ↓
-音频设备消费样本帧 → 音频主时钟 → 选择要显示的视频帧
+mpv time-pos（跟随音频输出）= 播放位置
         ↓
-Application::update（非阻塞轮询）
+Application::update（非阻塞轮询事件与位置）
         ↓
 UI texture / 时间轴 / 播放信息 / 警告
 ```
@@ -423,19 +425,19 @@ UI texture / 时间轴 / 播放信息 / 警告
         ↓
 暂停播放（记录拖动前是否在播放）
         ↓
-Application::scrub → 单帧 ffmpeg
-        -noaccurate_seek（关键帧近似，约 12Hz 限流）
+Application::scrub → mpv hr-seek=no + seek
+        - 落点为前一个关键帧，约 80ms 限流
         ↓
-释放时间轴
+释放时间轴（使用指针最终位置）
         ↓
-Application::seek（精确 seek）
+Application::seek → mpv hr-seek=yes + 精确 seek
         ↓
 如果拖动前正在播放，则 Application::play
 ```
 
 快速 scrub 位置只用于视觉反馈，不用于编辑边界或导出。
 
-egui 帧内不会执行 FFprobe、FFmpeg 或音频解码，也不会阻塞等待通道。
+egui 帧内不会执行 FFprobe、FFmpeg、mpv 命令或音频解码，也不会阻塞等待通道。
 
 UI 布局：
 
