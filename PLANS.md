@@ -2,19 +2,11 @@
 
 ## 当前阶段
 
-**Phase 4D：无损导出（单 Segment 已实现；多 Segment 归入 Phase 5）**
+**Phase 4D：无损导出（单 Segment 已实现）**
 
-- Phase 4A 调查：`docs/investigations/playback-pipeline.md`。
-- Phase 4B 原决策：`docs/decisions/0009-preview-decode-zero-copy.md`（方案 D）。
-- Phase 4B 修订：`docs/decisions/0010-preview-via-mpv-engine.md` 改为方案 F：
-  `mpv-engine` export + wgpu；音频由 mpv 输出；`hr-seek=no/yes` 分别用于
-  拖动与松手。
-- Phase 4C 已落地 `media/preview/mpv`、mpv-engine 集成、音频切换与 scrubbing；
-  外部 FFmpeg 预览保留为回退。
-- Phase 4D 已实现 `media/export`（参数构造、进程、进度、取消）与应用层导出状态；
-  UI 入口为 File ▸ Export segment...，输出路径使用 XDG portal save dialog。
-- 未完成：多 Segment 导出（Phase 5）、stream selection、关键帧回退的显式提示、
-  容器兼容预检查。
+- 单 Segment 导出已完成并提交（`7a81434`）。
+- Phase 5 多 Segment 调查已完成：`docs/investigations/multi-segment-concat.md`；实现未开始。
+- 关键结论：临时片段 + concat demuxer 是唯一可靠的无损方案；`inpoint/outpoint` 不可用；拼接处有 ≤1 帧视频间隙；起点回退到关键帧。
 - 未解决问题记录在 `docs/open-questions.md`。
 
 除非用户明确要求，不提前实现后续阶段功能。
@@ -478,24 +470,40 @@ re-encode
 
 # Phase 5：多片段合并
 
-状态：`未开始`
+状态：`调查完成；实现未开始`
+
+调查文档：`docs/investigations/multi-segment-concat.md`。
+
+已确认的语义：
+
+- 采用“临时片段 + concat demuxer”；concat filter 会重编码，不用。
+- concat demuxer 的 `inpoint/outpoint` 在非关键帧起点会破坏时间戳，不用。
+- 每个 Segment 的起点会回退到此前关键帧；输出时长不等于 `sum(end - start)`。
+- 拼接处存在 ≤1 帧的视频间隙（约 16–33ms），音频连续；stream copy 无法消除。
+- 输出容器应与源一致；同一 source 的片段流布局一致。
+- Timeline 顺序是唯一输出顺序，不得按 `start` 重排。
 
 ## 任务
 
-- [ ] Segment compatibility
-- [ ] concat
+- [ ] Segment compatibility（流布局与容器一致性检查）
+- [ ] 临时片段切片（`-ss` before `-i`、`-t`、`-map 0`、`-c copy`、`-shortest`）
+- [ ] concat demuxer 合并
+- [ ] 临时目录生命周期（成功 / 失败 / 取消都清理）
+- [ ] 多段进度（按实际片段时长加权）
 - [ ] stream selection
 - [ ] timestamp 处理
 - [ ] metadata 处理
 - [ ] 不兼容情况处理
 - [ ] 顺序护栏测试（导出必须读取 Timeline 既有顺序，不得按 start 重排）
-- [ ] 回归测试
+- [ ] 回归测试（含非关键帧起点、重叠 Segment、取消）
 
 ## 研究任务（不复制代码）
 
-- [ ] 研究 LosslessCut 的 concat / timestamp 处理与容器兼容性边界。
+- [x] 研究 LosslessCut 的 concat / timestamp 处理与容器兼容性边界。
 - [ ] 研究 audio-only 裁剪、leading non-keyframe audio packets 等历史边界修复。
 - [ ] 对采用的媒体语义增加本项目自己的测试。
+- [ ] 验证 60fps / 4K / VFR 素材的拼接间隙是否仍为一帧。
+- [ ] 验证字幕、章节、attached_pic 与不同输出容器。
 
 ## 顺序语义
 
