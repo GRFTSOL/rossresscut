@@ -184,6 +184,8 @@ pub struct Strings {
     pub export_no_segment: String,
     pub export_invalid_output: String,
     pub export_dialog_failed: String,
+    pub export_cutting: String,
+    pub export_concatenating: String,
 }
 
 #[cfg(test)]

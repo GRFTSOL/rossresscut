@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 
-use crate::application::{Application, ExportCommandError, ExportStatus, OpenState};
+use crate::application::{Application, ExportCommandError, ExportStage, ExportStatus, OpenState};
 use crate::domain::media::{
     AudioStream, Disposition, MediaFile, MediaStream, StreamInfo, VideoStream,
 };
@@ -824,7 +824,7 @@ impl RossresscutApp {
         let status = self.application.export_status().clone();
 
         match &status {
-            ExportStatus::Running { output, .. } => {
+            ExportStatus::Running { output, stage, .. } => {
                 ui.horizontal(|ui| {
                     ui.add(
                         egui::ProgressBar::new(status.progress().unwrap_or_default())
@@ -834,6 +834,17 @@ impl RossresscutApp {
                         self.application.cancel_export();
                     }
                 });
+                if let Some(stage) = stage {
+                    let label = match stage {
+                        ExportStage::Cutting { index, total } => {
+                            let index = (*index + 1).to_string();
+                            let total = total.to_string();
+                            fill(&strings.export_cutting, &[index.as_str(), total.as_str()])
+                        }
+                        ExportStage::Concatenating => strings.export_concatenating.clone(),
+                    };
+                    ui.label(label);
+                }
                 ui.label(format!("{} {}", strings.exporting, output.display()));
             }
             ExportStatus::Completed { output } => {

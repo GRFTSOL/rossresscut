@@ -148,6 +148,21 @@ media::preview 导入为 wgpu::Texture
 导出、裁切、合并与探测仍使用外部 FFmpeg / FFprobe 进程。
 详见 `docs/decisions/0010-preview-via-mpv-engine.md`。
 
+导出流程：
+
+```text
+单 Segment
+  → ffmpeg -ss before -i -t -map 0 -c copy -avoid_negative_ts make_zero
+
+多 Segment
+  → 每个 Segment 切片到临时文件（额外 -shortest）
+  → ffmpeg -f concat -safe 0 -i list -map 0 -c copy
+  → 临时目录在成功 / 失败 / 取消后删除
+```
+
+多段顺序只来自 `Timeline.segments()`；不得按 `start` 重新排序。
+拼接语义与已知间隙见 `docs/investigations/multi-segment-concat.md`。
+
 媒体层不得依赖 egui。
 
 `cpal` 只在外部 FFmpeg 回退路径负责音频 PCM 输出；主路径音频由 libmpv `ao` 输出。
@@ -343,7 +358,7 @@ src/
 ├── logging.rs                 进程级日志初始化
 ├── application/mod.rs         Application、OpenState、mpv 播放状态机与回退路径、
 │                              音频时钟、关键帧后台索引与导航
-├── application/export.rs      ExportStatus、ExportJob、导出命令错误
+├── application/export.rs      ExportStatus、ExportJob（单段 / 多段）、导出命令错误
 ├── domain/
 │   ├── media.rs               MediaFile / MediaFormat / 流 / Chapter / KeyframeIndex
 │   ├── segment.rs             Segment / SegmentId / Timeline（有序 EDL、稳定身份）
@@ -352,6 +367,7 @@ src/
 │   ├── export/
 │   │   ├── mod.rs             ExportProcess、进度/结束事件、取消与回收
 │   │   ├── command.rs         ExportRequest 与 FFmpeg stream-copy 参数
+│   │   ├── concat.rs          多段切片、concat demuxer、临时目录生命周期
 │   │   └── progress.rs        `-progress pipe:1` 解析
 │   ├── ffprobe/
 │   │   ├── mod.rs             FFprobe 进程封装与 ProbeError

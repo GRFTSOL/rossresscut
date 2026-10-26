@@ -114,5 +114,7 @@
   "export_cancelled": "Export cancelled",
   "export_no_segment": "Add an enabled segment before exporting",
   "export_invalid_output": "Choose a different output file",
-  "export_dialog_failed": "Could not open the export dialog"
+  "export_dialog_failed": "Could not open the export dialog",
+  "export_cutting": "Cutting segment {} / {}",
+  "export_concatenating": "Concatenating parts"
 }

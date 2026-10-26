@@ -5,11 +5,13 @@
 //! user-facing errors. No shell is involved and no file is re-encoded.
 
 mod command;
+mod concat;
 mod progress;
 
+use std::ffi::OsString;
 use std::fmt;
 use std::io::{self, BufRead, BufReader, Read};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread::{self, JoinHandle};
@@ -18,6 +20,9 @@ use std::time::{Duration as StdDuration, Instant};
 use crate::domain::time::Timestamp;
 
 pub use command::{ExportRequest, build_args};
+pub use concat::{
+    ExportSegment, ExportStage, MultiExport, MultiExportError, MultiExportEvent, MultiExportRequest,
+};
 pub use progress::{ProgressUpdate, parse_progress_line};
 
 const FFMPEG: &str = "ffmpeg";
@@ -100,23 +105,30 @@ pub struct ExportProcess {
 impl ExportProcess {
     /// Starts FFmpeg for `request`.
     pub fn start(request: &ExportRequest) -> Result<Self, ExportError> {
+        Self::start_with_args(build_args(request), request.output())
+    }
+
+    /// Starts FFmpeg with a caller-provided argument list.
+    ///
+    /// Used by the concat stage, which does not fit [`ExportRequest`].
+    pub fn start_with_args(args: Vec<OsString>, output: &Path) -> Result<Self, ExportError> {
         let mut child = Command::new(FFMPEG)
-            .args(build_args(request))
+            .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|source| ExportError::Spawn {
-                output: request.output().to_path_buf(),
+                output: output.to_path_buf(),
                 source,
             })?;
 
         let stdout = child.stdout.take().ok_or_else(|| ExportError::Worker {
-            output: request.output().to_path_buf(),
+            output: output.to_path_buf(),
             source: io::Error::other("ffmpeg stdout was not piped"),
         })?;
         let stderr = child.stderr.take().ok_or_else(|| ExportError::Worker {
-            output: request.output().to_path_buf(),
+            output: output.to_path_buf(),
             source: io::Error::other("ffmpeg stderr was not piped"),
         })?;
 
@@ -125,7 +137,7 @@ impl ExportProcess {
             .name("ffmpeg-export".to_owned())
             .spawn(move || read_export_output(stdout, stderr, sender))
             .map_err(|source| ExportError::Worker {
-                output: request.output().to_path_buf(),
+                output: output.to_path_buf(),
                 source,
             })?;
 

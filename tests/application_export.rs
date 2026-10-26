@@ -37,25 +37,31 @@ fn generate_fixture(path: &Path) {
             "-f",
             "lavfi",
             "-i",
-            "testsrc2=size=1920x1080:rate=30",
+            "color=c=0xFF0000:s=320x240:d=5:r=30",
             "-f",
             "lavfi",
             "-i",
-            "sine=frequency=440:sample_rate=48000",
-            "-t",
-            "10",
+            "color=c=0x00FF00:s=320x240:d=5:r=30",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=0x0000FF:s=320x240:d=5:r=30",
+            "-filter_complex",
+            "[0:v][1:v][2:v]concat=n=3:v=1:a=0[v]",
+            "-map",
+            "[v]",
             "-c:v",
             "libx264",
             "-preset",
             "ultrafast",
+            "-g",
+            "30",
+            "-keyint_min",
+            "30",
+            "-sc_threshold",
+            "0",
             "-pix_fmt",
             "yuv420p",
-            "-g",
-            "60",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "128k",
         ])
         .arg(path)
         .status()
@@ -159,6 +165,92 @@ fn exports_the_first_enabled_segment_through_the_application() {
     assert_eq!(after.0, before.0);
     assert_eq!(after.1, before.1);
     assert_eq!(after.2, before.2);
+
+    if let Err(error) = fs::remove_dir_all(&directory) {
+        eprintln!("could not remove {}: {error}", directory.display());
+    }
+}
+
+const WIDTH: usize = 320;
+const HEIGHT: usize = 240;
+
+fn frame_at(path: &Path, seconds: &str) -> Vec<u8> {
+    let output = Command::new("ffmpeg")
+        .args(["-v", "error", "-i"])
+        .arg(path)
+        .args([
+            "-ss",
+            seconds,
+            "-frames:v",
+            "1",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgb24",
+            "-",
+        ])
+        .output()
+        .expect("run ffmpeg to extract a frame");
+    assert!(output.status.success(), "could not extract a frame");
+    output.stdout
+}
+
+fn centre_colour(frame: &[u8]) -> (u8, u8, u8) {
+    let index = ((HEIGHT / 2) * WIDTH + WIDTH / 2) * 3;
+    (frame[index], frame[index + 1], frame[index + 2])
+}
+
+fn dominant(rgb: (u8, u8, u8)) -> &'static str {
+    let (red, green, blue) = rgb;
+    if red > 120 && red > green.saturating_add(60) && red > blue.saturating_add(60) {
+        "red"
+    } else if green > 120 && green > red.saturating_add(60) && green > blue.saturating_add(60) {
+        "green"
+    } else if blue > 120 && blue > red.saturating_add(60) && blue > green.saturating_add(60) {
+        "blue"
+    } else {
+        "other"
+    }
+}
+
+#[test]
+fn exports_enabled_segments_in_timeline_order() {
+    let directory = fixture_directory();
+    let source = directory.join("source.mp4");
+    let output = directory.join("ordered.mp4");
+    generate_fixture(&source);
+
+    let mut application = Application::new();
+    application.open_media(source.clone());
+    wait_for_ready(&mut application);
+
+    // Source order is red, green, blue. Timeline order is blue, red, green.
+    for (start, end) in [(10, 15), (0, 5), (5, 10)] {
+        application.set_in_point(Timestamp::from_micros(start * 1_000_000));
+        application.set_out_point(Timestamp::from_micros(end * 1_000_000));
+        application
+            .add_segment()
+            .expect("create a segment from the markers");
+    }
+
+    application
+        .start_export(output.clone())
+        .expect("start multi-segment export");
+    wait_for_export(&mut application);
+
+    match application.export_status() {
+        ExportStatus::Completed { output: written } => assert_eq!(written, &output),
+        other => panic!("expected a completed export, got {other:?}"),
+    }
+
+    let first = dominant(centre_colour(&frame_at(&output, "1")));
+    let second = dominant(centre_colour(&frame_at(&output, "6")));
+    let third = dominant(centre_colour(&frame_at(&output, "11")));
+    assert_eq!(
+        (first, second, third),
+        ("blue", "red", "green"),
+        "application export must follow timeline order"
+    );
 
     if let Err(error) = fs::remove_dir_all(&directory) {
         eprintln!("could not remove {}: {error}", directory.display());

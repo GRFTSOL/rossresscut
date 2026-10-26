@@ -1,4 +1,4 @@
-//! Export job state and user-facing export errors.
+//! Export job state, command errors, and the single/multi process wrapper.
 
 use std::fmt;
 use std::io;
@@ -6,7 +6,11 @@ use std::path::PathBuf;
 use std::process::ExitStatus;
 
 use crate::domain::time::{Duration, Timestamp};
-use crate::media::export::{ExportError, ExportProcess};
+pub use crate::media::export::ExportStage;
+
+use crate::media::export::{
+    ExportError, ExportEvent, ExportProcess, MultiExport, MultiExportError, MultiExportEvent,
+};
 
 /// State of the current export, if any.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -20,8 +24,10 @@ pub enum ExportStatus {
         output: PathBuf,
         /// Last output timestamp reported by FFmpeg.
         out_time: Timestamp,
-        /// Requested segment length.
+        /// Total requested length.
         duration: Duration,
+        /// Multi-segment stage, or `None` for a single segment.
+        stage: Option<ExportStage>,
     },
     /// The export finished successfully.
     Completed {
@@ -76,6 +82,8 @@ pub enum ExportCommandError {
     InvalidOutput,
     /// The FFmpeg process could not be started.
     Start(ExportError),
+    /// A multi-segment export could not be started.
+    StartMulti(MultiExportError),
 }
 
 impl fmt::Display for ExportCommandError {
@@ -88,6 +96,7 @@ impl fmt::Display for ExportCommandError {
                 formatter.write_str("the output path must differ from the source file")
             }
             Self::Start(error) => write!(formatter, "{error}"),
+            Self::StartMulti(error) => write!(formatter, "{error}"),
         }
     }
 }
@@ -96,6 +105,7 @@ impl std::error::Error for ExportCommandError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Start(error) => Some(error),
+            Self::StartMulti(error) => Some(error),
             _ => None,
         }
     }
@@ -107,37 +117,103 @@ pub(crate) struct ExportJob {
     pub(crate) duration: Duration,
     pub(crate) out_time: Timestamp,
     pub(crate) cancel_requested: bool,
-    pub(crate) process: ExportProcess,
+    process: ExportProcessKind,
 }
 
-/// Builds the final status after FFmpeg exits.
-pub(crate) fn finish_status(
-    output: PathBuf,
-    cancelled: bool,
-    stderr: String,
-    ended: bool,
-    exit: io::Result<ExitStatus>,
-) -> ExportStatus {
-    if cancelled {
-        return ExportStatus::Cancelled;
+pub(crate) enum ExportProcessKind {
+    Single(ExportProcess),
+    Multi(MultiExport),
+}
+
+/// Normalised event from either export path.
+pub(crate) enum JobEvent {
+    Progress {
+        out_time: Timestamp,
+        duration: Duration,
+        stage: Option<ExportStage>,
+    },
+    Finished {
+        error: Option<String>,
+    },
+}
+
+impl ExportJob {
+    /// Creates a job for one segment.
+    pub(crate) fn single(output: PathBuf, duration: Duration, process: ExportProcess) -> Self {
+        Self {
+            output,
+            duration,
+            out_time: Timestamp::ZERO,
+            cancel_requested: false,
+            process: ExportProcessKind::Single(process),
+        }
     }
 
-    let message = match exit {
-        Ok(status) if ended && status.success() => {
-            return ExportStatus::Completed { output };
+    /// Creates a job for multiple segments.
+    pub(crate) fn multi(output: PathBuf, duration: Duration, process: MultiExport) -> Self {
+        Self {
+            output,
+            duration,
+            out_time: Timestamp::ZERO,
+            cancel_requested: false,
+            process: ExportProcessKind::Multi(process),
         }
+    }
+
+    /// Polls the underlying process without blocking.
+    pub(crate) fn poll(&mut self) -> Option<JobEvent> {
+        let duration = self.duration;
+        match &mut self.process {
+            ExportProcessKind::Single(process) => match process.poll()? {
+                ExportEvent::Progress { out_time, .. } => Some(JobEvent::Progress {
+                    out_time,
+                    duration,
+                    stage: None,
+                }),
+                ExportEvent::Finished { stderr, ended } => {
+                    let exit = process.wait();
+                    Some(JobEvent::Finished {
+                        error: single_error(stderr, ended, exit),
+                    })
+                }
+            },
+            ExportProcessKind::Multi(process) => match process.poll()? {
+                MultiExportEvent::Progress {
+                    stage,
+                    out_time,
+                    duration,
+                } => Some(JobEvent::Progress {
+                    out_time,
+                    duration,
+                    stage: Some(stage),
+                }),
+                MultiExportEvent::Finished { error } => Some(JobEvent::Finished { error }),
+            },
+        }
+    }
+
+    /// Requests cancellation.
+    pub(crate) fn cancel(&mut self) {
+        match &mut self.process {
+            ExportProcessKind::Single(process) => process.cancel(),
+            ExportProcessKind::Multi(process) => process.cancel(),
+        }
+    }
+}
+
+fn single_error(stderr: String, ended: bool, exit: io::Result<ExitStatus>) -> Option<String> {
+    match exit {
+        Ok(status) if ended && status.success() => None,
         Ok(status) => {
             let details = stderr.trim();
-            if details.is_empty() {
+            Some(if details.is_empty() {
                 format!("ffmpeg exited with {status}")
             } else {
                 format!("ffmpeg exited with {status}: {details}")
-            }
+            })
         }
-        Err(error) => format!("could not wait for ffmpeg: {error}"),
-    };
-
-    ExportStatus::Failed { output, message }
+        Err(error) => Some(format!("could not wait for ffmpeg: {error}")),
+    }
 }
 
 #[cfg(test)]
@@ -150,6 +226,7 @@ mod tests {
             output: PathBuf::from("out.mkv"),
             out_time: Timestamp::from_micros(2_000_000),
             duration: Duration::from_micros(4_000_000),
+            stage: None,
         };
         assert_eq!(status.progress(), Some(0.5));
 
@@ -157,6 +234,7 @@ mod tests {
             output: PathBuf::from("out.mkv"),
             out_time: Timestamp::from_micros(9_000_000),
             duration: Duration::from_micros(4_000_000),
+            stage: Some(ExportStage::Concatenating),
         };
         assert_eq!(status.progress(), Some(1.0));
     }

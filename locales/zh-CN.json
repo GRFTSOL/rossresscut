@@ -114,5 +114,7 @@
   "export_cancelled": "已取消导出",
   "export_no_segment": "请先添加一个启用的片段",
   "export_invalid_output": "请选择不同的输出文件",
-  "export_dialog_failed": "无法打开导出对话框"
+  "export_dialog_failed": "无法打开导出对话框",
+  "export_cutting": "正在裁剪片段 {} / {}",
+  "export_concatenating": "正在合并片段"
 }

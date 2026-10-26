@@ -17,6 +17,7 @@ pub struct ExportRequest {
     start: Timestamp,
     end: Timestamp,
     output: PathBuf,
+    shortest: bool,
 }
 
 impl ExportRequest {
@@ -40,7 +41,17 @@ impl ExportRequest {
             start,
             end,
             output,
+            shortest: false,
         })
+    }
+
+    /// Stops at the shortest stream when enabled.
+    ///
+    /// Multi-segment export uses this to keep each part's audio and video
+    /// lengths close, which reduces the join gap between parts.
+    pub const fn with_shortest(mut self, shortest: bool) -> Self {
+        self.shortest = shortest;
+        self
     }
 
     /// Returns the media file being exported.
@@ -106,6 +117,10 @@ pub fn build_args(request: &ExportRequest) -> Vec<OsString> {
         // Rebase the output to zero so the saved segment starts at 0.
         args.push("-avoid_negative_ts".into());
         args.push("make_zero".into());
+    }
+
+    if request.shortest {
+        args.push("-shortest".into());
     }
 
     args.push("-ignore_unknown".into());

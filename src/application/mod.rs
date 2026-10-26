@@ -13,7 +13,9 @@ use crate::domain::media::{KeyframeIndex, MediaFile, MediaStream, VideoStream};
 use crate::domain::segment::{Segment, SegmentId, Timeline, TimelineError};
 use crate::domain::time::{Duration, Timestamp};
 use crate::error::AppError;
-use crate::media::export::{ExportEvent, ExportProcess, ExportRequest};
+use crate::media::export::{
+    ExportProcess, ExportRequest, ExportSegment, MultiExport, MultiExportRequest,
+};
 use crate::media::ffprobe::{self, ProbeError};
 use crate::media::preview::{
     HardwareAcceleration, PreviewAudio, PreviewAudioStatus, PreviewVideo, PreviewVideoConfig,
@@ -24,8 +26,8 @@ mod export;
 
 #[cfg(feature = "mpv-preview")]
 use crate::media::preview::{MpvPreview, MpvPreviewConfig, MpvPreviewError};
-use export::ExportJob;
-pub use export::{ExportCommandError, ExportStatus};
+pub use export::{ExportCommandError, ExportStage, ExportStatus};
+use export::{ExportJob, JobEvent};
 
 const PREVIEW_FRAME_RATE: u32 = 30;
 
@@ -326,10 +328,12 @@ impl Application {
         &self.export_status
     }
 
-    /// Exports the first enabled segment in timeline order to `output`.
+    /// Exports every enabled segment in timeline order to `output`.
     ///
-    /// The export is a stream copy. Seeking uses an input seek, so the saved
-    /// segment may start at the keyframe before the segment start.
+    /// A single segment uses one FFmpeg process. Multiple segments cut each
+    /// part to a temporary file and join them with the concat demuxer. Both
+    /// paths use stream copy. Seeking uses an input seek, so each segment may
+    /// start at the keyframe before its requested start.
     pub fn start_export(&mut self, output: PathBuf) -> Result<(), ExportCommandError> {
         if !matches!(self.state, OpenState::Ready) {
             return Err(ExportCommandError::NoMedia);
@@ -343,31 +347,54 @@ impl Application {
             .source()
             .map(Path::to_path_buf)
             .ok_or(ExportCommandError::NoMedia)?;
-        let segment = self
+        let segments: Vec<_> = self
             .timeline
             .segments()
             .iter()
             .copied()
-            .find(|segment| segment.enabled())
-            .ok_or(ExportCommandError::NoSegment)?;
+            .filter(|segment| segment.enabled())
+            .collect();
+        if segments.is_empty() {
+            return Err(ExportCommandError::NoSegment);
+        }
 
-        let request = ExportRequest::new(source, segment.start(), segment.end(), output.clone())
+        if segments.len() == 1 {
+            let segment = segments[0];
+            let request =
+                ExportRequest::new(source, segment.start(), segment.end(), output.clone())
+                    .ok_or(ExportCommandError::InvalidOutput)?;
+            let duration = request.duration();
+            let process = ExportProcess::start(&request).map_err(ExportCommandError::Start)?;
+
+            self.export_status = ExportStatus::Running {
+                output: output.clone(),
+                out_time: Timestamp::ZERO,
+                duration,
+                stage: None,
+            };
+            self.export = Some(ExportJob::single(output, duration, process));
+            return Ok(());
+        }
+
+        let export_segments: Vec<ExportSegment> = segments
+            .iter()
+            .map(|segment| {
+                ExportSegment::new(segment.start(), segment.end())
+                    .ok_or(ExportCommandError::InvalidOutput)
+            })
+            .collect::<Result<_, _>>()?;
+        let request = MultiExportRequest::new(source, export_segments, output.clone())
             .ok_or(ExportCommandError::InvalidOutput)?;
-        let duration = request.duration();
-        let process = ExportProcess::start(&request).map_err(ExportCommandError::Start)?;
+        let duration = request.total_duration();
+        let process = MultiExport::start(request).map_err(ExportCommandError::StartMulti)?;
 
         self.export_status = ExportStatus::Running {
             output: output.clone(),
             out_time: Timestamp::ZERO,
             duration,
+            stage: None,
         };
-        self.export = Some(ExportJob {
-            output,
-            duration,
-            out_time: Timestamp::ZERO,
-            cancel_requested: false,
-            process,
-        });
+        self.export = Some(ExportJob::multi(output, duration, process));
         Ok(())
     }
 
@@ -377,7 +404,7 @@ impl Application {
     pub fn cancel_export(&mut self) {
         if let Some(job) = self.export.as_mut() {
             job.cancel_requested = true;
-            job.process.cancel();
+            job.cancel();
         }
     }
 
@@ -721,43 +748,49 @@ impl Application {
 
     fn poll_export(&mut self) -> bool {
         let mut changed = false;
-        let mut running = None;
+        let mut progress = None;
         let mut finished = None;
 
         if let Some(job) = self.export.as_mut() {
-            while let Some(event) = job.process.poll() {
-                match event {
-                    ExportEvent::Progress { out_time, .. } => {
+            loop {
+                match job.poll() {
+                    None => break,
+                    Some(JobEvent::Progress {
+                        out_time,
+                        duration,
+                        stage,
+                    }) => {
                         job.out_time = out_time;
-                        running = Some((job.output.clone(), job.out_time, job.duration));
-                        changed = true;
+                        progress = Some((job.output.clone(), out_time, duration, stage));
                     }
-                    ExportEvent::Finished { stderr, ended } => {
-                        let exit = job.process.wait();
-                        finished = Some((
-                            job.output.clone(),
-                            job.cancel_requested,
-                            stderr,
-                            ended,
-                            exit,
-                        ));
+                    Some(JobEvent::Finished { error }) => {
+                        finished = Some((job.output.clone(), job.cancel_requested, error));
                         break;
                     }
                 }
             }
         }
 
-        if let Some((output, out_time, duration)) = running {
+        if let Some((output, out_time, duration, stage)) = progress {
             self.export_status = ExportStatus::Running {
                 output,
                 out_time,
                 duration,
+                stage,
             };
+            changed = true;
         }
 
-        if let Some((output, cancelled, stderr, ended, exit)) = finished {
+        if let Some((output, cancelled, error)) = finished {
             self.export = None;
-            self.export_status = export::finish_status(output, cancelled, stderr, ended, exit);
+            self.export_status = if cancelled {
+                ExportStatus::Cancelled
+            } else {
+                match error {
+                    None => ExportStatus::Completed { output },
+                    Some(message) => ExportStatus::Failed { output, message },
+                }
+            };
             changed = true;
         }
 

@@ -2,11 +2,14 @@
 
 ## 当前阶段
 
-**Phase 4D：无损导出（单 Segment 已实现）**
+**Phase 5：多片段合并（单段 + 多段已实现）**
 
 - 单 Segment 导出已完成并提交（`7a81434`）。
-- Phase 5 多 Segment 调查已完成：`docs/investigations/multi-segment-concat.md`；实现未开始。
-- 关键结论：临时片段 + concat demuxer 是唯一可靠的无损方案；`inpoint/outpoint` 不可用；拼接处有 ≤1 帧视频间隙；起点回退到关键帧。
+- Phase 5 调查：`docs/investigations/multi-segment-concat.md`。
+- 多 Segment 实现：临时片段 + concat demuxer；临时目录在成功、失败、取消后自动清理。
+- 顺序严格使用 `Timeline.segments()`；非关键帧起点回退到此前关键帧。
+- 拼接处存在 ≤1 帧视频间隙，已在文档中记录。
+- 未完成：stream selection、显式 metadata/chapter 处理、容器预检查、4K/VFR 验证。
 - 未解决问题记录在 `docs/open-questions.md`。
 
 除非用户明确要求，不提前实现后续阶段功能。
@@ -470,7 +473,7 @@ re-encode
 
 # Phase 5：多片段合并
 
-状态：`调查完成；实现未开始`
+状态：`实现完成（单段 + 多段）`
 
 调查文档：`docs/investigations/multi-segment-concat.md`。
 
@@ -485,17 +488,25 @@ re-encode
 
 ## 任务
 
-- [ ] Segment compatibility（流布局与容器一致性检查）
-- [ ] 临时片段切片（`-ss` before `-i`、`-t`、`-map 0`、`-c copy`、`-shortest`）
-- [ ] concat demuxer 合并
-- [ ] 临时目录生命周期（成功 / 失败 / 取消都清理）
-- [ ] 多段进度（按实际片段时长加权）
+- [x] Segment compatibility（同一 source 的 enabled segments）
+- [x] 临时片段切片（`-ss` before `-i`、`-t`、`-map 0`、`-c copy`、`-shortest`）
+- [x] concat demuxer 合并
+- [x] 临时目录生命周期（成功 / 失败 / 取消都清理）
+- [x] 多段进度（按各段请求时长加权）
 - [ ] stream selection
-- [ ] timestamp 处理
-- [ ] metadata 处理
-- [ ] 不兼容情况处理
-- [ ] 顺序护栏测试（导出必须读取 Timeline 既有顺序，不得按 start 重排）
-- [ ] 回归测试（含非关键帧起点、重叠 Segment、取消）
+- [ ] timestamp 处理（切片已用 `-avoid_negative_ts make_zero`；更细控制未做）
+- [ ] metadata / chapter 显式处理
+- [x] 不兼容情况处理（FFmpeg 错误向上传递并显示）
+- [x] 顺序护栏测试（导出必须读取 Timeline 既有顺序，不得按 start 重排）
+- [x] 回归测试（含非关键帧起点、重叠 Segment、取消）
+
+验证记录（2026-10-26）：
+
+- `tests/multi_export.rs`：多色源（红/绿/蓝各 5 秒）按蓝 → 红 → 绿导出，提取输出帧验证顺序；临时目录在成功与取消后都不存在。
+- `tests/application_export.rs`：完整 `Application` 流程（open → 3 个 Segment → start_export → poll），输出顺序为 Timeline 顺序。
+- `tests/export.rs`：单段 stream copy 不变，codec / 分辨率 / 采样率 / 声道数一致。
+- `cargo test`、`cargo clippy --all-targets --all-features -- -D warnings`、`cargo fmt --check` 全部通过。
+- 未做 4K / 60fps / VFR / 字幕 / 章节验证；见 `docs/open-questions.md`。
 
 ## 研究任务（不复制代码）
 
