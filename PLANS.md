@@ -2,11 +2,15 @@
 
 ## 当前阶段
 
-**Phase 4C：预览解码实现（未开始）**
+**Phase 4C：预览解码实现（方案 F，未开始）**
 
 - Phase 4A 调查：`docs/investigations/playback-pipeline.md`。
-- Phase 4B 决策：`docs/decisions/0009-preview-decode-zero-copy.md`。
-- Phase 4C 落地 `media/platform`、`libav*` 绑定、surface 导入与进程内音频解码。
+- Phase 4B 原决策：`docs/decisions/0009-preview-decode-zero-copy.md`（方案 D）。
+- Phase 4B 修订：`docs/decisions/0010-preview-via-mpv-engine.md` 改为方案 F：
+  `mpv-engine` export + wgpu；音频由 mpv 输出；`hr-seek=no/yes` 分别用于
+  拖动与松手。
+- Phase 4C 落地 `media/preview/mpv`、mpv-engine 集成、音频切换与 scrubbing；
+  外部 FFmpeg 预览保留为回退。
 - 无损导出顺延为 Phase 4D。
 - 未解决问题记录在 `docs/open-questions.md`。
 

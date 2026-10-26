@@ -12,6 +12,10 @@
 
 ## 预览解码（来源：ADR 0009）
 
+> 2026-10-26：方案 D 已被 `docs/decisions/0010-preview-via-mpv-engine.md` 取代。
+> OQ-1（设备选择）与 OQ-2（HDR）在方案 F 下仍相关；OQ-7 已按方案 F 更新；
+> OQ-3/4/5/6/8 保留为方案 D 或旧路径的历史记录。
+
 ### OQ-1 多 GPU / 多 render node 的设备选择
 
 **问题**：Linux 上存在多个 `/dev/dri/renderD*`（核显 + 独显）时，如何选择 VAAPI 设备；Windows 上如何在 D3D11 适配器之间选择。
@@ -90,15 +94,17 @@
 
 ### OQ-7 预览时间戳不是源 PTS
 
-**问题**：当前预览帧时间戳是 `fps=30` 合成 CFR，不是源 PTS。ADR 0009 的进程内实现应直接使用解码器的 PTS。
+**问题**：当前预览帧时间戳是 `fps=30` 合成 CFR，不是源 PTS。
 
-**当前状态**：Phase 4A 测量不受影响；Phase 4C 实现时必须改为源时间戳。
+**当前状态**：方案 F 下预览不暴露源 PTS；UI 位置使用 mpv 的
+`position()`（`time-pos`），它是播放时钟，不是当前纹理对应的源 PTS。
 
-**影响**：若继续沿用合成时间戳，会因为丢帧与 VFR 导致预览位置与真实时间不一致。
+**影响**：若把 `position()` 当成源 PTS 用于 Segment 或导出，会产生错误。
 
-**计划时机**：Phase 4C。
+**计划时机**：如果未来需要帧精确预览，另立 ADR。
 
-**解除条件**：预览时间轴直接使用源 PTS，并有 VFR 素材测试。
+**解除条件**：预览位置只用于 UI / scrub 反馈；Segment 与导出仍使用
+FFprobe / FFmpeg。需要帧精确预览时再评估方案 D 或扩展 mpv-engine。
 
 ### OQ-8 音频设备缓冲提前量
 
@@ -123,3 +129,72 @@
 **计划时机**：Phase 4C 完成后，作为回归测试的一部分。
 
 **解除条件**：至少 10 分钟连续播放的 delta 统计在可接受范围内。
+
+---
+
+## mpv-engine 方案（来源：`docs/investigations/mpv-engine-spike.md`）
+
+### OQ-10 eframe 0.37 端到端导入
+
+**问题**：mpv-engine 的 `ExportedFrame` 是 `Bgra8Unorm`，egui-wgpu 的
+`register_native_texture` 文档要求 `Rgba8Unorm`；需要确认纹理注册、颜色/声道顺序、
+设备 feature 请求与生命周期。
+
+**当前状态**：Linux 独立 wgpu 与 eframe 0.37 窗口内显示均已验证；纯红
+`(253,0,0)`、50% 灰 `(127,128,127)` 正确，`Bgra8Unorm` 可直接注册，无需额外 blit。
+剩余窗口 resize / Wayland scale factor 的 `set_export_size` 未验证。
+
+**影响**：若无法直接注册，需要在 GPU 上做一次 BGRA→RGBA blit 或自定义 paint
+callback；不得回退到 CPU 回读。
+
+**计划时机**：方案 F 评估阶段。
+
+**解除条件**：eframe 窗口中显示正确颜色，且有暂停/seek/resize 的回归测试。
+颜色与暂停/seek 已满足；剩余 resize/scale。
+
+### OQ-11 mpv 音频与 cpal 主时钟
+
+**问题**：若采用 mpv-engine，音频由 mpv 的 `ao` 输出还是继续由项目 `cpal` 输出；
+两种方式的播放位置、暂停、seek 与音量控制如何统一。
+
+**当前状态**：mpv `ao` 输出已验证（`floatp`/44100/单声道）；稳定播放时
+`position()` 与 `audio-pts` 相差约 11–16 ms；音量、静音、暂停、暂停中 seek
+均正常。方向是 mpv 独占音频，取代 cpal 主时钟。
+
+**影响**：影响 ADR 0004 的音频主时钟设计与现有 `PreviewAudio`。
+
+**计划时机**：方案 F 决策后。
+
+**解除条件**：确定单一音频输出路径；剩余多音轨、设备切换、真实扬声器延迟、
+10 分钟以上 A/V 漂移。
+
+### OQ-12 快速 scrub 与帧精确 seek
+
+**问题**：mpv 的 `hr-seek` 行为、关键帧 seek 延迟、暂停时单帧产出，是否满足
+时间轴拖动与 Segment 边界预览。
+
+**当前状态**：`hr-seek=no` 延迟约 130–190 ms（播放中）/128–313 ms（暂停），
+落在前一个关键帧，误差约 5 s；`hr-seek=yes` 延迟约 200–330 ms，落点误差 0。
+真实 eframe + 4K + 音频下 `hr-seek=yes` 到 6.0 用时 365 ms，落点 6.039。
+headless/`vo=null`/`audio=no` 下精确 seek 不触发 `PlaybackRestart`，需用
+`position()` 或观察 `time-pos` 兜底；eframe + 音频下事件正常触发。
+
+**影响**：拖动体验；不得把预览位置用于 Segment 或导出。
+
+**计划时机**：方案 F 决策后。
+
+**解除条件**：拖动期间的快速 scrub 在真实 eframe + 音频下复测；关键帧列表与
+`frame-step` 行为。
+
+### OQ-13 HDR / 10-bit 预览
+
+**问题**：mpv-engine 导出 8-bit BGRA；HDR/10-bit 素材会被 tone map。
+
+**当前状态**：未测。当前产品以 8-bit 裁切为主。
+
+**影响**：只影响预览颜色，不影响 stream copy 导出；smart cut 重编码必须从源流
+保留颜色元数据。
+
+**计划时机**：8-bit 路径稳定后。
+
+**解除条件**：有 HDR/10-bit 素材的对比结果，并明确是否需要更高位深导出。

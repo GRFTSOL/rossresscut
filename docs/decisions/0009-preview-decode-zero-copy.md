@@ -1,9 +1,14 @@
 # 0009 预览解码与渲染：进程内 libav* + 平台 hwaccel + zero-copy
 
-- 状态：已接受
+- 状态：已被 `0010-preview-via-mpv-engine.md` 取代（2026-10-26）；本文保留为 Phase 4B 历史记录
 - 日期：2026-10-24
 - 阶段：Phase 4B
 - 取代：`0003-preview-backend.md` 的视频帧解码部分；`0005-hardware-decoding.md` 的预览解码实现部分
+
+> 2026-10-26 更新：spike 证明 libmpv + 隐藏 GL context + DMA-BUF/IOSurface/
+> shared D3D11 导出 + wgpu 导入可以满足 zero-copy，且比自建 libav* + 三平台
+> surface 导入的工程量更小。预览后端改为方案 F，见 `0010-preview-via-mpv-engine.md`。
+> 本文的方案 D 不再实施；`media/platform` 也不再为预览路径所需。
 
 ## 背景
 
