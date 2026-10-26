@@ -283,8 +283,10 @@ impl Application {
         self.keyframes.as_ref()
     }
 
-    /// Returns the FFmpeg hardware accelerator in use, or `None` for software
-    /// decoding.
+    /// Returns the decoder backend in use for the preview.
+    ///
+    /// The mpv path returns `mpv-engine`; the external FFmpeg fallback
+    /// returns the requested hardware accelerator or `None` for software.
     pub fn hardware_decoder(&self) -> Option<&'static str> {
         if self.playback.mpv_present() {
             return Some("mpv-engine");
@@ -298,8 +300,10 @@ impl Application {
     /// Overrides the hardware backend used by subsequently started preview
     /// decoders.
     ///
-    /// Intended for diagnostics and future settings. It does not restart a
-    /// decoder that is already running; the next play/seek uses the new value.
+    /// Intended for diagnostics and future settings. It only affects the
+    /// external FFmpeg fallback path; mpv selects its own hardware decoder.
+    /// It does not restart a decoder that is already running; the next
+    /// play/seek uses the new value.
     pub fn set_preview_hardware(&mut self, hardware: HardwareAcceleration) {
         self.playback.hardware = hardware;
     }

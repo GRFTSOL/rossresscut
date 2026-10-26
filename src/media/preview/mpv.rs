@@ -8,11 +8,11 @@
 //! The exported texture is GPU-resident; no CPU pixel copy happens here.
 
 use std::fmt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use mpv_engine::{Engine, ExportOptions, PlaybackEvent};
 
-use crate::domain::time::{Duration, Timestamp};
+use crate::domain::time::Timestamp;
 
 /// Configuration for starting the mpv preview backend.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -145,6 +145,9 @@ pub struct MpvPreview {
 impl MpvPreview {
     /// Starts libmpv, attaches the exported-frame backend and loads `config.path`.
     ///
+    /// mpv keeps its default `video-sync=audio`: frame selection and A/V sync
+    /// stay inside libmpv, and this wrapper only reads `time-pos`.
+    ///
     /// `on_frame_update` is called when a new frame is available.
     /// `on_event` is called when mpv queues an event. Both may run on mpv
     /// threads and must be cheap and thread-safe.
@@ -195,11 +198,6 @@ impl MpvPreview {
         Ok(Self { engine, path })
     }
 
-    /// Returns the media path owned by this preview.
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
     /// Takes the newest exported frame, if one is waiting, and imports it
     /// into `device` without a CPU copy.
     pub fn acquire_texture(
@@ -229,12 +227,6 @@ impl MpvPreview {
         seconds_to_micros(self.engine.position()?).map(Timestamp::from_micros)
     }
 
-    /// Media duration, if mpv reports one.
-    pub fn duration(&self) -> Option<Duration> {
-        let micros = seconds_to_micros(self.engine.duration()?)?;
-        u64::try_from(micros).ok().map(Duration::from_micros)
-    }
-
     /// Pauses or resumes playback.
     pub fn set_paused(&self, paused: bool) -> Result<(), MpvPreviewError> {
         self.engine
@@ -259,20 +251,6 @@ impl MpvPreview {
         self.engine
             .set_property("hr-seek", value)
             .map_err(|error| command_error("set hr-seek", error))
-    }
-
-    /// Sets the output volume in percent.
-    pub fn set_volume(&self, percent: f64) -> Result<(), MpvPreviewError> {
-        self.engine
-            .set_volume(percent)
-            .map_err(|error| command_error("set volume", error))
-    }
-
-    /// Mutes or unmutes audio.
-    pub fn set_muted(&self, muted: bool) -> Result<(), MpvPreviewError> {
-        self.engine
-            .set_property("mute", muted)
-            .map_err(|error| command_error("set mute", error))
     }
 
     /// Changes the exported frame size in physical pixels.

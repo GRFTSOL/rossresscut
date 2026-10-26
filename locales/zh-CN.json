@@ -42,7 +42,7 @@
   "sync_scrub": "拖动预览",
   "sync_audio_clock": "音频时钟",
   "sync_wall_clock": "墙钟",
-  "preview_summary": "30 fps，最大 960x540",
+  "preview_summary": "按预览窗格等比适配，不放大",
   "format": "格式",
   "container": "容器",
   "long_name": "全名",

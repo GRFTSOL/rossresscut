@@ -42,7 +42,7 @@
   "sync_scrub": "scrub preview",
   "sync_audio_clock": "audio clock",
   "sync_wall_clock": "wall clock",
-  "preview_summary": "30 fps, max 960x540",
+  "preview_summary": "Fits the preview pane, no upscaling",
   "format": "Format",
   "container": "Container",
   "long_name": "Long name",
