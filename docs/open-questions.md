@@ -236,7 +236,7 @@ headless/`vo=null`/`audio=no` 下精确 seek 不触发 `PlaybackRestart`，需�
 
 **影响**：输出范围可能比用户设置的范围大。
 
-**计划时机**：Phase 8 的 smart cut 调查。
+**计划时机**：Phase 7 的 smart cut 调查。
 
 **解除条件**：smart cut 决策记录后，明确何时使用重编码来精确起点。
 
@@ -244,13 +244,13 @@ headless/`vo=null`/`audio=no` 下精确 seek 不触发 `PlaybackRestart`，需�
 
 **问题**：当前导出使用 `-map 0 -c copy`，导出全部流；没有显式 metadata / chapter 处理。
 
-**当前状态**：未实现。PLANS 将 Stream selection、Metadata、Chapters 归入 Phase 8。
+**当前状态**：未实现。PLANS 将 Stream selection、Metadata、Chapters 归入 Phase 7。
 
 **影响**：多余流会被一起导出；章节不会按 Segment 生成。
 
-**计划时机**：Phase 8。
+**计划时机**：Phase 7。
 
-**解除条件**：按 Phase 8 的独立设计实现。
+**解除条件**：按 Phase 7 的独立设计实现。
 
 ### OQ-17 4K / 60fps / VFR / 字幕 / 章节验证
 
@@ -260,7 +260,7 @@ headless/`vo=null`/`audio=no` 下精确 seek 不触发 `PlaybackRestart`，需�
 
 **影响**：高帧率或 VFR 素材的拼接间隙、时间戳行为可能不同。
 
-**计划时机**：Phase 5 回归扩展或 Phase 8。
+**计划时机**：Phase 5 回归扩展或 Phase 7。
 
 **解除条件**：至少覆盖 4K60、VFR、含字幕/章节的容器。
 
@@ -280,11 +280,11 @@ headless/`vo=null`/`audio=no` 下精确 seek 不触发 `PlaybackRestart`，需�
 
 **问题**：菜单中的“导出项目”“导入项目”尚未实现。
 
-**当前状态**：未实现；属于 Phase 8 的 Project persistence。
+**当前状态**：未实现；属于 Phase 7 的 Project persistence。
 
 **影响**：无法保存和恢复 Timeline / Segment 编辑。
 
-**计划时机**：Phase 8。
+**计划时机**：Phase 7。
 
 **解除条件**：定义项目文件格式、版本迁移与 SegmentId 持久化。
 

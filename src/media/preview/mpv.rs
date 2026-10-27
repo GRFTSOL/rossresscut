@@ -168,7 +168,10 @@ impl MpvPreview {
             .ok_or_else(|| MpvPreviewError::NonUtf8Path { path: path.clone() })?;
 
         let engine = Engine::video()
-            .property("keep-open", "no")
+            // Keeping the file loaded at EOF lets the user drag back from the
+            // end without rebuilding the mpv backend. The preview would
+            // otherwise fall back to the slow external FFmpeg path.
+            .property("keep-open", "yes")
             .property("hr-seek", "yes")
             // `auto-safe` picks the platform media engine (VAAPI on Linux,
             // D3D11VA on Windows, VideoToolbox on macOS) and falls back to

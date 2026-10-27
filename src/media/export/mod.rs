@@ -29,6 +29,29 @@ pub use concat::{
 };
 pub use progress::{ProgressUpdate, parse_progress_line};
 
+/// Renders an FFmpeg argument list as a copyable shell command.
+///
+/// This is for display only; execution always passes arguments separately.
+pub fn render_command(args: &[OsString]) -> String {
+    let mut text = String::from("ffmpeg");
+    for arg in args {
+        text.push(' ');
+        let arg = arg.to_string_lossy();
+        let needs_quotes = arg.is_empty()
+            || arg
+                .chars()
+                .any(|character| character.is_whitespace() || "'\"\\$`".contains(character));
+        if needs_quotes {
+            text.push('\'');
+            text.push_str(&arg.replace('\'', "'\\''"));
+            text.push('\'');
+        } else {
+            text.push_str(&arg);
+        }
+    }
+    text
+}
+
 const FFMPEG: &str = "ffmpeg";
 
 /// Errors produced while starting or running an export.
@@ -113,6 +136,7 @@ pub struct ExportProcess {
     events: Receiver<ExportEvent>,
     reader: Option<JoinHandle<()>>,
     started: Instant,
+    args: Vec<OsString>,
     _metadata: Option<TempMetadata>,
 }
 
@@ -144,7 +168,7 @@ impl ExportProcess {
         metadata: Option<TempMetadata>,
     ) -> Result<Self, ExportError> {
         let mut child = Command::new(FFMPEG)
-            .args(args)
+            .args(&args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -177,8 +201,14 @@ impl ExportProcess {
             events,
             reader: Some(reader),
             started: Instant::now(),
+            args,
             _metadata: metadata,
         })
+    }
+
+    /// Returns the FFmpeg argument list, excluding the executable path.
+    pub fn command_line(&self) -> &[OsString] {
+        &self.args
     }
 
     /// Polls for the next event without blocking.
@@ -314,5 +344,32 @@ fn read_stderr(mut stderr: impl Read) -> String {
     match stderr.read_to_string(&mut text) {
         Ok(_) => text,
         Err(error) => format!("could not read ffmpeg stderr: {error}\n{text}"),
+    }
+}
+
+#[cfg(test)]
+mod command_render_tests {
+    use super::*;
+
+    #[test]
+    fn renders_arguments_for_display() {
+        let args: Vec<OsString> = vec![
+            "-ss".into(),
+            "1.500000".into(),
+            "-i".into(),
+            "/tmp/a file.mkv".into(),
+            "-map".into(),
+            "0".into(),
+        ];
+        assert_eq!(
+            render_command(&args),
+            "ffmpeg -ss 1.500000 -i '/tmp/a file.mkv' -map 0"
+        );
+    }
+
+    #[test]
+    fn escapes_single_quotes() {
+        let args: Vec<OsString> = vec!["it's".into()];
+        assert_eq!(render_command(&args), "ffmpeg 'it'\\''s'");
     }
 }

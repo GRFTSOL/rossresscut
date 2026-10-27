@@ -204,6 +204,11 @@ impl Timeline {
         self.next_id = 1;
     }
 
+    /// Removes all segments while keeping the source binding and ID counter.
+    pub fn clear_segments(&mut self) {
+        self.segments.clear();
+    }
+
     /// Appends a segment and returns its new stable ID.
     ///
     /// The new segment becomes the last item in the output order.
@@ -306,6 +311,127 @@ impl Timeline {
     /// equal starts. This is an explicit user operation, not an invariant.
     pub fn sort_by_start(&mut self) {
         self.segments.sort_by_key(|segment| segment.start());
+    }
+
+    /// Reverses the selected areas on the source timeline.
+    ///
+    /// Every time range that was not covered by a segment becomes a segment,
+    /// and every covered range is removed. Overlapping source ranges are
+    /// unioned first. New IDs are assigned in source order.
+    ///
+    /// Returns the number of segments after inversion.
+    pub fn invert(&mut self, duration: Duration) -> Result<usize, TimelineError> {
+        let Ok(total) = i64::try_from(duration.micros()) else {
+            return Err(TimelineError::InvalidRange);
+        };
+        if total <= 0 {
+            return Err(TimelineError::InvalidRange);
+        }
+
+        let mut ranges: Vec<(i64, i64)> = self
+            .segments
+            .iter()
+            .map(|segment| (segment.start().micros(), segment.end().micros()))
+            .collect();
+        ranges.sort_unstable();
+
+        let mut covered: Vec<(i64, i64)> = Vec::with_capacity(ranges.len());
+        for (start, end) in ranges {
+            let start = start.clamp(0, total);
+            let end = end.clamp(0, total);
+            if start >= end {
+                continue;
+            }
+            if let Some(last) = covered.last_mut()
+                && start <= last.1
+            {
+                last.1 = last.1.max(end);
+                continue;
+            }
+            covered.push((start, end));
+        }
+
+        let mut gaps: Vec<(i64, i64)> = Vec::with_capacity(covered.len() + 1);
+        let mut cursor = 0;
+        for (start, end) in covered {
+            if start > cursor {
+                gaps.push((cursor, start));
+            }
+            cursor = cursor.max(end);
+        }
+        if cursor < total {
+            gaps.push((cursor, total));
+        }
+
+        self.segments.clear();
+        for (start, end) in gaps {
+            self.push(Timestamp::from_micros(start), Timestamp::from_micros(end))?;
+        }
+        Ok(self.segments.len())
+    }
+
+    /// Swaps two output positions. Returns `false` when either index is out of
+    /// range.
+    pub fn swap(&mut self, left: usize, right: usize) -> bool {
+        if left >= self.segments.len() || right >= self.segments.len() {
+            return false;
+        }
+        self.segments.swap(left, right);
+        true
+    }
+
+    /// Merges segments whose source ranges overlap, preserving timeline order.
+    ///
+    /// Overlap is transitive: a segment that overlaps several existing merged
+    /// ranges joins them into one. The merged segment keeps the first
+    /// overlapping segment's ID and enabled flag and spans from the smallest
+    /// start to the largest end. Returns the number of segments removed.
+    pub fn merge_overlaps(&mut self) -> usize {
+        let mut merged = 0;
+        let mut result: Vec<Segment> = Vec::with_capacity(self.segments.len());
+        for segment in self.segments.iter().copied() {
+            let overlapping: Vec<usize> = result
+                .iter()
+                .enumerate()
+                .filter(|(_, other)| segment.start() < other.end() && other.start() < segment.end())
+                .map(|(index, _)| index)
+                .collect();
+            if overlapping.is_empty() {
+                result.push(segment);
+                continue;
+            }
+
+            let first = overlapping[0];
+            let base = result[first];
+            let mut start = base.start().min(segment.start());
+            let mut end = base.end().max(segment.end());
+            for index in overlapping.iter().skip(1) {
+                start = start.min(result[*index].start());
+                end = end.max(result[*index].end());
+            }
+            if let Some(updated) = Segment::new(base.id(), start, end) {
+                result[first] = updated.with_enabled(base.enabled());
+            }
+            for index in overlapping.iter().skip(1).rev() {
+                result.remove(*index);
+            }
+            merged += overlapping.len();
+        }
+        self.segments = result;
+        merged
+    }
+
+    /// Replaces the segment list, preserving the IDs carried by `segments`.
+    ///
+    /// Used by undo/redo. The next ID moves past the highest restored ID so new
+    /// segments never collide with restored ones.
+    pub fn replace_segments(&mut self, segments: Vec<Segment>) {
+        self.next_id = segments
+            .iter()
+            .map(|segment| segment.id.get())
+            .max()
+            .map_or(1, |max| max.saturating_add(1));
+        self.segments = segments;
     }
 
     /// Splits `id` at `at` and returns the new second segment's ID.
@@ -624,5 +750,97 @@ mod tests {
             Err(TimelineError::NotFound)
         );
         assert_eq!(timeline.segments().len(), 1);
+    }
+    #[test]
+    fn swaps_and_merges_without_renumbering() {
+        let mut timeline = Timeline::new(PathBuf::from("sample.mp4"));
+        let a = timeline
+            .push(timestamp(0), timestamp(10_000_000))
+            .expect("A");
+        let b = timeline
+            .push(timestamp(20_000_000), timestamp(30_000_000))
+            .expect("B");
+        let c = timeline
+            .push(timestamp(5_000_000), timestamp(15_000_000))
+            .expect("C");
+
+        assert!(timeline.swap(0, 2));
+        let order: Vec<SegmentId> = timeline.segments().iter().map(|s| s.id()).collect();
+        assert_eq!(order, vec![c, b, a]);
+
+        timeline.sort_by_start();
+        assert_eq!(timeline.merge_overlaps(), 1);
+        let segments = timeline.segments();
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0].id(), a);
+        assert_eq!(segments[0].start(), timestamp(0));
+        assert_eq!(segments[0].end(), timestamp(15_000_000));
+        assert_eq!(segments[1].id(), b);
+
+        let saved = timeline.segments().to_vec();
+        timeline.clear_segments();
+        assert!(timeline.is_empty());
+        timeline.replace_segments(saved);
+        assert_eq!(timeline.len(), 2);
+        assert_eq!(
+            timeline.push(timestamp(0), timestamp(1)),
+            Ok(SegmentId::new(b.get() + 1))
+        );
+    }
+    #[test]
+    fn invert_swaps_covered_and_uncovered_ranges() {
+        let mut timeline = Timeline::new(PathBuf::from("sample.mp4"));
+        timeline
+            .push(timestamp(1_000_000), timestamp(3_000_000))
+            .expect("first");
+        timeline
+            .push(timestamp(2_000_000), timestamp(4_000_000))
+            .expect("overlapping");
+        timeline
+            .push(timestamp(5_000_000), timestamp(6_000_000))
+            .expect("last");
+
+        let duration = Duration::from_micros(7_000_000);
+        assert_eq!(timeline.invert(duration), Ok(3));
+        let ranges: Vec<(i64, i64)> = timeline
+            .segments()
+            .iter()
+            .map(|segment| (segment.start().micros(), segment.end().micros()))
+            .collect();
+        assert_eq!(
+            ranges,
+            vec![
+                (0, 1_000_000),
+                (4_000_000, 5_000_000),
+                (6_000_000, 7_000_000)
+            ]
+        );
+
+        assert_eq!(timeline.invert(duration), Ok(2));
+        let ranges: Vec<(i64, i64)> = timeline
+            .segments()
+            .iter()
+            .map(|segment| (segment.start().micros(), segment.end().micros()))
+            .collect();
+        assert_eq!(ranges, vec![(1_000_000, 4_000_000), (5_000_000, 6_000_000)]);
+    }
+
+    #[test]
+    fn merge_unions_transitively_overlapping_ranges() {
+        let mut timeline = Timeline::new(PathBuf::from("sample.mp4"));
+        timeline
+            .push(timestamp(0), timestamp(10_000_000))
+            .expect("A");
+        timeline
+            .push(timestamp(20_000_000), timestamp(30_000_000))
+            .expect("B");
+        timeline
+            .push(timestamp(5_000_000), timestamp(25_000_000))
+            .expect("C");
+
+        assert_eq!(timeline.merge_overlaps(), 2);
+        assert_eq!(timeline.segments().len(), 1);
+        assert_eq!(timeline.segments()[0].start(), timestamp(0));
+        assert_eq!(timeline.segments()[0].end(), timestamp(30_000_000));
     }
 }

@@ -3,11 +3,12 @@
 //! The UI sends commands and polls [`Application::update`]. FFprobe, preview
 //! decoding, and audio playback all run outside the UI thread.
 
+use std::collections::BTreeSet;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::domain::media::{KeyframeIndex, MediaFile, MediaStream, VideoStream};
 use crate::domain::segment::{Segment, SegmentId, Timeline, TimelineError};
@@ -109,9 +110,24 @@ pub struct Application {
     timeline: Timeline,
     markers: Markers,
     selected_segment: Option<SegmentId>,
+    selection: BTreeSet<SegmentId>,
+    clipboard: Vec<Segment>,
+    history: Vec<TimelineSnapshot>,
+    redo_stack: Vec<TimelineSnapshot>,
+    rng_state: u64,
+    last_ffmpeg_commands: Vec<String>,
     export: Option<ExportJob>,
     export_status: ExportStatus,
 }
+
+#[derive(Clone, Debug, Default, PartialEq)]
+struct TimelineSnapshot {
+    segments: Vec<Segment>,
+    selected: Option<SegmentId>,
+    selection: BTreeSet<SegmentId>,
+}
+
+const MAX_HISTORY: usize = 200;
 
 struct ProbeJob {
     path: PathBuf,
@@ -461,6 +477,165 @@ impl Application {
     /// Selects a segment by stable ID, or clears the selection with `None`.
     pub fn select_segment(&mut self, id: Option<SegmentId>) {
         self.selected_segment = id.filter(|id| self.timeline.get(*id).is_some());
+        self.selection.clear();
+    }
+
+    /// Returns whether `id` is part of the current selection.
+    pub fn is_selected(&self, id: SegmentId) -> bool {
+        self.selection.contains(&id) || self.selected_segment == Some(id)
+    }
+
+    /// Returns the selected IDs in timeline order.
+    pub fn selected_ids(&self) -> Vec<SegmentId> {
+        let mut ids: Vec<SegmentId> = if self.selection.is_empty() {
+            self.selected_segment.into_iter().collect()
+        } else {
+            self.selection.iter().copied().collect()
+        };
+        ids.retain(|id| self.timeline.get(*id).is_some());
+        ids.sort_by_key(|id| self.timeline.index_of(*id).unwrap_or(usize::MAX));
+        ids
+    }
+
+    /// Selects every segment and makes the first one primary.
+    pub fn select_all_segments(&mut self) {
+        self.selection = self
+            .timeline
+            .segments()
+            .iter()
+            .map(|segment| segment.id())
+            .collect();
+        self.selected_segment = self.timeline.segments().first().map(|segment| segment.id());
+    }
+
+    /// Adds or removes `id` from the multi-selection.
+    pub fn toggle_segment_selection(&mut self, id: SegmentId) {
+        if self.timeline.get(id).is_none() {
+            return;
+        }
+        if self.selection.remove(&id) {
+            if self.selected_segment == Some(id) {
+                self.selected_segment = self.selection.iter().next().copied();
+            }
+        } else {
+            self.selection.insert(id);
+            self.selected_segment = Some(id);
+        }
+    }
+
+    /// Copies the selected segments into the internal clipboard.
+    pub fn copy_selected_segments(&mut self) -> usize {
+        let ids = self.selected_ids();
+        self.clipboard = ids
+            .iter()
+            .filter_map(|id| self.timeline.get(*id).copied())
+            .collect();
+        self.clipboard.len()
+    }
+
+    /// Copies the selected segments and removes them.
+    pub fn cut_selected_segments(&mut self) -> usize {
+        let count = self.copy_selected_segments();
+        if count > 0 {
+            self.remove_selected_segments();
+        }
+        count
+    }
+
+    /// Appends clipboard segments as new segments with fresh IDs.
+    pub fn paste_segments(&mut self) -> usize {
+        if self.clipboard.is_empty() || self.media.is_none() {
+            return 0;
+        }
+        self.checkpoint();
+        let mut pasted = Vec::with_capacity(self.clipboard.len());
+        for segment in self.clipboard.clone() {
+            if let Ok(id) = self.timeline.push(segment.start(), segment.end()) {
+                if !segment.enabled() {
+                    self.timeline.set_enabled(id, false);
+                }
+                pasted.push(id);
+            }
+        }
+        if pasted.is_empty() {
+            return 0;
+        }
+        self.selection = pasted.iter().copied().collect();
+        self.selected_segment = pasted.last().copied();
+        pasted.len()
+    }
+
+    /// Undoes the last timeline change.
+    pub fn undo(&mut self) -> bool {
+        let Some(previous) = self.history.pop() else {
+            return false;
+        };
+        let current = self.snapshot();
+        self.redo_stack.push(current);
+        self.restore(previous);
+        true
+    }
+
+    /// Redoes the last undone timeline change.
+    pub fn redo(&mut self) -> bool {
+        let Some(next) = self.redo_stack.pop() else {
+            return false;
+        };
+        let current = self.snapshot();
+        self.history.push(current);
+        self.restore(next);
+        true
+    }
+
+    /// Returns whether an undo step is available.
+    pub fn can_undo(&self) -> bool {
+        !self.history.is_empty()
+    }
+
+    /// Returns whether a redo step is available.
+    pub fn can_redo(&self) -> bool {
+        !self.redo_stack.is_empty()
+    }
+
+    fn snapshot(&self) -> TimelineSnapshot {
+        TimelineSnapshot {
+            segments: self.timeline.segments().to_vec(),
+            selected: self.selected_segment,
+            selection: self.selection.clone(),
+        }
+    }
+
+    fn checkpoint(&mut self) {
+        self.history.push(self.snapshot());
+        if self.history.len() > MAX_HISTORY {
+            self.history.remove(0);
+        }
+        self.redo_stack.clear();
+    }
+
+    fn restore(&mut self, snapshot: TimelineSnapshot) {
+        self.timeline.replace_segments(snapshot.segments);
+        self.selection = snapshot.selection;
+        self.selection.retain(|id| self.timeline.get(*id).is_some());
+        self.selected_segment = snapshot
+            .selected
+            .filter(|id| self.timeline.get(*id).is_some());
+    }
+
+    fn next_random(&mut self) -> u64 {
+        if self.rng_state == 0 {
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_nanos() as u64)
+                .unwrap_or(0x9E37_79B9_7F4A_7C15);
+            self.rng_state = (nanos ^ u64::from(std::process::id())) | 1;
+        }
+        let mut value = self.rng_state;
+        value ^= value << 13;
+        value ^= value >> 7;
+        value ^= value << 17;
+        self.rng_state = value;
+        value
     }
 
     /// Sets the in point, clamped to the media bounds.
@@ -499,6 +674,7 @@ impl Application {
             return Err(SegmentCommandError::MissingOutPoint);
         };
 
+        self.checkpoint();
         let id = self
             .timeline
             .push(start, end)
@@ -508,6 +684,7 @@ impl Application {
                 TimelineError::NotFound => SegmentCommandError::EmptyRange,
             })?;
         self.selected_segment = Some(id);
+        self.selection.clear();
         self.markers = Markers::default();
         Ok(id)
     }
@@ -557,6 +734,7 @@ impl Application {
         let id = self
             .selected_segment
             .ok_or(SegmentCommandError::NoSelection)?;
+        self.checkpoint();
         let second =
             self.timeline
                 .split(id, self.playback.position)
@@ -566,6 +744,7 @@ impl Application {
                     TimelineError::IdExhausted => SegmentCommandError::IdExhausted,
                 })?;
         self.selected_segment = Some(second);
+        self.selection.clear();
         Ok(second)
     }
 
@@ -597,14 +776,24 @@ impl Application {
         self.selected_segment = Some(segments[index].id());
     }
 
-    /// Removes the selected segment.
+    /// Removes the selected segments.
     ///
-    /// The selection moves to the next segment in output order, or the
-    /// previous one when the removed segment was last.
+    /// The primary selection moves to the next segment in output order, or the
+    /// previous one when the removed range was last.
     pub fn remove_selected_segment(&mut self) -> Option<Segment> {
-        let id = self.selected_segment?;
-        let index = self.timeline.index_of(id)?;
-        let removed = self.timeline.remove(id)?;
+        self.remove_selected_segments()
+    }
+
+    fn remove_selected_segments(&mut self) -> Option<Segment> {
+        let ids = self.selected_ids();
+        let first_id = *ids.first()?;
+        let first = self.timeline.get(first_id).copied()?;
+        let index = self.timeline.index_of(first_id)?;
+        self.checkpoint();
+        for id in &ids {
+            self.timeline.remove(*id);
+        }
+        self.selection.clear();
         self.selected_segment = self
             .timeline
             .segments()
@@ -615,11 +804,15 @@ impl Application {
                     .and_then(|index| self.timeline.segments().get(index))
             })
             .map(|segment| segment.id());
-        Some(removed)
+        Some(first)
     }
 
     /// Sets the enabled flag of a segment.
     pub fn set_segment_enabled(&mut self, id: SegmentId, enabled: bool) -> bool {
+        if self.timeline.get(id).is_none() {
+            return false;
+        }
+        self.checkpoint();
         self.timeline.set_enabled(id, enabled)
     }
 
@@ -628,6 +821,10 @@ impl Application {
         let Some(id) = self.selected_segment else {
             return false;
         };
+        if !self.timeline.index_of(id).is_some_and(|index| index > 0) {
+            return false;
+        }
+        self.checkpoint();
         self.timeline.move_up(id)
     }
 
@@ -636,6 +833,13 @@ impl Application {
         let Some(id) = self.selected_segment else {
             return false;
         };
+        let Some(index) = self.timeline.index_of(id) else {
+            return false;
+        };
+        if index + 1 >= self.timeline.len() {
+            return false;
+        }
+        self.checkpoint();
         self.timeline.move_down(id)
     }
 
@@ -651,6 +855,7 @@ impl Application {
             return Err(SegmentCommandError::NoSelection);
         };
         let start = clamp_position(start, self.duration());
+        self.checkpoint();
         self.timeline
             .update(id, start, segment.end())
             .map(|_| ())
@@ -670,6 +875,7 @@ impl Application {
             return Err(SegmentCommandError::NoSelection);
         };
         let end = clamp_position(end, self.duration());
+        self.checkpoint();
         self.timeline
             .update(id, segment.start(), end)
             .map(|_| ())
@@ -683,7 +889,111 @@ impl Application {
     /// Sorts segments by source start time. Selection is preserved because it
     /// is tracked by stable ID.
     pub fn sort_segments(&mut self) {
+        if self.timeline.len() < 2 {
+            return;
+        }
+        self.checkpoint();
         self.timeline.sort_by_start();
+    }
+
+    /// Reverses the selected and unselected areas on the source timeline.
+    ///
+    /// Segments become gaps and gaps become segments. New IDs are assigned;
+    /// the selection moves to the first new segment.
+    pub fn invert_segments(&mut self) -> usize {
+        let Some(duration) = self.media.as_ref().and_then(|media| media.duration) else {
+            return 0;
+        };
+        self.checkpoint();
+        match self.timeline.invert(duration) {
+            Ok(count) => {
+                self.selection.clear();
+                self.selected_segment =
+                    self.timeline.segments().first().map(|segment| segment.id());
+                count
+            }
+            Err(error) => {
+                log::warn!("inverting segments failed: {error}");
+                0
+            }
+        }
+    }
+
+    /// Shuffles the timeline order with the application PRNG.
+    pub fn shuffle_segments(&mut self) {
+        let len = self.timeline.len();
+        if len < 2 {
+            return;
+        }
+        self.checkpoint();
+        for index in (1..len).rev() {
+            let target = (self.next_random() % (index as u64 + 1)) as usize;
+            self.timeline.swap(index, target);
+        }
+    }
+
+    /// Merges overlapping segments in timeline order.
+    pub fn merge_overlapping_segments(&mut self) -> usize {
+        if self.timeline.len() < 2 {
+            return 0;
+        }
+        self.checkpoint();
+        let merged = self.timeline.merge_overlaps();
+        self.selection.retain(|id| self.timeline.get(*id).is_some());
+        self.selected_segment = self
+            .selected_segment
+            .filter(|id| self.timeline.get(*id).is_some());
+        merged
+    }
+
+    /// Removes every segment without clearing the source binding.
+    pub fn clear_segments(&mut self) {
+        if self.timeline.is_empty() {
+            return;
+        }
+        self.checkpoint();
+        self.timeline.clear_segments();
+        self.selection.clear();
+        self.selected_segment = None;
+    }
+
+    /// Appends a random segment inside the media bounds.
+    pub fn add_random_segment(&mut self) -> Result<SegmentId, SegmentCommandError> {
+        if self.media.is_none() {
+            return Err(SegmentCommandError::NoMedia);
+        }
+        let duration = self
+            .media
+            .as_ref()
+            .and_then(|media| media.duration)
+            .map_or(0, |duration| duration.micros());
+        if duration < 1_000_000 {
+            return Err(SegmentCommandError::EmptyRange);
+        }
+        let max_length = (duration / 4).clamp(1_000_000, 10_000_000);
+        let min_length = (max_length / 2).max(500_000);
+        let length = min_length + self.next_random() % (max_length - min_length + 1);
+        let start = self.next_random() % (duration - length + 1);
+        self.checkpoint();
+        let id = self
+            .timeline
+            .push(
+                Timestamp::from_micros(start as i64),
+                Timestamp::from_micros((start + length) as i64),
+            )
+            .map_err(|error| match error {
+                TimelineError::InvalidRange => SegmentCommandError::EmptyRange,
+                TimelineError::IdExhausted => SegmentCommandError::IdExhausted,
+                TimelineError::NotFound => SegmentCommandError::EmptyRange,
+            })?;
+        self.selection.clear();
+        self.selected_segment = Some(id);
+        Ok(id)
+    }
+
+    /// Returns the FFmpeg command lines produced by the latest export.
+    pub fn last_ffmpeg_commands(&self) -> &[String] {
+        &self.last_ffmpeg_commands
     }
 
     /// Starts a background probe for `path`.
@@ -925,12 +1235,17 @@ impl Application {
         self.timeline.clear();
         self.markers = Markers::default();
         self.selected_segment = None;
+        self.selection.clear();
+        self.clipboard.clear();
+        self.history.clear();
+        self.redo_stack.clear();
     }
 
     fn poll_export(&mut self) -> bool {
         let mut changed = false;
         let mut progress = None;
         let mut finished = None;
+        let mut commands = Vec::new();
 
         if let Some(job) = self.export.as_mut() {
             loop {
@@ -950,6 +1265,11 @@ impl Application {
                     }
                 }
             }
+            commands = job.commands();
+        }
+
+        if !commands.is_empty() {
+            self.last_ffmpeg_commands = commands;
         }
 
         if let Some((output, out_time, duration, stage)) = progress {
@@ -1413,10 +1733,19 @@ impl Playback {
 
         if duration_end(media.duration).is_some_and(|end| target.micros() >= end) {
             self.playing = false;
+            // Do not tear down mpv here: `keep-open=yes` keeps the file
+            // loaded, so dragging away from the end stays responsive.
+            #[cfg(feature = "mpv-preview")]
+            if let Some(mpv) = &self.mpv {
+                self.mpv_frame_ready = false;
+                let _ = mpv.set_paused(true);
+                let _ = mpv.set_precise_seek(false).and_then(|()| mpv.seek(target));
+                self.last_update = Instant::now();
+                return;
+            }
             self.frame = None;
             self.stop_video();
             self.stop_audio();
-            self.stop_mpv();
             self.last_update = Instant::now();
             return;
         }
@@ -1450,10 +1779,18 @@ impl Playback {
         self.warning = None;
 
         if duration_end(media.duration).is_some_and(|end| target.micros() >= end) {
+            // Same as `seek`: scrub previews must not destroy the mpv backend.
+            #[cfg(feature = "mpv-preview")]
+            if let Some(mpv) = &self.mpv {
+                self.mpv_frame_ready = false;
+                let _ = mpv.set_paused(true);
+                let _ = mpv.set_precise_seek(false).and_then(|()| mpv.seek(target));
+                self.last_update = Instant::now();
+                return;
+            }
             self.frame = None;
             self.stop_video();
             self.stop_audio();
-            self.stop_mpv();
             self.last_update = Instant::now();
             return;
         }

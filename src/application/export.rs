@@ -10,6 +10,7 @@ pub use crate::media::export::ExportStage;
 
 use crate::media::export::{
     ExportError, ExportEvent, ExportProcess, MultiExport, MultiExportError, MultiExportEvent,
+    render_command,
 };
 
 /// State of the current export, if any.
@@ -197,6 +198,20 @@ impl ExportJob {
         match &mut self.process {
             ExportProcessKind::Single(process) => process.cancel(),
             ExportProcessKind::Multi(process) => process.cancel(),
+        }
+    }
+
+    /// Returns the FFmpeg command lines started so far.
+    pub(crate) fn commands(&self) -> Vec<String> {
+        match &self.process {
+            ExportProcessKind::Single(process) => {
+                vec![render_command(process.command_line())]
+            }
+            ExportProcessKind::Multi(process) => process
+                .commands()
+                .iter()
+                .map(|args| render_command(args))
+                .collect(),
         }
     }
 }

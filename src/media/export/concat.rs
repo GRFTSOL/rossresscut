@@ -202,6 +202,7 @@ pub struct MultiExport {
     total_duration: Duration,
     completed_duration: Duration,
     part_durations: Vec<Duration>,
+    commands: Vec<Vec<OsString>>,
     stage: Option<Stage>,
 }
 
@@ -234,6 +235,7 @@ impl MultiExport {
             .collect();
         let total_duration = request.total_duration();
         let part_durations = vec![Duration::ZERO; parts.len()];
+        let command_capacity = parts.len() + 1;
 
         let mut export = Self {
             source: request.source,
@@ -245,6 +247,7 @@ impl MultiExport {
             total_duration,
             completed_duration: Duration::ZERO,
             part_durations,
+            commands: Vec::with_capacity(command_capacity),
             stage: None,
         };
         export.start_cut(0)?;
@@ -383,6 +386,11 @@ impl MultiExport {
         self.work_dir.path()
     }
 
+    /// Returns the FFmpeg argument lists started by this export, in order.
+    pub fn commands(&self) -> &[Vec<OsString>] {
+        &self.commands
+    }
+
     fn start_cut(&mut self, index: usize) -> Result<(), MultiExportError> {
         let segment = self.segments[index];
         let request = ExportRequest::new(
@@ -392,7 +400,10 @@ impl MultiExport {
             &self.parts[index],
         )
         .ok_or(MultiExportError::InvalidPart { index })?;
-        let process = ExportProcess::start(&request).map_err(MultiExportError::Export)?;
+        let args = super::build_args(&request, None);
+        let process = ExportProcess::start_with_args(args.clone(), &self.parts[index])
+            .map_err(MultiExportError::Export)?;
+        self.commands.push(args);
         self.stage = Some(Stage::Cutting { index, process });
         Ok(())
     }
@@ -477,11 +488,10 @@ impl MultiExport {
             None
         };
 
-        let process = ExportProcess::start_with_args(
-            concat_args(&list_path, &self.output, metadata_path.as_deref()),
-            &self.output,
-        )
-        .map_err(MultiExportError::Export)?;
+        let args = concat_args(&list_path, &self.output, metadata_path.as_deref());
+        let process = ExportProcess::start_with_args(args.clone(), &self.output)
+            .map_err(MultiExportError::Export)?;
+        self.commands.push(args);
         self.stage = Some(Stage::Concatenating { process });
         Ok(())
     }

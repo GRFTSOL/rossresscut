@@ -12,6 +12,7 @@ mpv-preview = ["dep:mpv-engine", "dep:wgpu"]
 [dependencies]
 cpal = "0.18"
 eframe = { version = "0.37", features = ["persistence"] }
+fontdb = "0.24"
 env_logger = "0.11"
 log = "0.4"
 mpv-engine = { version = "0.2.1", features = ["wgpu"], optional = true }

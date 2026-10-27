@@ -298,3 +298,82 @@ fn closing_media_clears_the_timeline() {
     assert_eq!(application.timeline().source(), None);
     assert_eq!(application.selected_segment(), None);
 }
+
+#[test]
+fn undo_redo_copy_paste_and_clear_keep_identity() {
+    let mut application = Application::new();
+    application.open_media(fixture("sample-keyframes.mp4"));
+    wait_until_ready(&mut application);
+
+    application.set_in_point(micros(0));
+    application.set_out_point(micros(1_000_000));
+    let first = application.add_segment().expect("first segment");
+
+    assert!(application.can_undo());
+    assert!(application.undo());
+    assert!(application.timeline().is_empty());
+    assert!(application.can_redo());
+    assert!(application.redo());
+    assert_eq!(output_order(&application), vec![first]);
+
+    application.select_segment(Some(first));
+    assert_eq!(application.copy_selected_segments(), 1);
+    assert_eq!(application.paste_segments(), 1);
+    assert_eq!(application.timeline().len(), 2);
+    assert_ne!(output_order(&application)[1], first);
+
+    application.select_segment(Some(first));
+    assert_eq!(application.cut_selected_segments(), 1);
+    assert_eq!(application.timeline().len(), 1);
+
+    application.select_all_segments();
+    assert_eq!(application.selected_ids().len(), 1);
+
+    application.clear_segments();
+    assert!(application.timeline().is_empty());
+    assert!(application.undo());
+    assert_eq!(application.timeline().len(), 1);
+}
+
+#[test]
+fn random_shuffle_and_merge_stay_valid() {
+    let mut application = Application::new();
+    application.open_media(fixture("sample-keyframes.mp4"));
+    wait_until_ready(&mut application);
+
+    let random = application.add_random_segment().expect("random segment");
+    assert!(application.timeline().get(random).is_some());
+
+    application.clear_segments();
+    application.set_in_point(micros(0));
+    application.set_out_point(micros(2_000_000));
+    let wide = application.add_segment().expect("wide segment");
+    application.set_in_point(micros(1_000_000));
+    application.set_out_point(micros(3_000_000));
+    application.add_segment().expect("overlapping segment");
+
+    application.select_segment(Some(wide));
+    application.shuffle_segments();
+    application.sort_segments();
+    let merged = application.merge_overlapping_segments();
+    assert!(merged >= 1, "overlapping segments should merge");
+    assert!(application.timeline().get(wide).is_some());
+}
+
+#[test]
+fn inverting_segments_creates_the_complement() {
+    let mut application = Application::new();
+    application.open_media(fixture("sample-keyframes.mp4"));
+    wait_until_ready(&mut application);
+
+    application.set_in_point(micros(0));
+    application.set_out_point(micros(1_000_000));
+    application.add_segment().expect("first segment");
+
+    let count = application.invert_segments();
+    assert_eq!(count, 1);
+    let segments = application.timeline().segments();
+    assert_eq!(segments.len(), 1);
+    assert_eq!(segments[0].start(), micros(1_000_000));
+    assert!(segments[0].end() > micros(1_000_000));
+}
