@@ -227,7 +227,12 @@ impl RossresscutApp {
                         segment.end(),
                         segment.duration()
                     );
-                    let color = segment_color(segment.id(), segment.enabled(), ui.visuals());
+                    let color = segment_color(
+                        segment.id(),
+                        segment.enabled(),
+                        self.application.is_selected(segment.id()),
+                        ui.visuals(),
+                    );
                     // Unselected segments keep the same hue at half strength so
                     // the list still maps onto the timeline colours.
                     let fill = if selected {

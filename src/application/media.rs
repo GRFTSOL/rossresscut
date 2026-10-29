@@ -22,6 +22,7 @@ impl Application {
         self.reset_editing();
         self.keyframes = None;
         self.keyframe_job = None;
+        self.reset_waveform();
 
         if path.as_os_str().is_empty() {
             self.media = None;
@@ -78,6 +79,7 @@ impl Application {
         self.probe = None;
         self.keyframes = None;
         self.keyframe_job = None;
+        self.reset_waveform();
         self.state = OpenState::Empty;
     }
 
@@ -107,6 +109,7 @@ impl Application {
                 self.reset_editing();
                 self.timeline.reset(media.path.clone());
                 self.start_keyframes(&media);
+                self.start_waveform(&media);
                 self.media = Some(media);
                 self.state = OpenState::Ready;
                 true
@@ -118,6 +121,7 @@ impl Application {
                 self.media = None;
                 self.keyframes = None;
                 self.keyframe_job = None;
+                self.reset_waveform();
                 self.state = OpenState::Failed {
                     path: job.path,
                     message: error.to_string(),
@@ -136,6 +140,7 @@ impl Application {
                 self.media = None;
                 self.keyframes = None;
                 self.keyframe_job = None;
+                self.reset_waveform();
                 self.state = OpenState::Failed {
                     path: job.path,
                     message,

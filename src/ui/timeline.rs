@@ -4,12 +4,13 @@ use eframe::egui;
 
 use crate::domain::segment::SegmentId;
 use crate::domain::time::{Duration as MediaDuration, Timestamp};
+use crate::domain::waveform::{Peak, Waveform};
 
 use super::dialogs::DialogError;
 use super::i18n::fill;
 use super::{
-    RossresscutApp, SEGMENT_COLORS, ShortcutAction, Strings, TIMELINE_HEIGHT, WHEEL_LINE_POINTS,
-    WHEEL_PAGE_LINES, WHEEL_STEP_POINTS,
+    RossresscutApp, SEGMENT_COLORS, ShortcutAction, Strings, TIMELINE_HEIGHT,
+    TIMELINE_HEIGHT_AUDIO, WHEEL_LINE_POINTS, WHEEL_PAGE_LINES, WHEEL_STEP_POINTS,
 };
 
 impl RossresscutApp {
@@ -216,8 +217,13 @@ impl RossresscutApp {
     }
 
     fn timeline_bar(&mut self, ui: &mut egui::Ui) {
+        let height = if self.application.has_audio() {
+            TIMELINE_HEIGHT_AUDIO
+        } else {
+            TIMELINE_HEIGHT
+        };
         let response = ui.allocate_response(
-            egui::vec2(ui.available_width(), TIMELINE_HEIGHT),
+            egui::vec2(ui.available_width(), height),
             egui::Sense::click_and_drag(),
         );
         let rect = response.rect;
@@ -235,6 +241,19 @@ impl RossresscutApp {
         let visuals = ui.visuals();
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 4.0, visuals.extreme_bg_color);
+
+        let mut cache = self.waveform_cache.take().unwrap_or_default();
+        if let Some(waveform) = self.application.waveform() {
+            let width = rect.width().round().max(1.0) as usize;
+            let columns = cache.resolve(waveform, width);
+            draw_waveform(
+                &painter,
+                rect,
+                columns,
+                visuals.weak_text_color().gamma_multiply(1.15),
+            );
+        }
+        self.waveform_cache = Some(cache);
 
         if let (Some(in_point), Some(out_point)) =
             (self.application.in_point(), self.application.out_point())
@@ -265,7 +284,12 @@ impl RossresscutApp {
                 egui::pos2(left, rect.top() + 2.0),
                 egui::pos2(right, rect.bottom() - 2.0),
             );
-            let color = segment_color(segment.id(), segment.enabled(), visuals);
+            let color = segment_color(
+                segment.id(),
+                segment.enabled(),
+                self.application.is_selected(segment.id()),
+                visuals,
+            );
             painter.rect_filled(segment_rect, 2.0, color);
             draw_segment_number(&painter, rect, segment_rect, index + 1, color);
             if self.application.is_selected(segment.id()) {
@@ -444,15 +468,77 @@ pub(super) fn x_for_time(rect: egui::Rect, time: Timestamp, duration: MediaDurat
     rect.left() + rect.width() * fraction_of(time, duration)
 }
 
+/// Cached pixel columns for the waveform.
+///
+/// Re-aggregating the peaks on every repaint would cost more than it saves, so
+/// the result is reused until the timeline width or the peak count changes.
+#[derive(Default)]
+pub(super) struct WaveformCache {
+    width: usize,
+    peaks: usize,
+    columns: Vec<Peak>,
+}
+
+impl WaveformCache {
+    /// Returns the columns for `waveform` at `width`, recomputing when needed.
+    fn resolve(&mut self, waveform: &Waveform, width: usize) -> &[Peak] {
+        if self.width != width || self.peaks != waveform.len() {
+            self.width = width;
+            self.peaks = waveform.len();
+            self.columns = waveform.columns(width);
+        }
+        &self.columns
+    }
+}
+
 pub(super) fn segment_color(
     id: SegmentId,
     enabled: bool,
+    selected: bool,
     visuals: &egui::Visuals,
 ) -> egui::Color32 {
-    if enabled {
+    let base = if enabled {
         SEGMENT_COLORS[(id.get() % SEGMENT_COLORS.len() as u64) as usize]
     } else {
-        visuals.weak_text_color().gamma_multiply(0.5)
+        visuals.weak_text_color()
+    };
+    // The waveform sits underneath, so every state stays translucent: selected
+    // segments are simply more opaque than unselected ones.
+    let alpha = match (enabled, selected) {
+        (false, _) => 34,
+        (true, true) => 130,
+        (true, false) => 64,
+    };
+    egui::Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), alpha)
+}
+
+/// Draws one vertical bar per column, centred on the timeline.
+///
+/// Silence collapses to the centre line instead of disappearing, which is what
+/// makes gaps visible at a glance.
+fn draw_waveform(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    columns: &[Peak],
+    color: egui::Color32,
+) {
+    if columns.is_empty() || rect.width() <= 0.0 {
+        return;
+    }
+
+    let center = rect.center().y;
+    let half = (rect.height() * 0.42).max(1.0);
+    let step = rect.width() / columns.len() as f32;
+    let stroke = egui::Stroke::new(step.max(1.0), color);
+    let scale = f32::from(i16::MAX);
+
+    for (index, peak) in columns.iter().enumerate() {
+        let x = rect.left() + step * (index as f32 + 0.5);
+        let top = center - half * (f32::from(peak.max()) / scale).clamp(0.0, 1.0);
+        let bottom = center - half * (f32::from(peak.min()) / scale).clamp(-1.0, 0.0);
+        // Keep a hairline for digital silence so the gap is still visible.
+        let bottom = bottom.max(top + 0.75);
+        painter.line_segment([egui::pos2(x, top), egui::pos2(x, bottom)], stroke);
     }
 }
 

@@ -6,3 +6,4 @@
 pub mod export;
 pub mod ffprobe;
 pub mod preview;
+pub mod waveform;

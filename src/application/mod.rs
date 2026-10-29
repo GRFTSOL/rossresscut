@@ -12,6 +12,7 @@ use std::time::Instant;
 use crate::domain::media::{KeyframeIndex, MediaFile};
 use crate::domain::segment::{Segment, SegmentId, Timeline};
 use crate::domain::time::{Duration, Timestamp};
+use crate::domain::waveform::Waveform;
 use crate::media::export::{
     ChapterSpec, ExportProcess, ExportRequest, ExportSegment, MultiExport, MultiExportRequest,
 };
@@ -23,6 +24,7 @@ mod export;
 mod media;
 mod playback;
 mod transport;
+mod waveform;
 
 #[cfg(feature = "mpv-preview")]
 use crate::media::preview::{MpvPreview, MpvPreviewError};
@@ -100,6 +102,8 @@ pub struct Application {
     probe: Option<ProbeJob>,
     keyframes: Option<KeyframeIndex>,
     keyframe_job: Option<KeyframeJob>,
+    waveform: Option<Waveform>,
+    waveform_job: Option<WaveformJob>,
     playback: Playback,
     timeline: Timeline,
     markers: Markers,
@@ -128,6 +132,10 @@ pub(super) struct ProbeJob {
 
 pub(super) struct KeyframeJob {
     receiver: Receiver<Result<KeyframeIndex, ProbeError>>,
+}
+
+pub(super) struct WaveformJob {
+    receiver: Receiver<Result<Waveform, crate::media::waveform::WaveformError>>,
 }
 
 impl Application {
@@ -462,6 +470,7 @@ impl Application {
     pub fn update(&mut self) -> bool {
         let mut changed = self.poll_probe();
         self.poll_keyframes();
+        self.poll_waveform();
         changed |= self.poll_export();
         let duration = self.duration();
         changed |= self.playback.update(duration);

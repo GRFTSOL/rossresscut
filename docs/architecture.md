@@ -395,11 +395,13 @@ src/
 │   ├── transport.rs           play / pause / seek / scrub / step / skip
 │   ├── editing.rs             标记、选择、剪贴板、撤销/重做、Segment 命令
 │   ├── playback.rs            Playback 播放引擎：时钟、解码、mpv 后端与回退
+│   ├── waveform.rs            波形后台提取、`has_audio` 与 `poll_waveform`
 │   └── export.rs              ExportStatus、ExportJob（单段 / 多段）、导出命令错误
 ├── domain/
 │   ├── media.rs               MediaFile / MediaFormat / 流 / Chapter / KeyframeIndex
 │   ├── segment.rs             Segment / SegmentId / Timeline（有序 EDL、稳定身份）
-│   └── time.rs                TimeBase / Timestamp / Duration / FrameRate
+│   ├── time.rs                TimeBase / Timestamp / Duration / FrameRate
+│   └── waveform.rs            Peak / Waveform（音频包络与按列聚合）
 ├── media/
 │   ├── export/
 │   │   ├── mod.rs             ExportProcess、进度/结束事件、取消与回收
@@ -411,15 +413,16 @@ src/
 │   │   ├── raw.rs             私有 serde 结构（JSON 边界）
 │   │   ├── parse.rs           JSON → 领域模型
 │   │   └── keyframes.rs       packet flags → 关键帧索引
-│   └── preview/
-│       ├── mod.rs             PreviewError、共享进程清理与参数格式化
-│       ├── mpv.rs             mpv-engine 封装：生命周期、export、帧获取、命令与事件
-│       ├── video.rs           回退路径：ffmpeg RGB 帧解码、硬件解码选择、背压、seek
-│       └── audio.rs           回退路径：ffmpeg PCM 解码 + cpal 输出
+│   ├── preview/
+│   │   ├── mod.rs             PreviewError、共享进程清理与参数格式化
+│   │   ├── mpv.rs             mpv-engine 封装：生命周期、export、帧获取、命令与事件
+│   │   ├── video.rs           回退路径：ffmpeg RGB 帧解码、硬件解码选择、背压、seek
+│   │   └── audio.rs           回退路径：ffmpeg PCM 解码 + cpal 输出
+│   └── waveform.rs            ffmpeg → s16le，折叠为 min/max peak
 └── ui/
     ├── mod.rs                 RossresscutApp 状态、窗口入口与 `eframe::App`
     ├── actions.rs             快捷键分发、片段输入框同步
-    ├── timeline.rs            时间轴绘制、播放控件、滚轮与坐标换算
+    ├── timeline.rs            时间轴与波形绘制、播放控件、滚轮与坐标换算
     ├── preview.rs             预览绘制、texture 上传、渲染诊断
     ├── panels.rs              右侧信息与片段面板、导出状态行
     ├── menu.rs                菜单栏

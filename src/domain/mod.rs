@@ -6,3 +6,4 @@
 pub mod media;
 pub mod segment;
 pub mod time;
+pub mod waveform;

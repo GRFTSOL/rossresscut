@@ -13,4 +13,4 @@ pub mod media;
 pub mod ui;
 
 /// Current development phase, shown in the About window.
-pub const PHASE: &str = "Phase 5";
+pub const PHASE: &str = "Phase 6";

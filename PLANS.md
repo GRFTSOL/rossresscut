@@ -74,7 +74,7 @@ LosslessCut 是产品行为、媒体语义和 FFmpeg 工作流的参考实现，
 - [x] 创建 `PLANS.md`
 - [x] 创建架构文档
 
-托管 CI：`.github/workflows/ci.yml`。Git 仓库已初始化；初始 commit 与 Phase 2 commit 已创建，Phase 2 修订尚未提交。
+托管 CI：`.github/workflows/ci.yml`。Git 仓库已初始化；初始 commit 与 Phase 2 修订 commit 均已创建。
 
 ## 完成条件
 
@@ -513,7 +513,8 @@ re-encode
 ## 任务
 
 - [x] Segment compatibility（同一 source 的 enabled segments）
-- [x] 临时片段切片（`-ss` before `-i`、`-t`、`-map 0`、`-c copy`、`-shortest`）
+- [x] 临时片段切片（`-ss` before `-i`、`-t`、`-map 0`、`-c copy`、`-avoid_negative_ts make_zero`）
+  （`-shortest` 曾使用，后因附加图片/字幕流导致提前结束而移除）
 - [x] concat demuxer 合并
 - [x] 临时目录生命周期（成功 / 失败 / 取消都清理）
 - [x] 多段进度（按各段请求时长加权）
@@ -566,15 +567,40 @@ re-encode
 
 # Phase 6：波形
 
-状态：`未开始`
+状态：`实现完成`
+
+ADR：`docs/decisions/0011-waveform-in-timeline.md`。
 
 ## 任务
 
-- [ ] 音频数据获取
-- [ ] waveform 数据模型
-- [ ] 异步生成
-- [ ] 缓存
-- [ ] 时间轴绘制
+- [x] 音频数据获取（外部 FFmpeg 解码为单声道 `s16le`，一个 peak 覆盖 5 ms）
+- [x] waveform 数据模型（`domain::waveform::{Peak, Waveform}`，按列聚合）
+- [x] 异步生成（后台线程 + `Application::poll_waveform`）
+- [x] 缓存（按「像素宽度 + peak 数量」缓存聚合列，仅内存）
+- [x] 时间轴绘制（波形在背景之上、片段之下；片段半透明叠加）
+
+## 设计要点
+
+- 时间轴高度：无音频 42px（原 28px 的 1.5 倍），有音频 56px。
+- 高度依据「是否有音频流」而不是「波形是否已加载」，避免加载完成时高度跳变。
+- 片段透明度：未选中 64、选中 130、禁用 34；选中态仍能透出波形。
+- 波形缺失或提取失败时时间轴照常工作，只是不画包络。
+
+## 验证记录（2026-10-29）
+
+- `tests/waveform.rs`：真实 FFmpeg 扫描 `tests/fixtures/sample.mp4`（1 秒 440 Hz），
+  峰值数量与时长符合预期；无音频文件与不存在的文件都产生带上下文的错误。
+- 单元测试：`Peak` 合并与幅度、`Waveform::columns` 在变宽/变窄/零宽时的行为、
+  `read_peaks` 的样本折叠与尾部不完整样本。
+- 真实素材：176×768/30fps 的 40 秒 B 站视频，提取 8109 个 peak，
+  时间轴上静音段与语音段肉眼可辨；创建 3 个随机片段后，
+  未选中片段可透出波形，选中片段仍可见波形。
+
+## 未完成
+
+- 波形不持久化：每次打开媒体重新解码音频。
+- 音频起点晚于容器起点时尚未做 `start_time` 偏移对齐。
+- 超长音频的峰值内存占用尚未实测。
 
 ---
 

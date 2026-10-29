@@ -43,12 +43,16 @@ use i18n::Strings;
 use preview::RenderDiagnostics;
 use settings::{ThemeChoice, UiSettings, detect_system_theme, load_settings, save_settings};
 use shortcuts::{Shortcut, ShortcutAction};
+use timeline::WaveformCache;
 
 const FILE_DIALOG_SUPPORTED: bool = cfg!(target_os = "linux");
 const WHEEL_STEP_POINTS: f32 = 50.0;
 const WHEEL_LINE_POINTS: f32 = 50.0;
 const WHEEL_PAGE_LINES: f32 = 10.0;
-const TIMELINE_HEIGHT: f32 = 28.0;
+/// Timeline height without an audio stream.
+const TIMELINE_HEIGHT: f32 = 42.0;
+/// Timeline height with a waveform behind the segments.
+const TIMELINE_HEIGHT_AUDIO: f32 = 56.0;
 const MIN_FONT_ZOOM: f32 = 0.8;
 const MAX_FONT_ZOOM: f32 = 1.5;
 const FONT_ZOOM_STEP: f32 = 0.05;
@@ -101,6 +105,7 @@ pub struct RossresscutApp {
     settings_open: bool,
     about_open: bool,
     wheel_accumulator: f32,
+    waveform_cache: Option<WaveformCache>,
     segment_error: Option<String>,
     segment_start_input: String,
     segment_end_input: String,
