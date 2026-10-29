@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Local CI gate. Mirrors the checks required by AGENTS.md.
+# Local CI gate. Mirrors the checks required by docs/development.md.
 set -euo pipefail
 
 cargo fmt --all --check

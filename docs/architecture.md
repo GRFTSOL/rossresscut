@@ -33,6 +33,34 @@
 
 ---
 
+## 依赖方向
+
+允许：
+
+```text
+UI
+ ↓
+Application
+ ↓
+Domain
+ ↓
+Media
+ ↓
+FFmpeg / FFprobe（外部进程：导出 / 探测）
+libmpv（进程内：预览解码与音频）
+```
+
+禁止：
+
+- Domain → UI / egui
+- Media → UI / egui
+- FFmpeg 输出 → UI
+- `media::platform` 的 FFI / GPU 句柄类型 → Domain / Application / UI
+
+核心媒体逻辑必须能在不启动图形界面的情况下测试。
+
+---
+
 # 二、UI 层
 
 负责：
@@ -353,7 +381,7 @@ docs/decisions/
 
 ---
 
-# 十一、当前代码结构（Phase 4D；导出已接入）
+# 十一、当前代码结构（Phase 5）
 
 ```text
 src/
