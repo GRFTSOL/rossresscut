@@ -22,6 +22,7 @@ cargo fmt --all --check
 - 格式问题不靠人工审查，交给 `cargo fmt`；`cargo fmt --all --check` 失败即视为未完成。
 - 工具链版本由 `rust-toolchain.toml` 固定，避免不同机器行为差异；升级工具链属于独立变更。
 - 命令块中的参数与 `clippy` 的 `-D warnings` 不得为了绕过报错而删减。
+- `fuck-u-code analyze` 的 `Overall Score`（及 JSON 里的 `score`）**越高越好**；文本报告中的 `Issue Score` 是反向值（`100 - score`），越高越差；`Metrics Details` 里的百分比是问题占比，越低越好。
 
 ## 开发环境
 
