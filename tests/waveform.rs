@@ -5,11 +5,13 @@
 
 use std::path::Path;
 
+use rossresscut::domain::time::Timestamp;
 use rossresscut::media::waveform;
 
 #[test]
 fn extracts_peaks_from_a_real_audio_stream() {
-    let waveform = waveform::extract(Path::new("tests/fixtures/sample.mp4"), 1).expect("waveform");
+    let waveform = waveform::extract(Path::new("tests/fixtures/sample.mp4"), 1, Timestamp::ZERO)
+        .expect("waveform");
 
     assert!(!waveform.is_empty());
     let micros = waveform.duration().micros();
@@ -27,9 +29,27 @@ fn extracts_peaks_from_a_real_audio_stream() {
 }
 
 #[test]
+fn keeps_the_requested_start_time() {
+    let start = Timestamp::from_micros(2_000_000);
+
+    let waveform =
+        waveform::extract(Path::new("tests/fixtures/sample.mp4"), 1, start).expect("waveform");
+
+    assert_eq!(waveform.start(), start);
+    assert_eq!(
+        waveform.end().micros(),
+        start.micros() + waveform.duration().micros() as i64
+    );
+}
+
+#[test]
 fn reports_a_stream_without_audio() {
-    let error = waveform::extract(Path::new("tests/fixtures/sample-keyframes.mp4"), 0)
-        .expect_err("video-only media has no waveform");
+    let error = waveform::extract(
+        Path::new("tests/fixtures/sample-keyframes.mp4"),
+        0,
+        Timestamp::ZERO,
+    )
+    .expect_err("video-only media has no waveform");
 
     let message = error.to_string();
     assert!(
@@ -40,8 +60,12 @@ fn reports_a_stream_without_audio() {
 
 #[test]
 fn reports_a_missing_file() {
-    let error = waveform::extract(Path::new("tests/fixtures/does-not-exist.mp4"), 1)
-        .expect_err("missing files cannot be scanned");
+    let error = waveform::extract(
+        Path::new("tests/fixtures/does-not-exist.mp4"),
+        1,
+        Timestamp::ZERO,
+    )
+    .expect_err("missing files cannot be scanned");
 
     assert!(
         error.to_string().contains("ffmpeg failed"),

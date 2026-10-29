@@ -244,14 +244,24 @@ impl RossresscutApp {
 
         let mut cache = self.waveform_cache.take().unwrap_or_default();
         if let Some(waveform) = self.application.waveform() {
-            let width = rect.width().round().max(1.0) as usize;
-            let columns = cache.resolve(waveform, width);
-            draw_waveform(
-                &painter,
-                rect,
-                columns,
-                visuals.weak_text_color().gamma_multiply(1.15),
+            // The audio does not always cover the whole container, so the
+            // waveform occupies only its own source-time span.
+            let left = x_for_time(rect, waveform.start(), duration);
+            let right = x_for_time(rect, waveform.end(), duration);
+            let area = egui::Rect::from_min_max(
+                egui::pos2(left, rect.top()),
+                egui::pos2(right, rect.bottom()),
             );
+            if area.width() > 0.0 {
+                let width = area.width().round().max(1.0) as usize;
+                let columns = cache.resolve(waveform, width);
+                draw_waveform(
+                    &painter,
+                    area,
+                    columns,
+                    visuals.weak_text_color().gamma_multiply(1.15),
+                );
+            }
         }
         self.waveform_cache = Some(cache);
 
@@ -476,15 +486,20 @@ pub(super) fn x_for_time(rect: egui::Rect, time: Timestamp, duration: MediaDurat
 pub(super) struct WaveformCache {
     width: usize,
     peaks: usize,
+    start: i64,
     columns: Vec<Peak>,
 }
 
 impl WaveformCache {
     /// Returns the columns for `waveform` at `width`, recomputing when needed.
     fn resolve(&mut self, waveform: &Waveform, width: usize) -> &[Peak] {
-        if self.width != width || self.peaks != waveform.len() {
+        if self.width != width
+            || self.peaks != waveform.len()
+            || self.start != waveform.start().micros()
+        {
             self.width = width;
             self.peaks = waveform.len();
+            self.start = waveform.start().micros();
             self.columns = waveform.columns(width);
         }
         &self.columns

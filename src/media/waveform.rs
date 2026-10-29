@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
 
-use crate::domain::time::Duration;
+use crate::domain::time::{Duration, Timestamp};
 use crate::domain::waveform::{Peak, Waveform};
 
 /// Peak rate: one peak per 5 ms.
@@ -102,9 +102,16 @@ impl std::error::Error for WaveformError {
 
 /// Decodes `stream_index` of `path` and returns its amplitude envelope.
 ///
+/// `start` is the stream's own start time; the returned waveform keeps it so
+/// the timeline can leave the silence before the audio empty.
+///
 /// This function blocks until FFmpeg finishes and must run outside the UI
 /// thread.
-pub fn extract(path: &Path, stream_index: usize) -> Result<Waveform, WaveformError> {
+pub fn extract(
+    path: &Path,
+    stream_index: usize,
+    start: Timestamp,
+) -> Result<Waveform, WaveformError> {
     let mut child =
         command_for(path, stream_index)
             .spawn()
@@ -149,7 +156,7 @@ pub fn extract(path: &Path, stream_index: usize) -> Result<Waveform, WaveformErr
     }
 
     let duration = Duration::from_micros(peaks.len() as u64 * 1_000_000 / PEAKS_PER_SECOND);
-    Waveform::new(duration, peaks).ok_or_else(|| WaveformError::Empty {
+    Waveform::new(start, duration, peaks).ok_or_else(|| WaveformError::Empty {
         path: path.to_path_buf(),
     })
 }

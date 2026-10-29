@@ -4,7 +4,7 @@
 //! export. It only describes the amplitude envelope of one audio stream so the
 //! timeline can show where silence is.
 
-use crate::domain::time::Duration;
+use crate::domain::time::{Duration, Timestamp};
 
 /// One min/max pair covering a fixed slice of the audio track.
 ///
@@ -52,20 +52,39 @@ impl Peak {
 
 /// Audio peaks for one stream, sampled at a fixed rate.
 ///
-/// `peaks[i]` covers `i * duration / len` up to `(i + 1) * duration / len`.
+/// The waveform starts at [`Waveform::start`], which is the stream's own start
+/// time and can be later than zero. `peaks[i]` covers
+/// `start + i * duration / len` up to `start + (i + 1) * duration / len`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Waveform {
+    start: Timestamp,
     duration: Duration,
     peaks: Vec<Peak>,
 }
 
 impl Waveform {
     /// Builds a waveform, or returns `None` for empty input.
-    pub fn new(duration: Duration, peaks: Vec<Peak>) -> Option<Self> {
+    pub fn new(start: Timestamp, duration: Duration, peaks: Vec<Peak>) -> Option<Self> {
         if peaks.is_empty() || duration.micros() == 0 {
             return None;
         }
-        Some(Self { duration, peaks })
+        Some(Self {
+            start,
+            duration,
+            peaks,
+        })
+    }
+
+    /// Source time where the first peak begins.
+    pub fn start(&self) -> Timestamp {
+        self.start
+    }
+
+    /// Source time where the last peak ends.
+    pub fn end(&self) -> Timestamp {
+        self.start
+            .checked_add(self.duration)
+            .unwrap_or(Timestamp::from_micros(i64::MAX))
     }
 
     /// Time span the peaks cover.
@@ -124,13 +143,32 @@ mod tests {
             .iter()
             .map(|value| Peak::new(-value.abs(), *value))
             .collect();
-        Waveform::new(Duration::from_micros(values.len() as u64 * 5_000), peaks).expect("waveform")
+        Waveform::new(
+            Timestamp::ZERO,
+            Duration::from_micros(values.len() as u64 * 5_000),
+            peaks,
+        )
+        .expect("waveform")
     }
 
     #[test]
     fn rejects_empty_input() {
-        assert!(Waveform::new(Duration::from_micros(1_000), Vec::new()).is_none());
-        assert!(Waveform::new(Duration::ZERO, vec![Peak::new(0, 0)]).is_none());
+        assert!(Waveform::new(Timestamp::ZERO, Duration::from_micros(1_000), Vec::new()).is_none());
+        assert!(Waveform::new(Timestamp::ZERO, Duration::ZERO, vec![Peak::new(0, 0)]).is_none());
+    }
+
+    #[test]
+    fn keeps_the_stream_start_time() {
+        let start = Timestamp::from_micros(1_500_000);
+        let waveform = Waveform::new(
+            start,
+            Duration::from_micros(2_000_000),
+            vec![Peak::new(0, 0)],
+        )
+        .expect("waveform");
+
+        assert_eq!(waveform.start(), start);
+        assert_eq!(waveform.end(), Timestamp::from_micros(3_500_000));
     }
 
     #[test]

@@ -7,6 +7,7 @@ use std::sync::mpsc::{self, TryRecvError};
 use std::thread;
 
 use crate::domain::media::{MediaFile, MediaStream};
+use crate::domain::time::Timestamp;
 use crate::domain::waveform::Waveform;
 use crate::media::waveform;
 
@@ -25,7 +26,7 @@ impl Application {
     pub fn has_audio(&self) -> bool {
         self.media
             .as_ref()
-            .is_some_and(|media| audio_stream_index(media).is_some())
+            .is_some_and(|media| audio_stream(media).is_some())
     }
 
     /// Starts waveform extraction for `media` on a worker thread.
@@ -33,7 +34,7 @@ impl Application {
         self.waveform = None;
         self.waveform_job = None;
 
-        let Some(index) = audio_stream_index(media) else {
+        let Some((index, start)) = audio_stream(media) else {
             return;
         };
         let path = media.path.clone();
@@ -42,7 +43,7 @@ impl Application {
         let spawn_result = thread::Builder::new()
             .name("waveform".to_owned())
             .spawn(move || {
-                let result = waveform::extract(&path, index);
+                let result = waveform::extract(&path, index, start);
                 if sender.send(result).is_err() {
                     log::debug!(
                         "discarding waveform for {}: the request was superseded",
@@ -83,10 +84,19 @@ impl Application {
     }
 }
 
-/// Returns the index of the first audio stream that is not cover art.
-fn audio_stream_index(media: &MediaFile) -> Option<usize> {
+/// Returns the index and normalized start time of the first audio stream.
+///
+/// Cover art is skipped: it is carried on an audio stream but has no samples.
+/// The start time is relative to the container start, matching the normalized
+/// keyframe timeline, so a stream that begins late leaves a gap on the left.
+fn audio_stream(media: &MediaFile) -> Option<(usize, Timestamp)> {
+    let container_start = media.start_time.map_or(0, Timestamp::micros);
     media.streams.iter().find_map(|stream| match stream {
-        MediaStream::Audio(audio) if !audio.info.disposition.attached_pic => Some(audio.info.index),
+        MediaStream::Audio(audio) if !audio.info.disposition.attached_pic => {
+            let stream_start = audio.info.start_time.map_or(0, Timestamp::micros);
+            let start = Timestamp::from_micros((stream_start - container_start).max(0));
+            Some((audio.info.index, start))
+        }
         _ => None,
     })
 }
