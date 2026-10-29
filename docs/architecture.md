@@ -389,9 +389,13 @@ src/
 ├── lib.rs                     库根：导出各层模块
 ├── error.rs                   应用错误类型（上下文 + source 链）
 ├── logging.rs                 进程级日志初始化
-├── application/mod.rs         Application、OpenState、mpv 播放状态机与回退路径、
-│                              音频时钟、关键帧后台索引与导航
-├── application/export.rs      ExportStatus、ExportJob（单段 / 多段）、导出命令错误
+├── application/
+│   ├── mod.rs                 Application 状态、OpenState、查询与导出入口
+│   ├── media.rs               打开媒体、FFprobe 轮询、关键帧后台索引
+│   ├── transport.rs           play / pause / seek / scrub / step / skip
+│   ├── editing.rs             标记、选择、剪贴板、撤销/重做、Segment 命令
+│   ├── playback.rs            Playback 播放引擎：时钟、解码、mpv 后端与回退
+│   └── export.rs              ExportStatus、ExportJob（单段 / 多段）、导出命令错误
 ├── domain/
 │   ├── media.rs               MediaFile / MediaFormat / 流 / Chapter / KeyframeIndex
 │   ├── segment.rs             Segment / SegmentId / Timeline（有序 EDL、稳定身份）
@@ -413,9 +417,17 @@ src/
 │       ├── video.rs           回退路径：ffmpeg RGB 帧解码、硬件解码选择、背压、seek
 │       └── audio.rs           回退路径：ffmpeg PCM 解码 + cpal 输出
 └── ui/
-    ├── mod.rs                 egui 窗口、菜单栏、预览 texture、时间轴、
-    │                          Segment 列表、播放/媒体侧栏、设置页、XDG portal、
-    │                          主题与设置持久化、快捷键
+    ├── mod.rs                 RossresscutApp 状态、窗口入口与 `eframe::App`
+    ├── actions.rs             快捷键分发、片段输入框同步
+    ├── timeline.rs            时间轴绘制、播放控件、滚轮与坐标换算
+    ├── preview.rs             预览绘制、texture 上传、渲染诊断
+    ├── panels.rs              右侧信息与片段面板、导出状态行
+    ├── menu.rs                菜单栏
+    ├── windows.rs             设置、关于、导出面板、上一条 FFmpeg 命令
+    ├── settings.rs            UiSettings、config.toml 读写、主题检测与 `apply_theme`
+    ├── shortcuts.rs           ShortcutAction、Shortcut 解析与默认绑定
+    ├── fonts.rs               字体发现与字体选择器
+    ├── dialogs.rs             XDG 门户文件/目录选择
     └── i18n.rs                语言枚举、强类型字符串与嵌入资源
 
 locales/

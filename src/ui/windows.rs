@@ -1,0 +1,348 @@
+//! Floating windows: settings, about, export and the last command.
+
+use std::path::PathBuf;
+
+use eframe::egui;
+
+use crate::application::ExportCommandError;
+
+use super::i18n::{Language, fill};
+use super::settings::{detect_system_theme, theme_label};
+use super::{
+    FONT_ZOOM_STEP, MAX_FONT_ZOOM, MIN_FONT_ZOOM, RossresscutApp, ShortcutAction, Strings,
+    ThemeChoice,
+};
+
+impl RossresscutApp {
+    fn export_directory_ui(&mut self, ui: &mut egui::Ui, strings: &Strings) {
+        ui.checkbox(
+            &mut self.settings.export_to_source_dir,
+            strings.export_to_source_dir.as_str(),
+        )
+        .on_hover_text(strings.export_to_source_dir.as_str());
+        ui.add_enabled_ui(!self.settings.export_to_source_dir, |ui| {
+            ui.horizontal(|ui| {
+                if ui.button(strings.choose_directory.as_str()).clicked() {
+                    self.start_directory_dialog();
+                }
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.settings.export_directory)
+                        .desired_width(360.0)
+                        .hint_text(strings.export_directory.as_str()),
+                );
+            });
+        });
+    }
+
+    fn export_output_path(&self) -> Option<PathBuf> {
+        let media = self.application.media()?;
+        let directory = if self.settings.export_to_source_dir {
+            media.path.parent()?.to_path_buf()
+        } else {
+            let directory = self.settings.export_directory.trim();
+            if directory.is_empty() {
+                return None;
+            }
+            PathBuf::from(directory)
+        };
+        Some(directory.join(self.default_export_name()?))
+    }
+
+    fn default_export_name(&self) -> Option<String> {
+        let path = &self.application.media()?.path;
+        let stem = path.file_stem()?.to_string_lossy();
+        Some(match path.extension() {
+            Some(extension) => format!("{stem}_export.{}", extension.to_string_lossy()),
+            None => format!("{stem}_export.mkv"),
+        })
+    }
+
+    pub(super) fn export_panel(&mut self, context: &egui::Context) {
+        if !self.export_panel_open {
+            return;
+        }
+        let strings = self.strings();
+        let mut open = self.export_panel_open;
+        let output = self.export_output_path();
+        let running = self.application.export_status().is_running();
+        let has_enabled_segment = self
+            .application
+            .timeline()
+            .segments()
+            .iter()
+            .any(|segment| segment.enabled());
+        let can_export = output.is_some() && has_enabled_segment && !running;
+
+        egui::Window::new(strings.export.as_str())
+            .id(egui::Id::unique("export_panel"))
+            .open(&mut open)
+            .resizable(false)
+            .collapsible(false)
+            .default_pos(context.content_rect().center() - egui::vec2(270.0, 140.0))
+            .default_width(540.0)
+            .show(context, |ui| {
+                self.export_directory_ui(ui, strings);
+                ui.separator();
+                ui.label(strings.export_output_path.as_str());
+                let path_text = output
+                    .as_ref()
+                    .map_or_else(|| "-".to_owned(), |path| path.display().to_string());
+                ui.add(egui::Label::new(path_text).wrap().selectable(false));
+                if let Some(error) = &self.export_error {
+                    ui.colored_label(ui.visuals().error_fg_color, error);
+                }
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(can_export, egui::Button::new(strings.export.as_str()))
+                        .clicked()
+                        && let Some(output) = output.clone()
+                    {
+                        match self
+                            .application
+                            .start_export(output, self.settings.export_chapters)
+                        {
+                            Ok(()) => {
+                                self.export_error = None;
+                                self.export_panel_open = false;
+                            }
+                            Err(error) => {
+                                self.export_error = Some(export_command_message(strings, &error));
+                            }
+                        }
+                    }
+                    if ui.button(strings.cancel.as_str()).clicked() {
+                        self.export_panel_open = false;
+                    }
+                });
+            });
+        self.export_panel_open = open;
+    }
+
+    pub(super) fn ffmpeg_command_window(&mut self, context: &egui::Context) {
+        if !self.ffmpeg_command_open {
+            return;
+        }
+        let strings = self.strings();
+        let mut open = self.ffmpeg_command_open;
+        let commands = self.application.last_ffmpeg_commands().to_vec();
+
+        egui::Window::new(strings.last_ffmpeg_command.as_str())
+            .id(egui::Id::unique("ffmpeg_command_window"))
+            .open(&mut open)
+            .resizable(true)
+            .collapsible(false)
+            .default_size(egui::vec2(720.0, 360.0))
+            .show(context, |ui| {
+                if commands.is_empty() {
+                    ui.label(strings.no_ffmpeg_command.as_str());
+                    return;
+                }
+                if ui.button(strings.copy_command.as_str()).clicked() {
+                    ui.ctx().copy_text(commands.join("\n\n"));
+                }
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    for command in &commands {
+                        ui.add(
+                            egui::Label::new(egui::RichText::new(command).monospace())
+                                .wrap()
+                                .selectable(true),
+                        );
+                        ui.separator();
+                    }
+                });
+            });
+        self.ffmpeg_command_open = open;
+    }
+
+    pub(super) fn settings_window(&mut self, context: &egui::Context) {
+        if !self.settings_open {
+            return;
+        }
+        let strings = self.strings();
+        let mut open = self.settings_open;
+
+        egui::Window::new(strings.settings.as_str())
+            .id(egui::Id::unique("settings_window"))
+            .open(&mut open)
+            .resizable(true)
+            .collapsible(false)
+            .min_width(760.0)
+            .min_height(560.0)
+            .default_size(egui::vec2(820.0, 700.0))
+            .show(context, |ui| {
+                egui::CollapsingHeader::new(strings.general.as_str())
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        let follow = ui
+                            .checkbox(
+                                &mut self.settings.follow_system_theme,
+                                strings.follow_system_theme.as_str(),
+                            )
+                            .on_hover_text(strings.follow_system_theme.as_str());
+                        if follow.changed() {
+                            // Re-detect immediately instead of reusing the
+                            // value captured at startup.
+                            self.detected_theme = detect_system_theme();
+                        }
+                        ui.add_enabled_ui(!self.settings.follow_system_theme, |ui| {
+                            egui::ComboBox::from_label(strings.theme.as_str())
+                                .selected_text(theme_label(strings, self.settings.theme))
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(
+                                        &mut self.settings.theme,
+                                        ThemeChoice::Dark,
+                                        strings.theme_dark.as_str(),
+                                    );
+                                    ui.selectable_value(
+                                        &mut self.settings.theme,
+                                        ThemeChoice::Light,
+                                        strings.theme_light.as_str(),
+                                    );
+                                });
+                        });
+
+                        ui.horizontal(|ui| {
+                            ui.label(strings.language.as_str());
+                            egui::ComboBox::from_id_salt("language")
+                                .selected_text(self.settings.language.label())
+                                .show_ui(ui, |ui| {
+                                    for language in Language::ALL {
+                                        ui.selectable_value(
+                                            &mut self.settings.language,
+                                            language,
+                                            language.label(),
+                                        );
+                                    }
+                                });
+                        });
+
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            ui.label(strings.font_size.as_str());
+                            let slider = ui.add(
+                                egui::Slider::new(
+                                    &mut self.font_zoom_draft,
+                                    MIN_FONT_ZOOM..=MAX_FONT_ZOOM,
+                                )
+                                .step_by(f64::from(FONT_ZOOM_STEP))
+                                .fixed_decimals(2),
+                            );
+                            // The preview only follows a released slider; this
+                            // avoids rebuilding the font atlas on every drag
+                            // frame.
+                            if slider.drag_stopped() || (slider.changed() && !slider.dragged()) {
+                                self.settings.font_zoom =
+                                    self.font_zoom_draft.clamp(MIN_FONT_ZOOM, MAX_FONT_ZOOM);
+                            }
+                            if ui
+                                .button(strings.reset_font_size.as_str())
+                                .on_hover_text(strings.reset_font_size.as_str())
+                                .clicked()
+                            {
+                                self.set_font_zoom(1.0);
+                            }
+                        });
+                        self.font_family_ui(ui, strings);
+                    });
+
+                egui::CollapsingHeader::new(strings.export.as_str())
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        ui.checkbox(
+                            &mut self.settings.export_chapters,
+                            strings.export_chapters.as_str(),
+                        )
+                        .on_hover_text(strings.export_chapters_hint.as_str());
+                        self.export_directory_ui(ui, strings);
+                    });
+
+                egui::CollapsingHeader::new(strings.shortcuts.as_str())
+                    .default_open(false)
+                    .show(ui, |ui| {
+                        egui::ScrollArea::vertical()
+                            .max_height(360.0)
+                            .show(ui, |ui| {
+                                for action in ShortcutAction::ALL {
+                                    ui.horizontal(|ui| {
+                                        ui.add_sized(
+                                            [210.0, 20.0],
+                                            egui::Label::new(action.label(strings)).truncate(),
+                                        );
+                                        let recording = self.recording_shortcut == Some(action);
+                                        let binding = self.settings.binding(action).to_owned();
+                                        let text = if recording {
+                                            strings.shortcut_press_keys.clone()
+                                        } else if binding.is_empty() {
+                                            strings.shortcut_unassigned.clone()
+                                        } else {
+                                            binding.clone()
+                                        };
+                                        if ui
+                                            .add(
+                                                egui::Button::new(text)
+                                                    .min_size(egui::vec2(140.0, 22.0)),
+                                            )
+                                            .on_hover_text(strings.shortcut_press_keys.as_str())
+                                            .clicked()
+                                        {
+                                            self.recording_shortcut =
+                                                if recording { None } else { Some(action) };
+                                            self.recording_pending = None;
+                                        }
+                                        if ui
+                                            .add_enabled(
+                                                !binding.is_empty(),
+                                                egui::Button::new("×")
+                                                    .min_size(egui::vec2(24.0, 22.0)),
+                                            )
+                                            .on_hover_text(strings.shortcut_clear.as_str())
+                                            .clicked()
+                                        {
+                                            self.settings
+                                                .shortcuts
+                                                .insert(action.key().to_owned(), String::new());
+                                            if recording {
+                                                self.recording_shortcut = None;
+                                                self.recording_pending = None;
+                                            }
+                                        }
+                                    });
+                                }
+                            });
+                    });
+            });
+
+        self.settings_open = open;
+    }
+
+    pub(super) fn about_window(&mut self, context: &egui::Context) {
+        if !self.about_open {
+            return;
+        }
+        let strings = self.strings();
+        let mut open = self.about_open;
+
+        egui::Window::new(strings.about.as_str())
+            .id(egui::Id::unique("about_window"))
+            .open(&mut open)
+            .resizable(false)
+            .collapsible(false)
+            .show(context, |ui| {
+                ui.heading("rossresscut");
+                ui.label(strings.about_description.as_str());
+                ui.label(fill(&strings.about_version, &[env!("CARGO_PKG_VERSION")]));
+                ui.label(fill(&strings.about_commit, &[env!("GIT_COMMIT")]));
+                ui.label(fill(&strings.about_phase, &[crate::PHASE]));
+            });
+
+        self.about_open = open;
+    }
+}
+
+pub(super) fn export_command_message(strings: &Strings, error: &ExportCommandError) -> String {
+    match error {
+        ExportCommandError::NoSegment => strings.export_no_segment.clone(),
+        ExportCommandError::InvalidOutput => strings.export_invalid_output.clone(),
+        other => other.to_string(),
+    }
+}
