@@ -111,6 +111,8 @@ pub struct RossresscutApp {
     silence_dialog_open: bool,
     silence_options: crate::application::SilenceOptions,
     silence_preview: Option<Result<usize, String>>,
+    scene_dialog_open: bool,
+    scene_threshold: f32,
     wheel_accumulator: f32,
     waveform_cache: Option<WaveformCache>,
     segment_error: Option<String>,
@@ -147,6 +149,9 @@ impl RossresscutApp {
             detected_theme: detect_system_theme(),
             diagnostics: RenderDiagnostics::from_environment(),
             diagnostic_autoplay: std::env::var_os("ROSS_RESCUT_DIAG_AUTOPLAY").is_some(),
+            // A quarter of a frame-to-frame change is the FFmpeg default for
+            // scene detection and works well as a starting point.
+            scene_threshold: 0.4,
             ..Self::default()
         };
         #[cfg(feature = "mpv-preview")]
@@ -273,6 +278,7 @@ impl eframe::App for RossresscutApp {
         self.preview_panel(ui);
         self.settings_window(ui.ctx());
         self.silence_window(ui.ctx());
+        self.scene_window(ui.ctx());
         self.export_panel(ui.ctx());
         self.ffmpeg_command_window(ui.ctx());
         self.about_window(ui.ctx());

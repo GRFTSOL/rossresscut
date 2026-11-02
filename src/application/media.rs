@@ -33,6 +33,7 @@ impl Application {
         self.keyframes = None;
         self.keyframe_job = None;
         self.reset_waveform();
+        self.reset_scene_scan();
 
         if path.as_os_str().is_empty() {
             self.media = None;
@@ -91,6 +92,7 @@ impl Application {
         self.keyframes = None;
         self.keyframe_job = None;
         self.reset_waveform();
+        self.reset_scene_scan();
         self.state = OpenState::Empty;
     }
 

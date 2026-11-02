@@ -647,7 +647,14 @@ ADR：`docs/decisions/0012-project-and-settings-format.md`。
     应用后得到 `[0, 3s)` 与 `[3s, 6s)`，切点正好落在静音中点。
   - 真实素材（40 秒对话视频）：`-60 dB` 下没有 ≥ 1 秒的静音，生成 1 个片段，
     与预期一致（背景底噪高于阈值）。
-- [ ] Scene detection（实现方式待设计）
+- [x] Scene detection
+  - 对话框参数：场景阈值（默认 0.40，范围 0.1…0.9）
+  - 外部 FFmpeg `select='gt(scene,N)',showinfo`，只解析 `pts_time`，不解码到本进程
+  - 时间戳按容器 `start_time` 归一化，与关键帧索引一致
+  - 应用后**替换**现有片段；可用撤销恢复
+  - 实现：`media::scene`（检测与解析）、`application::scene`（扫描状态与写入 Timeline）
+  - 验证：40 秒素材在 0.40 阈值下检测到 6 个切点，生成 7 个片段，
+    与直接运行 FFmpeg 的结果一致
 - [ ] 批处理
   - 拖入多个文件时提示「合并」还是「批处理」
   - 合并：每个输入文件生成片段，按文件名排序

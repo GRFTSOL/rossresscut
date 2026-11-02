@@ -24,6 +24,7 @@ mod export;
 mod media;
 mod playback;
 mod project;
+mod scene;
 mod silence;
 mod transport;
 mod waveform;
@@ -35,6 +36,7 @@ use export::{ExportJob, JobEvent};
 #[cfg(feature = "mpv-preview")]
 use playback::{fit_within, preview_video_stream};
 pub use project::{PROJECT_EXTENSION, ProjectError};
+pub use scene::{SceneCutError, SceneScan};
 pub use silence::{SilenceError, SilenceOptions};
 
 /// State of the media-opening workflow.
@@ -108,6 +110,8 @@ pub struct Application {
     keyframe_job: Option<KeyframeJob>,
     waveform: Option<Waveform>,
     waveform_job: Option<WaveformJob>,
+    scene_scan: Option<SceneScan>,
+    scene_job: Option<SceneJob>,
     playback: Playback,
     timeline: Timeline,
     markers: Markers,
@@ -142,6 +146,10 @@ pub(super) struct KeyframeJob {
 
 pub(super) struct WaveformJob {
     receiver: Receiver<Result<Waveform, crate::media::waveform::WaveformError>>,
+}
+
+pub(super) struct SceneJob {
+    receiver: Receiver<Result<Vec<Timestamp>, crate::media::scene::SceneError>>,
 }
 
 /// Segments waiting to be applied once the project source is probed.
@@ -486,6 +494,7 @@ impl Application {
         let mut changed = self.poll_probe();
         self.poll_keyframes();
         self.poll_waveform();
+        self.poll_scene_scan();
         changed |= self.poll_export();
         let duration = self.duration();
         changed |= self.playback.update(duration);

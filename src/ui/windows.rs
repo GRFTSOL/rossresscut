@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use eframe::egui;
 
-use crate::application::{ExportCommandError, SilenceError, SilenceOptions};
+use crate::application::{ExportCommandError, SceneScan, SilenceError, SilenceOptions};
 use crate::domain::time::Duration;
 
 use super::dialogs::DirectoryTarget;
@@ -65,6 +65,7 @@ impl RossresscutApp {
         }
         let strings = self.strings();
         let mut open = self.export_panel_open;
+        let mut close_requested = false;
         let output = self.export_output_path();
         let running = self.application.export_status().is_running();
         let has_enabled_segment = self
@@ -106,7 +107,7 @@ impl RossresscutApp {
                         ) {
                             Ok(()) => {
                                 self.export_error = None;
-                                self.export_panel_open = false;
+                                close_requested = true;
                             }
                             Err(error) => {
                                 self.export_error = Some(export_command_message(strings, &error));
@@ -114,10 +115,13 @@ impl RossresscutApp {
                         }
                     }
                     if ui.button(strings.cancel.as_str()).clicked() {
-                        self.export_panel_open = false;
+                        close_requested = true;
                     }
                 });
             });
+        if close_requested {
+            open = false;
+        }
         self.export_panel_open = open;
     }
 
@@ -364,6 +368,91 @@ impl RossresscutApp {
         if !open {
             save_settings(&self.settings);
         }
+    }
+
+    /// Opens the scene detection dialog and starts a scan.
+    pub(super) fn open_scene_dialog(&mut self) {
+        self.scene_dialog_open = true;
+        self.application.start_scene_scan(self.scene_threshold);
+    }
+
+    pub(super) fn scene_window(&mut self, context: &egui::Context) {
+        if !self.scene_dialog_open {
+            return;
+        }
+        let strings = self.strings();
+        let mut open = self.scene_dialog_open;
+        let mut close_requested = false;
+        let status = self.application.scene_scan().cloned();
+
+        egui::Window::new(strings.scene_detection.as_str())
+            .id(egui::Id::unique("scene_window"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(360.0)
+            .show(context, |ui| {
+                ui.label(strings.silence_replaces.as_str());
+
+                ui.add(
+                    egui::Slider::new(&mut self.scene_threshold, 0.1..=0.9)
+                        .text(strings.scene_threshold.as_str())
+                        .fixed_decimals(2),
+                );
+
+                match &status {
+                    Some(SceneScan::Running) => {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label(strings.scene_scanning.as_str());
+                        });
+                    }
+                    Some(SceneScan::Ready(cuts)) => {
+                        if cuts.is_empty() {
+                            ui.label(strings.scene_no_cuts.as_str());
+                        } else {
+                            ui.label(fill(
+                                &strings.scene_cuts,
+                                &[cuts.len().to_string().as_str()],
+                            ));
+                        }
+                    }
+                    Some(SceneScan::Failed(message)) => {
+                        ui.colored_label(ui.visuals().error_fg_color, message);
+                    }
+                    None => {
+                        ui.label(strings.scene_no_cuts.as_str());
+                    }
+                }
+
+                ui.horizontal(|ui| {
+                    let ready = matches!(status, Some(SceneScan::Ready(_)));
+                    if ui
+                        .add_enabled(ready, egui::Button::new(strings.apply.as_str()))
+                        .clicked()
+                    {
+                        match self.application.segments_from_scene_changes() {
+                            Ok(count) => {
+                                log::info!("created {count} segments from scene changes");
+                                self.segment_error = None;
+                                close_requested = true;
+                            }
+                            Err(error) => self.segment_error = Some(error.to_string()),
+                        }
+                    }
+                    if ui.button(strings.scene_rescan.as_str()).clicked() {
+                        self.application.start_scene_scan(self.scene_threshold);
+                    }
+                    if ui.button(strings.cancel.as_str()).clicked() {
+                        close_requested = true;
+                    }
+                });
+            });
+
+        if close_requested {
+            open = false;
+        }
+        self.scene_dialog_open = open;
     }
 
     /// Opens the silence detection dialog and refreshes its preview.

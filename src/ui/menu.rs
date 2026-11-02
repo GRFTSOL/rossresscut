@@ -165,6 +165,15 @@ impl RossresscutApp {
                         self.open_silence_dialog();
                         ui.close();
                     }
+                    if menu_button(
+                        ui,
+                        strings.menu_scene.as_str(),
+                        strings.menu_scene.as_str(),
+                        has_media,
+                    ) {
+                        self.open_scene_dialog();
+                        ui.close();
+                    }
                     let random_tooltip = self.shortcut_tooltip(
                         strings.random_segment.as_str(),
                         ShortcutAction::RandomSegment,
