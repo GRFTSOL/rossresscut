@@ -7,4 +7,5 @@ pub mod export;
 pub mod ffprobe;
 pub mod preview;
 pub mod scene;
+pub mod subtitle;
 pub mod waveform;

@@ -20,6 +20,7 @@ use crate::domain::time::{Duration, Timestamp};
 use crate::media::ffprobe;
 
 use super::chapters::{ChapterSpec, render_ffmetadata};
+use super::command::SubtitlePlan;
 use super::{ExportError, ExportEvent, ExportProcess, ExportRequest};
 
 /// One source-time range in a multi-segment export.
@@ -59,6 +60,7 @@ pub struct MultiExportRequest {
     output: PathBuf,
     chapters: bool,
     title: Option<String>,
+    subtitle: Option<SubtitlePlan>,
 }
 
 impl MultiExportRequest {
@@ -82,6 +84,7 @@ impl MultiExportRequest {
             output,
             chapters: false,
             title: None,
+            subtitle: None,
         })
     }
 
@@ -105,6 +108,12 @@ impl MultiExportRequest {
     /// Returns the output title metadata, when set.
     pub fn title(&self) -> Option<&str> {
         self.title.as_deref()
+    }
+
+    /// Attaches cropped subtitles to every part.
+    pub fn with_subtitle(mut self, subtitle: Option<SubtitlePlan>) -> Self {
+        self.subtitle = subtitle;
+        self
     }
 
     /// Returns the source file.
@@ -218,6 +227,7 @@ pub struct MultiExport {
     commands: Vec<Vec<OsString>>,
     stage: Option<Stage>,
     title: Option<String>,
+    subtitle: Option<SubtitlePlan>,
 }
 
 enum Stage {
@@ -259,6 +269,7 @@ impl MultiExport {
             work_dir,
             chapters: request.chapters,
             title: request.title,
+            subtitle: request.subtitle,
             total_duration,
             completed_duration: Duration::ZERO,
             part_durations,
@@ -415,7 +426,17 @@ impl MultiExport {
             &self.parts[index],
         )
         .ok_or(MultiExportError::InvalidPart { index })?;
-        let args = super::build_args(&request, None);
+        let subtitle_path = self
+            .subtitle
+            .as_ref()
+            .map(|plan| plan.crop_for(segment.start(), segment.end()))
+            .filter(|text| !text.trim().is_empty())
+            .map(|text| {
+                let path = self.work_dir.path().join(format!("part-{index:04}.srt"));
+                (path, text)
+            })
+            .and_then(|(path, text)| std::fs::write(&path, text).ok().map(|_| path));
+        let args = super::build_args(&request, None, subtitle_path.as_deref());
         let process = ExportProcess::start_with_args(args.clone(), &self.parts[index])
             .map_err(MultiExportError::Export)?;
         self.commands.push(args);

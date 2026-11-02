@@ -151,6 +151,8 @@
   "smart_cut_hint": "重新编码每个片段中非关键帧的头部（尚未实现）。",
   "sort_segments": "按开始时间排序",
   "split_segment": "分割片段",
+  "subtitle_keep_partial": "保留被片段边界截断的字幕",
+  "subtitle_keep_partial_hint": "关闭：跨越切点的字幕会被丢弃。开启：裁剪到片段范围内。",
   "theme": "主题",
   "theme_dark": "深色",
   "theme_light": "浅色",

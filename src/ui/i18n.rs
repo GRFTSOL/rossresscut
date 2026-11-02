@@ -220,6 +220,8 @@ pub struct Strings {
     pub smart_cut_hint: String,
     pub sort_segments: String,
     pub split_segment: String,
+    pub subtitle_keep_partial: String,
+    pub subtitle_keep_partial_hint: String,
     pub theme: String,
     pub theme_dark: String,
     pub theme_light: String,

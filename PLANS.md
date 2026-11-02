@@ -671,11 +671,37 @@ ADR：`docs/decisions/0012-project-and-settings-format.md`。
   - 合并结果与失败原因显示在批处理面板
   - 实现：`media::export::merge`；集成测试 `tests/batch_export.rs::merges_the_batch_outputs_into_one_file`
 
+### Phase 7B 已知限制
+
+- 合并要求各文件导出结果 codec / 分辨率 / 时间基一致（stream copy 的固有限制）；
+  不一致时 FFmpeg 报错，错误显示在批处理面板。
+- 合并不生成章节：各文件章节无法可靠叠加到合并结果。
+- 拖放交互没有自动化测试（需要 DnD 协议），队列逻辑由集成测试覆盖。
+- 批处理顺序固定为拖入顺序（合并时按文件名排序），不提供手动重排。
+- 批处理输出写入 `<stem>-export.<ext>`；同名文件会被覆盖。
+- 场景检测需要解码整段视频，长素材耗时明显；扫描期间不显示进度百分比。
+- 静音检测完全依赖波形精度（5 ms / peak）；极短的静音间隔会被舍入。
+
 ## Phase 7C：媒体流与智能裁切
 
-- [ ] Subtitle
-  - 按裁切范围自动调整字幕流
-  - 常规设置：被切点打断的字幕句，保留整句还是舍弃
+- [x] Subtitle（文本字幕）
+  - 只处理文本字幕（`srt` / `subrip` / `ass` / `ssa` / `mov_text` / `webvtt` / `text`），取第一个文本字幕轨
+  - 外部 FFmpeg 把整轨导出为 SRT，Rust 按片段裁剪后作为新字幕轨 mux 回输出
+  - 常规设置「保留被片段边界截断的字幕」：关闭时整句丢弃，开启时裁剪到片段范围内（默认关闭）
+  - 单段与多段导出都接入；多段时每段各自裁剪后参与 concat
+  - 实现：`media::subtitle`（提取 / 解析 / 裁剪 / 生成）、`media::export::SubtitlePlan`
+  - 已验证：`tests/subtitle_export.rs` 覆盖保留与舍弃两种策略
+
+  ### 已知限制
+
+  - `-ss` 输入 seek 不会重写字幕包时间戳，因此必须替换源字幕轨；
+    替换后数据流与附件（字体等）不再复制。
+  - 图形字幕（`hdmv_pgs_subtitle` / `dvd_subtitle` / `dvb_subtitle`）不处理，
+    保持 FFmpeg 原来的 stream copy 行为。
+  - 多段导出时，如果某些片段裁剪后没有字幕而其他片段有，
+    concat 可能因流布局不一致失败。
+  - 字幕提取在导出启动时同步执行，超长素材会有短暂停顿。
+  - 只使用第一个文本字幕轨，多字幕轨场景未覆盖。
 - [ ] Stream selection（导出时选择保留哪些流；当前固定 `-map 0`）
 - [ ] 智能裁切（裁切点为非关键帧时，从该帧到关键帧按该段平均码率重新编码）
   - 导出设置已有开关并持久化，但**尚未生效**

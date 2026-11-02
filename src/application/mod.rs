@@ -9,12 +9,13 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 use std::time::Instant;
 
-use crate::domain::media::{KeyframeIndex, MediaFile};
+use crate::domain::media::{KeyframeIndex, MediaFile, MediaStream};
 use crate::domain::segment::{Segment, SegmentId, Timeline};
 use crate::domain::time::{Duration, Timestamp};
 use crate::domain::waveform::Waveform;
 use crate::media::export::{
     ChapterSpec, ExportProcess, ExportRequest, ExportSegment, MultiExport, MultiExportRequest,
+    SubtitlePlan,
 };
 use crate::media::ffprobe::ProbeError;
 use crate::media::preview::{HardwareAcceleration, PreviewAudio, PreviewVideo, VideoFrame};
@@ -161,6 +162,14 @@ pub(super) struct SceneJob {
 pub(super) struct PendingProject {
     pub(super) segments: Vec<Segment>,
     pub(super) next_id: u64,
+}
+
+/// Returns whether `codec_name` is a text subtitle format FFmpeg can convert.
+fn is_text_subtitle(codec_name: Option<&str>) -> bool {
+    matches!(
+        codec_name,
+        Some("srt" | "subrip" | "ass" | "ssa" | "mov_text" | "webvtt" | "text")
+    )
 }
 
 impl Application {
@@ -390,6 +399,32 @@ impl Application {
         &self.export_status
     }
 
+    /// Extracts the first text subtitle track for cropping.
+    ///
+    /// Returns `None` when the media has no text subtitle, or when FFmpeg
+    /// cannot convert it. FFmpeg runs synchronously here because subtitle
+    /// tracks are small.
+    fn prepare_subtitles(&self, keep_partial: bool) -> Option<SubtitlePlan> {
+        let media = self.media.as_ref()?;
+        let index = media.streams.iter().find_map(|stream| match stream {
+            MediaStream::Subtitle(subtitle)
+                if is_text_subtitle(subtitle.info.codec_name.as_deref()) =>
+            {
+                Some(subtitle.info.index)
+            }
+            _ => None,
+        })?;
+
+        match crate::media::subtitle::extract(&media.path, index) {
+            Ok(srt) if !srt.trim().is_empty() => Some(SubtitlePlan { srt, keep_partial }),
+            Ok(_) => None,
+            Err(error) => {
+                log::warn!("{error}");
+                None
+            }
+        }
+    }
+
     /// Exports every enabled segment in timeline order to `output`.
     ///
     /// A single segment uses one FFmpeg process. Multiple segments cut each
@@ -401,6 +436,7 @@ impl Application {
         output: PathBuf,
         chapters: bool,
         title: Option<String>,
+        subtitle_keep_partial: bool,
     ) -> Result<(), ExportCommandError> {
         if !matches!(self.state, OpenState::Ready) {
             return Err(ExportCommandError::NoMedia);
@@ -414,6 +450,8 @@ impl Application {
             .source()
             .map(Path::to_path_buf)
             .ok_or(ExportCommandError::NoMedia)?;
+        let subtitle = self.prepare_subtitles(subtitle_keep_partial);
+
         let segments: Vec<_> = self
             .timeline
             .segments()
@@ -430,7 +468,8 @@ impl Application {
             let request =
                 ExportRequest::new(source, segment.start(), segment.end(), output.clone())
                     .ok_or(ExportCommandError::InvalidOutput)?
-                    .with_title(title);
+                    .with_title(title)
+                    .with_subtitle(subtitle);
             let duration = request.duration();
             let request = if chapters {
                 request.with_chapters(vec![ChapterSpec {
@@ -463,7 +502,8 @@ impl Application {
         let request = MultiExportRequest::new(source, export_segments, output.clone())
             .ok_or(ExportCommandError::InvalidOutput)?
             .with_chapters(chapters)
-            .with_title(title);
+            .with_title(title)
+            .with_subtitle(subtitle);
         let duration = request.total_duration();
         let process = MultiExport::start(request).map_err(ExportCommandError::StartMulti)?;
 
@@ -766,7 +806,7 @@ mod tests {
         let mut application = Application::new();
 
         let error = application
-            .start_export(PathBuf::from("out.mkv"), false, None)
+            .start_export(PathBuf::from("out.mkv"), false, None, false)
             .expect_err("export must fail without media");
 
         assert!(matches!(error, ExportCommandError::NoMedia));

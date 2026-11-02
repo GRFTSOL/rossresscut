@@ -23,8 +23,11 @@ use crate::domain::time::Timestamp;
 
 use chapters::TempMetadata;
 
+use std::fs;
+use std::time::{SystemTime, UNIX_EPOCH};
+
 pub use chapters::ChapterSpec;
-pub use command::{ExportRequest, build_args};
+pub use command::{ExportRequest, SubtitlePlan, build_args};
 pub use concat::{
     ExportSegment, ExportStage, MultiExport, MultiExportError, MultiExportEvent, MultiExportRequest,
 };
@@ -78,6 +81,11 @@ pub enum ExportError {
         /// Operating-system error from writing the metadata file.
         source: io::Error,
     },
+    /// Cropped subtitles could not be written.
+    Subtitle {
+        /// Operating-system error from writing the subtitle file.
+        source: io::Error,
+    },
 }
 
 impl fmt::Display for ExportError {
@@ -100,6 +108,9 @@ impl fmt::Display for ExportError {
             Self::Metadata { source } => {
                 write!(formatter, "could not write chapter metadata: {source}")
             }
+            Self::Subtitle { source } => {
+                write!(formatter, "could not write subtitles: {source}")
+            }
         }
     }
 }
@@ -108,7 +119,7 @@ impl std::error::Error for ExportError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Spawn { source, .. } | Self::Worker { source, .. } => Some(source),
-            Self::Metadata { source } => Some(source),
+            Self::Metadata { source } | Self::Subtitle { source } => Some(source),
         }
     }
 }
@@ -132,6 +143,43 @@ pub enum ExportEvent {
     },
 }
 
+/// Temporary SRT file holding cropped subtitles.
+pub(super) struct TempSubtitle {
+    path: PathBuf,
+}
+
+impl TempSubtitle {
+    /// Writes `srt` to a unique temporary file.
+    pub(super) fn create(srt: &str) -> io::Result<Self> {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(io::Error::other)?;
+        let path = std::env::temp_dir().join(format!(
+            "rossresscut-subtitles-{}-{}.srt",
+            std::process::id(),
+            stamp.as_nanos()
+        ));
+        fs::write(&path, srt)?;
+        Ok(Self { path })
+    }
+
+    /// Returns the subtitle file path.
+    pub(super) fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TempSubtitle {
+    fn drop(&mut self) {
+        if let Err(error) = fs::remove_file(&self.path) {
+            log::warn!(
+                "could not remove subtitle file {}: {error}",
+                self.path.display()
+            );
+        }
+    }
+}
+
 /// A running FFmpeg export process.
 pub struct ExportProcess {
     child: Child,
@@ -140,6 +188,7 @@ pub struct ExportProcess {
     started: Instant,
     args: Vec<OsString>,
     _metadata: Option<TempMetadata>,
+    _subtitle: Option<TempSubtitle>,
 }
 
 impl ExportProcess {
@@ -153,21 +202,40 @@ impl ExportProcess {
                     .map_err(|source| ExportError::Metadata { source })?,
             )
         };
-        let args = build_args(request, metadata.as_ref().map(TempMetadata::path));
-        Self::start_inner(args, request.output(), metadata)
+        let subtitle = match request.subtitle() {
+            Some(plan) => {
+                let text = plan.crop_for(request.start(), request.end());
+                if text.trim().is_empty() {
+                    None
+                } else {
+                    Some(
+                        TempSubtitle::create(&text)
+                            .map_err(|source| ExportError::Subtitle { source })?,
+                    )
+                }
+            }
+            None => None,
+        };
+        let args = build_args(
+            request,
+            metadata.as_ref().map(TempMetadata::path),
+            subtitle.as_ref().map(TempSubtitle::path),
+        );
+        Self::start_inner(args, request.output(), metadata, subtitle)
     }
 
     /// Starts FFmpeg with a caller-provided argument list.
     ///
     /// Used by the concat stage, which does not fit [`ExportRequest`].
     pub fn start_with_args(args: Vec<OsString>, output: &Path) -> Result<Self, ExportError> {
-        Self::start_inner(args, output, None)
+        Self::start_inner(args, output, None, None)
     }
 
     fn start_inner(
         args: Vec<OsString>,
         output: &Path,
         metadata: Option<TempMetadata>,
+        subtitle: Option<TempSubtitle>,
     ) -> Result<Self, ExportError> {
         let mut child = Command::new(FFMPEG)
             .args(&args)
@@ -205,6 +273,7 @@ impl ExportProcess {
             started: Instant::now(),
             args,
             _metadata: metadata,
+            _subtitle: subtitle,
         })
     }
 

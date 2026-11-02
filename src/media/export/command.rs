@@ -12,6 +12,22 @@ use crate::domain::time::{Duration, Timestamp};
 
 use super::chapters::ChapterSpec;
 
+/// Subtitles to mux into the export.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SubtitlePlan {
+    /// Complete SRT text of the source track.
+    pub srt: String,
+    /// Whether cues crossing the segment boundaries are kept.
+    pub keep_partial: bool,
+}
+
+impl SubtitlePlan {
+    /// Returns the SRT to mux for `[start, end)`.
+    pub fn crop_for(&self, start: Timestamp, end: Timestamp) -> String {
+        crate::media::subtitle::crop(&self.srt, start, end, self.keep_partial)
+    }
+}
+
 /// A validated request for one lossless segment export.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExportRequest {
@@ -21,6 +37,7 @@ pub struct ExportRequest {
     output: PathBuf,
     chapters: Vec<ChapterSpec>,
     title: Option<String>,
+    subtitle: Option<SubtitlePlan>,
 }
 
 impl ExportRequest {
@@ -46,6 +63,7 @@ impl ExportRequest {
             output,
             chapters: Vec::new(),
             title: None,
+            subtitle: None,
         })
     }
 
@@ -64,6 +82,17 @@ impl ExportRequest {
     /// Returns the output title metadata, when set.
     pub fn title(&self) -> Option<&str> {
         self.title.as_deref()
+    }
+
+    /// Attaches cropped subtitles to the output.
+    pub fn with_subtitle(mut self, subtitle: Option<SubtitlePlan>) -> Self {
+        self.subtitle = subtitle;
+        self
+    }
+
+    /// Returns the subtitle plan, when set.
+    pub fn subtitle(&self) -> Option<&SubtitlePlan> {
+        self.subtitle.as_ref()
     }
 
     /// Returns the chapters to write.
@@ -103,7 +132,11 @@ impl ExportRequest {
 /// all inputs and uses the requested segment length. `-c copy` applies to every
 /// mapped stream. When `metadata` is provided it is a `ffmetadata` input at
 /// index 1 and its chapters are mapped to the output.
-pub fn build_args(request: &ExportRequest, metadata: Option<&Path>) -> Vec<OsString> {
+pub fn build_args(
+    request: &ExportRequest,
+    metadata: Option<&Path>,
+    subtitle: Option<&Path>,
+) -> Vec<OsString> {
     let mut args: Vec<OsString> = vec![
         "-nostdin".into(),
         "-hide_banner".into(),
@@ -128,13 +161,37 @@ pub fn build_args(request: &ExportRequest, metadata: Option<&Path>) -> Vec<OsStr
         args.push(metadata.as_os_str().to_owned());
     }
 
+    if let Some(subtitle) = subtitle {
+        args.push("-i".into());
+        args.push(subtitle.as_os_str().to_owned());
+    }
+
     args.push("-t".into());
     args.push(format_duration(request.duration()).into());
 
-    args.push("-map".into());
-    args.push("0".into());
+    if request.subtitle().is_some() {
+        // The source subtitle track is replaced by the cropped one. When the
+        // crop is empty the source track is dropped instead of copied.
+        args.push("-map".into());
+        args.push("0:v?".into());
+        args.push("-map".into());
+        args.push("0:a?".into());
+        if subtitle.is_some() {
+            args.push("-map".into());
+            args.push(format!("{}:s", 1 + usize::from(metadata.is_some())).into());
+        }
+    } else {
+        args.push("-map".into());
+        args.push("0".into());
+    }
+
     args.push("-c".into());
     args.push("copy".into());
+
+    if subtitle.is_some() {
+        args.push("-c:s".into());
+        args.push(subtitle_codec(&request.output).into());
+    }
 
     if metadata.is_some() {
         args.push("-map_chapters".into());
@@ -157,6 +214,19 @@ pub fn build_args(request: &ExportRequest, metadata: Option<&Path>) -> Vec<OsStr
     args.push(request.output.as_os_str().to_owned());
 
     args
+}
+
+/// Picks a subtitle codec the output container can store.
+fn subtitle_codec(output: &Path) -> &'static str {
+    match output
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("mp4" | "m4v" | "mov") => "mov_text",
+        _ => "srt",
+    }
 }
 
 /// Formats a timestamp as decimal seconds with microsecond precision.
@@ -190,7 +260,7 @@ mod tests {
     }
 
     fn args(request: &ExportRequest) -> Vec<String> {
-        build_args(request, None)
+        build_args(request, None, None)
             .into_iter()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect()
@@ -279,7 +349,7 @@ mod tests {
         let values = args(&request(1_000_000, 2_000_000));
         assert_eq!(values.last().map(String::as_str), Some("output.mp4"));
         assert_eq!(
-            build_args(&request(1_000_000, 2_000_000), None)
+            build_args(&request(1_000_000, 2_000_000), None, None)
                 .last()
                 .map(OsString::as_os_str),
             Some(OsStr::new("output.mp4"))

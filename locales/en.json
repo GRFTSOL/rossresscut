@@ -151,6 +151,8 @@
   "smart_cut_hint": "Re-encode the non-keyframe head of each segment (not implemented yet).",
   "sort_segments": "Sort by start time",
   "split_segment": "Split segment",
+  "subtitle_keep_partial": "Keep subtitles cut by a segment boundary",
+  "subtitle_keep_partial_hint": "Off: a cue crossing a cut is dropped. On: it is clipped to the segment.",
   "theme": "Theme",
   "theme_dark": "Dark",
   "theme_light": "Light",

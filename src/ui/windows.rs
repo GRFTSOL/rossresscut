@@ -104,6 +104,7 @@ impl RossresscutApp {
                             output,
                             self.settings.export_chapters,
                             Some(self.settings.export_title.clone()),
+                            self.settings.subtitle_keep_partial,
                         ) {
                             Ok(()) => {
                                 self.export_error = None;
@@ -252,6 +253,11 @@ impl RossresscutApp {
                         self.font_family_ui(ui, strings);
 
                         ui.separator();
+                        ui.checkbox(
+                            &mut self.settings.subtitle_keep_partial,
+                            strings.subtitle_keep_partial.as_str(),
+                        )
+                        .on_hover_text(strings.subtitle_keep_partial_hint.as_str());
                         ui.checkbox(
                             &mut self.settings.autosave_projects,
                             strings.autosave_projects.as_str(),
