@@ -1,10 +1,13 @@
 //! Side panels: playback information, segments and export status.
 
+use std::path::PathBuf;
+
 use eframe::egui;
 
-use crate::application::{Application, ExportStage, ExportStatus, OpenState};
+use crate::application::{Application, BatchItemStatus, ExportStage, ExportStatus, OpenState};
 use crate::domain::media::{MediaFile, MediaStream, VideoStream};
 use crate::domain::segment::Segment;
+use crate::domain::time::Timestamp;
 
 use super::i18n::fill;
 use super::timeline::segment_color;
@@ -272,6 +275,11 @@ impl RossresscutApp {
             .show(ui, |ui| {
                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
                 egui::ScrollArea::vertical().show(ui, |ui| {
+                    if self.batch_panel_open {
+                        self.batch_panel(ui, strings);
+                        ui.separator();
+                    }
+
                     ui.heading(strings.playback.as_str());
                     render_playback_info(ui, &self.application, strings);
                     ui.separator();
@@ -279,6 +287,100 @@ impl RossresscutApp {
                     self.segments_panel(ui, strings);
                 });
             });
+    }
+
+    /// Returns the output directory for batch exports.
+    ///
+    /// `None` means each file is written next to its source.
+    pub(super) fn batch_output_directory(&self) -> Option<PathBuf> {
+        if self.settings.export_to_source_dir || self.settings.export_directory.is_empty() {
+            return None;
+        }
+        Some(PathBuf::from(&self.settings.export_directory))
+    }
+
+    /// Renders the batch queue and its controls.
+    pub(super) fn batch_panel(&mut self, ui: &mut egui::Ui, strings: &'static Strings) {
+        ui.horizontal(|ui| {
+            ui.heading(strings.batch_queue.as_str());
+            ui.label(format!("({})", self.application.batch_items().len()));
+        });
+
+        if self.application.batch_items().is_empty() {
+            ui.label(strings.batch_empty.as_str());
+            return;
+        }
+
+        egui::ScrollArea::vertical()
+            .max_height(160.0)
+            .id_salt("batch_items")
+            .show(ui, |ui| {
+                for item in self.application.batch_items() {
+                    let status = match item.status() {
+                        BatchItemStatus::Pending => strings.batch_pending.clone(),
+                        BatchItemStatus::Running => strings.batch_running.clone(),
+                        BatchItemStatus::Completed { output } => {
+                            fill(&strings.batch_completed, &[&file_title(output)])
+                        }
+                        BatchItemStatus::Failed { message } => {
+                            fill(&strings.batch_failed, &[message.as_str()])
+                        }
+                        BatchItemStatus::Skipped { reason } => {
+                            fill(&strings.batch_skipped, &[reason.as_str()])
+                        }
+                    };
+                    ui.horizontal(|ui| {
+                        ui.add(egui::Label::new(file_title(item.path())).truncate());
+                        ui.add(egui::Label::new(status).truncate());
+                    });
+                }
+            });
+
+        let running = self.application.is_batching();
+        let segments: Vec<(Timestamp, Timestamp)> = self
+            .application
+            .timeline()
+            .segments()
+            .iter()
+            .filter(|segment| segment.enabled())
+            .map(|segment| (segment.start(), segment.end()))
+            .collect();
+
+        ui.horizontal(|ui| {
+            let can_start = !running && !segments.is_empty();
+            if ui
+                .add_enabled(can_start, egui::Button::new(strings.batch_start.as_str()))
+                .on_disabled_hover_text(strings.batch_needs_segments.as_str())
+                .clicked()
+            {
+                let files: Vec<PathBuf> = self
+                    .application
+                    .batch_items()
+                    .iter()
+                    .map(|item| item.path().to_path_buf())
+                    .collect();
+                self.application
+                    .start_batch(crate::application::BatchRequest {
+                        files,
+                        segments,
+                        output_directory: self.batch_output_directory(),
+                        chapters: self.settings.export_chapters,
+                        title: Some(self.settings.export_title.clone()),
+                    });
+            }
+            if ui
+                .add_enabled(running, egui::Button::new(strings.batch_cancel.as_str()))
+                .clicked()
+            {
+                self.application.cancel_batch();
+            }
+            if ui
+                .add_enabled(!running, egui::Button::new(strings.batch_clear.as_str()))
+                .clicked()
+            {
+                self.application.clear_batch();
+            }
+        });
     }
 }
 

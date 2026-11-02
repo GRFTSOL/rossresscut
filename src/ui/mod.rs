@@ -113,6 +113,8 @@ pub struct RossresscutApp {
     silence_preview: Option<Result<usize, String>>,
     scene_dialog_open: bool,
     scene_threshold: f32,
+    batch_panel_open: bool,
+    pending_drop: Option<Vec<PathBuf>>,
     wheel_accumulator: f32,
     waveform_cache: Option<WaveformCache>,
     segment_error: Option<String>,
@@ -218,6 +220,29 @@ impl RossresscutApp {
             self.application.play();
         }
     }
+
+    /// Opens a single dropped file directly and asks about several at once.
+    fn handle_dropped_files(&mut self, context: &egui::Context) {
+        let dropped: Vec<PathBuf> = context.input(|input| {
+            input
+                .raw
+                .dropped_files
+                .iter()
+                .map(|file| file.path().to_path_buf())
+                .collect()
+        });
+        if dropped.is_empty() {
+            return;
+        }
+
+        if dropped.len() == 1 {
+            self.reset_scrub();
+            self.segment_error = None;
+            self.application.open_media(dropped[0].clone());
+        } else {
+            self.pending_drop = Some(dropped);
+        }
+    }
 }
 impl eframe::App for RossresscutApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -228,6 +253,7 @@ impl eframe::App for RossresscutApp {
         self.poll_file_dialog();
         self.poll_directory_dialog();
         self.poll_project_dialog();
+        self.handle_dropped_files(ui.ctx());
         self.sync_segment_inputs();
         self.handle_shortcuts(ui.ctx());
 
@@ -279,6 +305,7 @@ impl eframe::App for RossresscutApp {
         self.settings_window(ui.ctx());
         self.silence_window(ui.ctx());
         self.scene_window(ui.ctx());
+        self.drop_window(ui.ctx());
         self.export_panel(ui.ctx());
         self.ffmpeg_command_window(ui.ctx());
         self.about_window(ui.ctx());

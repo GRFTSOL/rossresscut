@@ -558,6 +558,48 @@ impl RossresscutApp {
         self.silence_dialog_open = open;
     }
 
+    /// Asks what to do with several files dropped at once.
+    pub(super) fn drop_window(&mut self, context: &egui::Context) {
+        let Some(files) = self.pending_drop.clone() else {
+            return;
+        };
+        let strings = self.strings();
+        let mut close = false;
+
+        egui::Window::new(fill(
+            &strings.drop_files,
+            &[files.len().to_string().as_str()],
+        ))
+        .id(egui::Id::unique("drop_window"))
+        .collapsible(false)
+        .resizable(false)
+        .default_width(380.0)
+        .show(context, |ui| {
+            egui::ScrollArea::vertical()
+                .max_height(180.0)
+                .show(ui, |ui| {
+                    for file in &files {
+                        ui.label(super::panels::file_title(file));
+                    }
+                });
+            ui.separator();
+            ui.horizontal(|ui| {
+                if ui.button(strings.drop_batch.as_str()).clicked() {
+                    self.application.queue_batch(files.clone());
+                    self.batch_panel_open = true;
+                    close = true;
+                }
+                if ui.button(strings.cancel.as_str()).clicked() {
+                    close = true;
+                }
+            });
+        });
+
+        if close {
+            self.pending_drop = None;
+        }
+    }
+
     pub(super) fn about_window(&mut self, context: &egui::Context) {
         if !self.about_open {
             return;

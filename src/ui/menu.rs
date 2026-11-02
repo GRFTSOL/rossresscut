@@ -342,6 +342,13 @@ impl RossresscutApp {
                     {
                         self.open_settings();
                     }
+                    if ui
+                        .add(egui::Button::new("≡").min_size(egui::vec2(32.0, 28.0)))
+                        .on_hover_text(strings.batch_export.as_str())
+                        .clicked()
+                    {
+                        self.batch_panel_open = !self.batch_panel_open;
+                    }
                     let title = self
                         .media_title()
                         .unwrap_or_else(|| strings.no_media.clone());

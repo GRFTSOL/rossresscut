@@ -19,6 +19,7 @@ use crate::media::export::{
 use crate::media::ffprobe::ProbeError;
 use crate::media::preview::{HardwareAcceleration, PreviewAudio, PreviewVideo, VideoFrame};
 
+mod batch;
 mod editing;
 mod export;
 mod media;
@@ -31,6 +32,7 @@ mod waveform;
 
 #[cfg(feature = "mpv-preview")]
 use crate::media::preview::{MpvPreview, MpvPreviewError};
+pub use batch::{BatchItem, BatchItemStatus, BatchRequest};
 pub use export::{ExportCommandError, ExportStage, ExportStatus};
 use export::{ExportJob, JobEvent};
 #[cfg(feature = "mpv-preview")]
@@ -112,6 +114,8 @@ pub struct Application {
     waveform_job: Option<WaveformJob>,
     scene_scan: Option<SceneScan>,
     scene_job: Option<SceneJob>,
+    batch_items: Vec<BatchItem>,
+    batch_job: Option<batch::BatchJob>,
     playback: Playback,
     timeline: Timeline,
     markers: Markers,
@@ -495,6 +499,7 @@ impl Application {
         self.poll_keyframes();
         self.poll_waveform();
         self.poll_scene_scan();
+        self.poll_batch();
         changed |= self.poll_export();
         let duration = self.duration();
         changed |= self.playback.update(duration);
