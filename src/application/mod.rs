@@ -15,7 +15,7 @@ use crate::domain::time::{Duration, Timestamp};
 use crate::domain::waveform::Waveform;
 use crate::media::export::{
     ChapterSpec, ExportProcess, ExportRequest, ExportSegment, MultiExport, MultiExportRequest,
-    SubtitlePlan,
+    StreamSelection, SubtitlePlan,
 };
 use crate::media::ffprobe::ProbeError;
 use crate::media::preview::{HardwareAcceleration, PreviewAudio, PreviewVideo, VideoFrame};
@@ -162,6 +162,19 @@ pub(super) struct SceneJob {
 pub(super) struct PendingProject {
     pub(super) segments: Vec<Segment>,
     pub(super) next_id: u64,
+}
+
+/// Options applied to one export run.
+#[derive(Clone, Debug, Default)]
+pub struct ExportOptions {
+    /// Whether to generate chapters.
+    pub chapters: bool,
+    /// Output title metadata.
+    pub title: Option<String>,
+    /// Whether cues crossing a segment boundary are kept.
+    pub subtitle_keep_partial: bool,
+    /// Restricts the output to these streams; `None` keeps every stream.
+    pub streams: Option<StreamSelection>,
 }
 
 /// Returns whether `codec_name` is a text subtitle format FFmpeg can convert.
@@ -434,9 +447,7 @@ impl Application {
     pub fn start_export(
         &mut self,
         output: PathBuf,
-        chapters: bool,
-        title: Option<String>,
-        subtitle_keep_partial: bool,
+        options: ExportOptions,
     ) -> Result<(), ExportCommandError> {
         if !matches!(self.state, OpenState::Ready) {
             return Err(ExportCommandError::NoMedia);
@@ -450,7 +461,7 @@ impl Application {
             .source()
             .map(Path::to_path_buf)
             .ok_or(ExportCommandError::NoMedia)?;
-        let subtitle = self.prepare_subtitles(subtitle_keep_partial);
+        let subtitle = self.prepare_subtitles(options.subtitle_keep_partial);
 
         let segments: Vec<_> = self
             .timeline
@@ -468,10 +479,11 @@ impl Application {
             let request =
                 ExportRequest::new(source, segment.start(), segment.end(), output.clone())
                     .ok_or(ExportCommandError::InvalidOutput)?
-                    .with_title(title)
-                    .with_subtitle(subtitle);
+                    .with_title(options.title)
+                    .with_subtitle(subtitle)
+                    .with_streams(options.streams.clone());
             let duration = request.duration();
-            let request = if chapters {
+            let request = if options.chapters {
                 request.with_chapters(vec![ChapterSpec {
                     start: Duration::ZERO,
                     end: duration,
@@ -501,9 +513,10 @@ impl Application {
             .collect::<Result<_, _>>()?;
         let request = MultiExportRequest::new(source, export_segments, output.clone())
             .ok_or(ExportCommandError::InvalidOutput)?
-            .with_chapters(chapters)
-            .with_title(title)
-            .with_subtitle(subtitle);
+            .with_chapters(options.chapters)
+            .with_title(options.title)
+            .with_subtitle(subtitle)
+            .with_streams(options.streams);
         let duration = request.total_duration();
         let process = MultiExport::start(request).map_err(ExportCommandError::StartMulti)?;
 
@@ -806,7 +819,7 @@ mod tests {
         let mut application = Application::new();
 
         let error = application
-            .start_export(PathBuf::from("out.mkv"), false, None, false)
+            .start_export(PathBuf::from("out.mkv"), ExportOptions::default())
             .expect_err("export must fail without media");
 
         assert!(matches!(error, ExportCommandError::NoMedia));

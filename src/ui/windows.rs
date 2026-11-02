@@ -4,8 +4,12 @@ use std::path::PathBuf;
 
 use eframe::egui;
 
-use crate::application::{ExportCommandError, SceneScan, SilenceError, SilenceOptions};
+use crate::application::{
+    ExportCommandError, ExportOptions, SceneScan, SilenceError, SilenceOptions,
+};
+use crate::domain::media::MediaStream;
 use crate::domain::time::Duration;
+use crate::media::export::StreamSelection;
 
 use super::dialogs::DirectoryTarget;
 use super::i18n::{Language, fill};
@@ -59,6 +63,77 @@ impl RossresscutApp {
         })
     }
 
+    /// Returns the streams to export, or `None` when everything is selected.
+    fn current_stream_selection(&self) -> Option<StreamSelection> {
+        let set = self.stream_selection.as_ref()?;
+        let media = self.application.media()?;
+        let mut selection = StreamSelection::default();
+        for stream in &media.streams {
+            let info = stream.info();
+            if !set.contains(&info.index) {
+                continue;
+            }
+            match stream {
+                MediaStream::Video(_) => selection.video.push(info.index),
+                MediaStream::Audio(_) => selection.audio.push(info.index),
+                MediaStream::Subtitle(_) => selection.subtitle.push(info.index),
+                MediaStream::Other(_) => {}
+            }
+        }
+        Some(selection)
+    }
+
+    /// Renders one checkbox per stream in the current media.
+    fn stream_selection_ui(&mut self, ui: &mut egui::Ui, strings: &Strings) {
+        let (streams, all): (Vec<(usize, String)>, Vec<usize>) = {
+            let Some(media) = self.application.media() else {
+                return;
+            };
+            let streams = media
+                .streams
+                .iter()
+                .map(|stream| {
+                    let info = stream.info();
+                    let kind = match stream {
+                        MediaStream::Video(_) => strings.video.as_str(),
+                        MediaStream::Audio(_) => strings.audio.as_str(),
+                        MediaStream::Subtitle(_) => strings.subtitle_stream.as_str(),
+                        MediaStream::Other(_) => "-",
+                    };
+                    let codec = info.codec_name.as_deref().unwrap_or("?");
+                    (info.index, format!("#{} {kind} {codec}", info.index))
+                })
+                .collect();
+            let all = media
+                .streams
+                .iter()
+                .map(|stream| stream.info().index)
+                .collect();
+            (streams, all)
+        };
+
+        ui.separator();
+        ui.label(strings.streams.as_str());
+        for (index, label) in streams {
+            let mut checked = self
+                .stream_selection
+                .as_ref()
+                .is_none_or(|set| set.contains(&index));
+            if ui.checkbox(&mut checked, label).changed() {
+                let mut set = self
+                    .stream_selection
+                    .take()
+                    .unwrap_or_else(|| all.iter().copied().collect());
+                if checked {
+                    set.insert(index);
+                } else {
+                    set.remove(&index);
+                }
+                self.stream_selection = Some(set);
+            }
+        }
+    }
+
     pub(super) fn export_panel(&mut self, context: &egui::Context) {
         if !self.export_panel_open {
             return;
@@ -85,6 +160,7 @@ impl RossresscutApp {
             .default_width(540.0)
             .show(context, |ui| {
                 self.export_directory_ui(ui, strings);
+                self.stream_selection_ui(ui, strings);
                 ui.separator();
                 ui.label(strings.export_output_path.as_str());
                 let path_text = output
@@ -102,9 +178,12 @@ impl RossresscutApp {
                     {
                         match self.application.start_export(
                             output,
-                            self.settings.export_chapters,
-                            Some(self.settings.export_title.clone()),
-                            self.settings.subtitle_keep_partial,
+                            ExportOptions {
+                                chapters: self.settings.export_chapters,
+                                title: Some(self.settings.export_title.clone()),
+                                subtitle_keep_partial: self.settings.subtitle_keep_partial,
+                                streams: self.current_stream_selection(),
+                            },
                         ) {
                             Ok(()) => {
                                 self.export_error = None;

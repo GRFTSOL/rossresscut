@@ -7,6 +7,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -14,12 +15,17 @@ use rossresscut::application::{Application, ExportStatus, OpenState};
 use rossresscut::domain::time::Timestamp;
 
 fn fixture_directory() -> PathBuf {
+    // Tests run in parallel and the clock alone can collide on a fast machine,
+    // which used to make one test delete another test's workspace.
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("clock after epoch")
         .as_nanos();
+    let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
     let directory = std::env::temp_dir().join(format!(
-        "rossresscut-app-export-{}-{stamp}",
+        "rossresscut-app-export-{}-{stamp}-{unique}",
         std::process::id()
     ));
     fs::create_dir_all(&directory).expect("create fixture directory");
@@ -148,7 +154,13 @@ fn exports_the_first_enabled_segment_through_the_application() {
         .expect("create a segment from the markers");
 
     application
-        .start_export(output.clone(), true, None, false)
+        .start_export(
+            output.clone(),
+            rossresscut::application::ExportOptions {
+                chapters: true,
+                ..Default::default()
+            },
+        )
         .expect("start export");
 
     wait_for_export(&mut application);
@@ -289,7 +301,13 @@ fn exports_enabled_segments_in_timeline_order() {
     }
 
     application
-        .start_export(output.clone(), true, None, false)
+        .start_export(
+            output.clone(),
+            rossresscut::application::ExportOptions {
+                chapters: true,
+                ..Default::default()
+            },
+        )
         .expect("start multi-segment export");
     wait_for_export(&mut application);
 

@@ -22,7 +22,10 @@ impl RossresscutApp {
                 self.reset_scrub();
                 self.segment_error = None;
                 match purpose {
-                    FileDialogPurpose::OpenMedia => self.application.open_media(path),
+                    FileDialogPurpose::OpenMedia => {
+                        self.stream_selection = None;
+                        self.application.open_media(path);
+                    }
                     FileDialogPurpose::RebindSource => self.application.rebind_source(path),
                 }
             }
@@ -196,6 +199,9 @@ impl RossresscutApp {
                     self.project_error = Some(fill(template, &[&error.to_string()]));
                 } else {
                     self.project_error = None;
+                    if mode == ProjectDialogMode::Open {
+                        self.stream_selection = None;
+                    }
                     self.reset_scrub();
                     self.segment_error = None;
                     self.sync_segment_inputs();

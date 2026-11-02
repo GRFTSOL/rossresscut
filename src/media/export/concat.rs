@@ -20,7 +20,7 @@ use crate::domain::time::{Duration, Timestamp};
 use crate::media::ffprobe;
 
 use super::chapters::{ChapterSpec, render_ffmetadata};
-use super::command::SubtitlePlan;
+use super::command::{StreamSelection, SubtitlePlan};
 use super::{ExportError, ExportEvent, ExportProcess, ExportRequest};
 
 /// One source-time range in a multi-segment export.
@@ -61,6 +61,7 @@ pub struct MultiExportRequest {
     chapters: bool,
     title: Option<String>,
     subtitle: Option<SubtitlePlan>,
+    streams: Option<StreamSelection>,
 }
 
 impl MultiExportRequest {
@@ -85,6 +86,7 @@ impl MultiExportRequest {
             chapters: false,
             title: None,
             subtitle: None,
+            streams: None,
         })
     }
 
@@ -113,6 +115,12 @@ impl MultiExportRequest {
     /// Attaches cropped subtitles to every part.
     pub fn with_subtitle(mut self, subtitle: Option<SubtitlePlan>) -> Self {
         self.subtitle = subtitle;
+        self
+    }
+
+    /// Restricts every part to the listed streams.
+    pub fn with_streams(mut self, streams: Option<StreamSelection>) -> Self {
+        self.streams = streams;
         self
     }
 
@@ -228,6 +236,7 @@ pub struct MultiExport {
     stage: Option<Stage>,
     title: Option<String>,
     subtitle: Option<SubtitlePlan>,
+    streams: Option<StreamSelection>,
 }
 
 enum Stage {
@@ -270,6 +279,7 @@ impl MultiExport {
             chapters: request.chapters,
             title: request.title,
             subtitle: request.subtitle,
+            streams: request.streams,
             total_duration,
             completed_duration: Duration::ZERO,
             part_durations,
@@ -425,7 +435,8 @@ impl MultiExport {
             segment.end(),
             &self.parts[index],
         )
-        .ok_or(MultiExportError::InvalidPart { index })?;
+        .ok_or(MultiExportError::InvalidPart { index })?
+        .with_streams(self.streams.clone());
         let subtitle_path = self
             .subtitle
             .as_ref()

@@ -12,7 +12,7 @@
 - 导出章节按每个临时片段的实际容器时长累计，测试见
   `tests/multi_export.rs::chapters_follow_actual_part_lengths`。
 - 切片不再使用 `-shortest`：源带附加图片/字幕流时它会提前结束，产物可能近乎为空。
-- 未完成：stream selection、显式 metadata 处理、容器预检查、4K/VFR 验证。
+- 未完成：显式 metadata 处理、容器预检查、4K/VFR 验证。
 - 未解决问题记录在 `docs/open-questions.md`。
 
 ## 已完成的 UI 批次
@@ -518,7 +518,7 @@ re-encode
 - [x] concat demuxer 合并
 - [x] 临时目录生命周期（成功 / 失败 / 取消都清理）
 - [x] 多段进度（按各段请求时长加权）
-- [ ] stream selection
+- [x] stream selection（`StreamSelection` 逐段传递到每个切片；`None` 保持 `-map 0`）
 - [ ] timestamp 处理（切片已用 `-avoid_negative_ts make_zero`；更细控制未做）
 - [ ] metadata / chapter 显式处理
 - [x] 不兼容情况处理（FFmpeg 错误向上传递并显示）
@@ -702,7 +702,21 @@ ADR：`docs/decisions/0012-project-and-settings-format.md`。
     concat 可能因流布局不一致失败。
   - 字幕提取在导出启动时同步执行，超长素材会有短暂停顿。
   - 只使用第一个文本字幕轨，多字幕轨场景未覆盖。
-- [ ] Stream selection（导出时选择保留哪些流；当前固定 `-map 0`）
+- [x] Stream selection（导出时选择保留哪些流）
+  - 决策：**流选择优先**。用户勾选的字幕轨才参与导出，内容仍是裁剪后的字幕
+  - `StreamSelection { video, audio, subtitle }` 存**绝对流索引**；`None` = 保持 `-map 0` 全部流
+  - 勾选字幕但裁剪结果为空 → 丢弃字幕轨；未勾字幕 → 不发 `-map 1:s` 与 `-c:s`
+  - 单段（`ExportRequest::with_streams`）与多段（`MultiExportRequest::with_streams`）都接入
+  - UI：导出面板每个流一个 checkbox（`#index 类型 codec`）；打开新媒体/项目时重置为 `None`
+  - 实现：`media::export::StreamSelection`、`application::ExportOptions`、`ui::windows::stream_selection_ui`
+
+  ### 已知限制
+
+  - 流索引基于**打开时的探测结果**；源文件在打开后被替换会导致索引错位。
+  - 只允许按流裁剪，不提供改默认轨、改语言标签等 metadata 操作。
+  - 多段导出时各段必须得到相同的流布局，否则 concat 失败（与字幕裁剪的限制相同）。
+  - 勾选集合为空（用户取消全部勾选）等价于“不映射任何流”，FFmpeg 会报错；
+    当前不阻止该操作，只把错误显示给用户。
 - [ ] 智能裁切（裁切点为非关键帧时，从该帧到关键帧按该段平均码率重新编码）
   - 导出设置已有开关并持久化，但**尚未生效**
   - 实现前必须先完成下面的 LosslessCut 调查

@@ -115,6 +115,8 @@ pub struct RossresscutApp {
     scene_threshold: f32,
     batch_panel_open: bool,
     pending_drop: Option<Vec<PathBuf>>,
+    /// `None` exports every stream; `Some` holds the chosen stream indices.
+    stream_selection: Option<std::collections::BTreeSet<usize>>,
     wheel_accumulator: f32,
     waveform_cache: Option<WaveformCache>,
     segment_error: Option<String>,
@@ -238,6 +240,7 @@ impl RossresscutApp {
         if dropped.len() == 1 {
             self.reset_scrub();
             self.segment_error = None;
+            self.stream_selection = None;
             self.application.open_media(dropped[0].clone());
         } else {
             self.pending_drop = Some(dropped);

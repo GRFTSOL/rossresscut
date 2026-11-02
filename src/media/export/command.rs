@@ -28,6 +28,24 @@ impl SubtitlePlan {
     }
 }
 
+/// Streams to map into the output, by absolute media stream index.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StreamSelection {
+    /// Video stream indices, in media order.
+    pub video: Vec<usize>,
+    /// Audio stream indices, in media order.
+    pub audio: Vec<usize>,
+    /// Subtitle stream indices, in media order.
+    pub subtitle: Vec<usize>,
+}
+
+impl StreamSelection {
+    /// Returns whether every list is empty.
+    pub fn is_empty(&self) -> bool {
+        self.video.is_empty() && self.audio.is_empty() && self.subtitle.is_empty()
+    }
+}
+
 /// A validated request for one lossless segment export.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExportRequest {
@@ -38,6 +56,7 @@ pub struct ExportRequest {
     chapters: Vec<ChapterSpec>,
     title: Option<String>,
     subtitle: Option<SubtitlePlan>,
+    streams: Option<StreamSelection>,
 }
 
 impl ExportRequest {
@@ -64,6 +83,7 @@ impl ExportRequest {
             chapters: Vec::new(),
             title: None,
             subtitle: None,
+            streams: None,
         })
     }
 
@@ -93,6 +113,17 @@ impl ExportRequest {
     /// Returns the subtitle plan, when set.
     pub fn subtitle(&self) -> Option<&SubtitlePlan> {
         self.subtitle.as_ref()
+    }
+
+    /// Restricts the output to the listed streams. `None` keeps every stream.
+    pub fn with_streams(mut self, streams: Option<StreamSelection>) -> Self {
+        self.streams = streams;
+        self
+    }
+
+    /// Returns the stream selection, when restricted.
+    pub fn streams(&self) -> Option<&StreamSelection> {
+        self.streams.as_ref()
     }
 
     /// Returns the chapters to write.
@@ -169,26 +200,56 @@ pub fn build_args(
     args.push("-t".into());
     args.push(format_duration(request.duration()).into());
 
-    if request.subtitle().is_some() {
-        // The source subtitle track is replaced by the cropped one. When the
-        // crop is empty the source track is dropped instead of copied.
-        args.push("-map".into());
-        args.push("0:v?".into());
-        args.push("-map".into());
-        args.push("0:a?".into());
-        if subtitle.is_some() {
-            args.push("-map".into());
-            args.push(format!("{}:s", 1 + usize::from(metadata.is_some())).into());
+    let subtitle_replaced = request.subtitle().is_some();
+    let subtitle_included = subtitle.is_some()
+        && match request.streams() {
+            Some(selection) => !selection.subtitle.is_empty(),
+            None => true,
+        };
+    match request.streams() {
+        Some(selection) => {
+            for index in &selection.video {
+                args.push("-map".into());
+                args.push(format!("0:{index}").into());
+            }
+            for index in &selection.audio {
+                args.push("-map".into());
+                args.push(format!("0:{index}").into());
+            }
+            if subtitle_replaced {
+                // Subtitle output follows the selection: only keep the cropped
+                // track when the user asked for a subtitle stream.
+                if subtitle.is_some() && !selection.subtitle.is_empty() {
+                    args.push("-map".into());
+                    args.push(format!("{}:s", 1 + usize::from(metadata.is_some())).into());
+                }
+            } else {
+                for index in &selection.subtitle {
+                    args.push("-map".into());
+                    args.push(format!("0:{index}").into());
+                }
+            }
         }
-    } else {
-        args.push("-map".into());
-        args.push("0".into());
+        None if subtitle_replaced => {
+            args.push("-map".into());
+            args.push("0:v?".into());
+            args.push("-map".into());
+            args.push("0:a?".into());
+            if subtitle.is_some() {
+                args.push("-map".into());
+                args.push(format!("{}:s", 1 + usize::from(metadata.is_some())).into());
+            }
+        }
+        None => {
+            args.push("-map".into());
+            args.push("0".into());
+        }
     }
 
     args.push("-c".into());
     args.push("copy".into());
 
-    if subtitle.is_some() {
+    if subtitle_included {
         args.push("-c:s".into());
         args.push(subtitle_codec(&request.output).into());
     }
@@ -284,6 +345,59 @@ mod tests {
         assert!(duration > input);
         assert_eq!(values[seek + 1], "5.000000");
         assert_eq!(values[duration + 1], "3.500000");
+    }
+
+    #[test]
+    fn maps_only_the_selected_streams() {
+        let request = request(0, 1_000_000).with_streams(Some(StreamSelection {
+            video: vec![0],
+            audio: vec![2],
+            subtitle: vec![3],
+        }));
+        let values = args(&request);
+
+        assert!(values.iter().any(|value| value == "0:0"));
+        assert!(values.iter().any(|value| value == "0:2"));
+        assert!(values.iter().any(|value| value == "0:3"));
+        assert!(!values.iter().any(|value| value == "0:1"));
+        assert!(!values.iter().any(|value| value == "0"));
+    }
+
+    #[test]
+    fn subtitle_selection_gates_the_cropped_track() {
+        let plan = SubtitlePlan {
+            srt: "1\n00:00:00,000 --> 00:00:00,500\nHi\n\n".to_owned(),
+            keep_partial: true,
+        };
+        let subtitle_path = std::path::Path::new("/tmp/cropped.srt");
+
+        let with_subtitle = request(0, 1_000_000)
+            .with_subtitle(Some(plan.clone()))
+            .with_streams(Some(StreamSelection {
+                video: vec![0],
+                audio: vec![],
+                subtitle: vec![3],
+            }));
+        let values: Vec<String> = build_args(&with_subtitle, None, Some(subtitle_path))
+            .into_iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert!(values.iter().any(|value| value == "1:s"));
+        assert!(values.iter().any(|value| value == "-c:s"));
+
+        let without_subtitle = request(0, 1_000_000)
+            .with_subtitle(Some(plan))
+            .with_streams(Some(StreamSelection {
+                video: vec![0],
+                audio: vec![],
+                subtitle: vec![],
+            }));
+        let values: Vec<String> = build_args(&without_subtitle, None, Some(subtitle_path))
+            .into_iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert!(!values.iter().any(|value| value == "1:s"));
+        assert!(!values.iter().any(|value| value == "-c:s"));
     }
 
     #[test]

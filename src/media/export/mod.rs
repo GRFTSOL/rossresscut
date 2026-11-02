@@ -27,7 +27,7 @@ use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use chapters::ChapterSpec;
-pub use command::{ExportRequest, SubtitlePlan, build_args};
+pub use command::{ExportRequest, StreamSelection, SubtitlePlan, build_args};
 pub use concat::{
     ExportSegment, ExportStage, MultiExport, MultiExportError, MultiExportEvent, MultiExportRequest,
 };
