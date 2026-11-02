@@ -23,6 +23,7 @@ mod editing;
 mod export;
 mod media;
 mod playback;
+mod project;
 mod transport;
 mod waveform;
 
@@ -32,6 +33,7 @@ pub use export::{ExportCommandError, ExportStage, ExportStatus};
 use export::{ExportJob, JobEvent};
 #[cfg(feature = "mpv-preview")]
 use playback::{fit_within, preview_video_stream};
+pub use project::{PROJECT_EXTENSION, ProjectError};
 
 /// State of the media-opening workflow.
 #[derive(Debug, Default)]
@@ -116,6 +118,8 @@ pub struct Application {
     last_ffmpeg_commands: Vec<String>,
     export: Option<ExportJob>,
     export_status: ExportStatus,
+    pending_project: Option<PendingProject>,
+    timeline_revision: u64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -136,6 +140,12 @@ pub(super) struct KeyframeJob {
 
 pub(super) struct WaveformJob {
     receiver: Receiver<Result<Waveform, crate::media::waveform::WaveformError>>,
+}
+
+/// Segments waiting to be applied once the project source is probed.
+pub(super) struct PendingProject {
+    pub(super) segments: Vec<Segment>,
+    pub(super) next_id: u64,
 }
 
 impl Application {
@@ -375,6 +385,7 @@ impl Application {
         &mut self,
         output: PathBuf,
         chapters: bool,
+        title: Option<String>,
     ) -> Result<(), ExportCommandError> {
         if !matches!(self.state, OpenState::Ready) {
             return Err(ExportCommandError::NoMedia);
@@ -403,7 +414,8 @@ impl Application {
             let segment = segments[0];
             let request =
                 ExportRequest::new(source, segment.start(), segment.end(), output.clone())
-                    .ok_or(ExportCommandError::InvalidOutput)?;
+                    .ok_or(ExportCommandError::InvalidOutput)?
+                    .with_title(title);
             let duration = request.duration();
             let request = if chapters {
                 request.with_chapters(vec![ChapterSpec {
@@ -435,7 +447,8 @@ impl Application {
             .collect::<Result<_, _>>()?;
         let request = MultiExportRequest::new(source, export_segments, output.clone())
             .ok_or(ExportCommandError::InvalidOutput)?
-            .with_chapters(chapters);
+            .with_chapters(chapters)
+            .with_title(title);
         let duration = request.total_duration();
         let process = MultiExport::start(request).map_err(ExportCommandError::StartMulti)?;
 
@@ -736,7 +749,7 @@ mod tests {
         let mut application = Application::new();
 
         let error = application
-            .start_export(PathBuf::from("out.mkv"), false)
+            .start_export(PathBuf::from("out.mkv"), false, None)
             .expect_err("export must fail without media");
 
         assert!(matches!(error, ExportCommandError::NoMedia));

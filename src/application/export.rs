@@ -121,6 +121,10 @@ pub(crate) struct ExportJob {
     process: ExportProcessKind,
 }
 
+// `MultiExport` owns the temporary directory and per-part bookkeeping, so it is
+// much larger than a single process handle. Boxing it would move the allocation
+// without simplifying the state machine.
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum ExportProcessKind {
     Single(ExportProcess),
     Multi(MultiExport),

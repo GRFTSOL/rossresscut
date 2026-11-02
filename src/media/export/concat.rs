@@ -58,6 +58,7 @@ pub struct MultiExportRequest {
     segments: Vec<ExportSegment>,
     output: PathBuf,
     chapters: bool,
+    title: Option<String>,
 }
 
 impl MultiExportRequest {
@@ -80,6 +81,7 @@ impl MultiExportRequest {
             segments,
             output,
             chapters: false,
+            title: None,
         })
     }
 
@@ -92,6 +94,17 @@ impl MultiExportRequest {
     /// Returns whether chapters should be generated.
     pub const fn chapters(&self) -> bool {
         self.chapters
+    }
+
+    /// Sets the output title metadata. Empty titles are ignored.
+    pub fn with_title(mut self, title: Option<String>) -> Self {
+        self.title = title.filter(|title| !title.trim().is_empty());
+        self
+    }
+
+    /// Returns the output title metadata, when set.
+    pub fn title(&self) -> Option<&str> {
+        self.title.as_deref()
     }
 
     /// Returns the source file.
@@ -204,6 +217,7 @@ pub struct MultiExport {
     part_durations: Vec<Duration>,
     commands: Vec<Vec<OsString>>,
     stage: Option<Stage>,
+    title: Option<String>,
 }
 
 enum Stage {
@@ -244,6 +258,7 @@ impl MultiExport {
             parts,
             work_dir,
             chapters: request.chapters,
+            title: request.title,
             total_duration,
             completed_duration: Duration::ZERO,
             part_durations,
@@ -488,7 +503,12 @@ impl MultiExport {
             None
         };
 
-        let args = concat_args(&list_path, &self.output, metadata_path.as_deref());
+        let args = concat_args(
+            &list_path,
+            &self.output,
+            metadata_path.as_deref(),
+            self.title.as_deref(),
+        );
         let process = ExportProcess::start_with_args(args.clone(), &self.output)
             .map_err(MultiExportError::Export)?;
         self.commands.push(args);
@@ -513,7 +533,12 @@ impl Drop for MultiExport {
     }
 }
 
-fn concat_args(list: &Path, output: &Path, metadata: Option<&Path>) -> Vec<OsString> {
+fn concat_args(
+    list: &Path,
+    output: &Path,
+    metadata: Option<&Path>,
+    title: Option<&str>,
+) -> Vec<OsString> {
     let mut args: Vec<OsString> = vec![
         "-nostdin".into(),
         "-hide_banner".into(),
@@ -536,6 +561,11 @@ fn concat_args(list: &Path, output: &Path, metadata: Option<&Path>) -> Vec<OsStr
     }
 
     args.extend(["-map".into(), "0".into(), "-c".into(), "copy".into()]);
+
+    if let Some(title) = title {
+        args.push("-metadata".into());
+        args.push(format!("title={title}").into());
+    }
 
     if metadata.is_some() {
         args.push("-map_chapters".into());

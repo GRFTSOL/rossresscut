@@ -148,7 +148,7 @@ fn exports_the_first_enabled_segment_through_the_application() {
         .expect("create a segment from the markers");
 
     application
-        .start_export(output.clone(), true)
+        .start_export(output.clone(), true, None)
         .expect("start export");
 
     wait_for_export(&mut application);
@@ -289,7 +289,7 @@ fn exports_enabled_segments_in_timeline_order() {
     }
 
     application
-        .start_export(output.clone(), true)
+        .start_export(output.clone(), true, None)
         .expect("start multi-segment export");
     wait_for_export(&mut application);
 

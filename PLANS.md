@@ -617,20 +617,41 @@ ADR：`docs/decisions/0011-waveform-in-timeline.md`。
 
 # Phase 7：高级功能
 
-候选：
+## Phase 7A：项目持久化（完成）
 
-- [x] Chapters（已提前实现导出章节；字幕与章节编辑仍未实现）
+ADR：`docs/decisions/0012-project-and-settings-format.md`。
+
+- [x] `.rrc` 项目文件（TOML；`version` / `[source]` / `[timeline]` / `[[timeline.segments]]`）
+- [x] `SegmentId` 与 `next_id` 原样保存，加载后身份不变
+- [x] 自动保存：开关、路径可选（源文件目录 / 指定目录），编辑后 2 秒节流写入
+- [x] 菜单「文件」：导出项目… / 导入项目… / 重新绑定源文件…
+- [x] 源文件缺失：只读加载项目，预览区提示缺失并提供重新绑定
+- [x] `config.toml` 拆分为 `[general]` / `[export]`，兼容旧的扁平格式
+- [x] Metadata：导出设置里的「标题」写入输出 `-metadata title=`
+
+## Phase 7B：自动化（片段菜单）
+
+- [ ] 基于音频音量自动切分
+  - 对话框设置音量阈值（默认 `-60 dB`）与静音时长（默认 1 秒）
+  - 从静音区间的中间分割，只生成有声片段（不生成静音片段、不生成补集）
+  - 复用 `domain::waveform` 的 peak 数据
+- [ ] Scene detection（实现方式待设计）
+- [ ] 批处理
+  - 拖入多个文件时提示「合并」还是「批处理」
+  - 合并：每个输入文件生成片段，按文件名排序
+  - 批处理列表可开关；按钮位于设置按钮左侧；列表位于右侧栏「播放」上方
+
+## Phase 7C：媒体流与智能裁切
+
 - [ ] Subtitle
-- [ ] Stream selection
-- [ ] Scene detection
-- [ ] Batch processing
-- [ ] Metadata
-- [ ] Project persistence
-- [ ] 快捷键配置
-- [ ] 基于音频音量自动切分视频
-- [x] 导出视频时包含章节信息（设置页开关，默认开启）
-- [ ] 智能裁切(裁切点为非关键帧时, 从该帧到关键帧进行基于此段平均码率的重新编码)
+  - 按裁切范围自动调整字幕流
+  - 常规设置：被切点打断的字幕句，保留整句还是舍弃
+- [ ] Stream selection（导出时选择保留哪些流；当前固定 `-map 0`）
+- [ ] 智能裁切（裁切点为非关键帧时，从该帧到关键帧按该段平均码率重新编码）
+  - 导出设置已有开关并持久化，但**尚未生效**
+  - 实现前必须先完成下面的 LosslessCut 调查
 - [ ] Smart cut 技术调查（只调查，不实现；输出独立文档 / ADR）
+- [ ] Chapters 编辑（导出章节已实现，编辑界面未实现）
 
 smart cut 在实现前必须先完成技术调查（LosslessCut 的边界判定、关键帧处理、重编码范围、FFmpeg 行为），形成独立 ADR；调查完成前不实现。
 

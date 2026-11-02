@@ -157,12 +157,13 @@ impl Application {
         }
     }
 
-    fn checkpoint(&mut self) {
+    pub(super) fn checkpoint(&mut self) {
         self.history.push(self.snapshot());
         if self.history.len() > MAX_HISTORY {
             self.history.remove(0);
         }
         self.redo_stack.clear();
+        self.timeline_revision += 1;
     }
 
     fn restore(&mut self, snapshot: TimelineSnapshot) {

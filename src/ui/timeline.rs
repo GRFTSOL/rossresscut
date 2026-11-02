@@ -22,6 +22,9 @@ impl RossresscutApp {
             self.control_buttons(ui, strings);
             self.export_row(ui, strings);
 
+            if let Some(error) = &self.project_error {
+                ui.colored_label(ui.visuals().error_fg_color, error);
+            }
             if let Some(error) = &self.dialog_error {
                 let message = match error {
                     DialogError::Failed(detail) => {

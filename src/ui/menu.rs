@@ -4,6 +4,7 @@ use eframe::egui;
 
 use crate::application::OpenState;
 
+use super::dialogs::{FileDialogPurpose, ProjectDialogMode};
 use super::{FILE_DIALOG_SUPPORTED, FONT_ZOOM_STEP, RossresscutApp, ShortcutAction};
 
 impl RossresscutApp {
@@ -29,7 +30,7 @@ impl RossresscutApp {
                         })
                         .on_hover_text(strings.open.as_str());
                     if open.clicked() {
-                        self.start_file_dialog();
+                        self.start_file_dialog(FileDialogPurpose::OpenMedia);
                         ui.close();
                     }
 
@@ -42,6 +43,42 @@ impl RossresscutApp {
                         self.application.close_media();
                         self.reset_scrub();
                         self.segment_error = None;
+                        ui.close();
+                    }
+
+                    ui.separator();
+                    let has_source = self.application.timeline().source().is_some();
+                    if ui
+                        .add_enabled(
+                            has_source,
+                            egui::Button::new(strings.export_project.as_str()),
+                        )
+                        .on_disabled_hover_text(strings.no_media.as_str())
+                        .on_hover_text(strings.export_project.as_str())
+                        .clicked()
+                    {
+                        self.start_project_dialog(ProjectDialogMode::Save);
+                        ui.close();
+                    }
+                    if ui
+                        .add_enabled(
+                            FILE_DIALOG_SUPPORTED && self.project_dialog.is_none(),
+                            egui::Button::new(strings.import_project.as_str()),
+                        )
+                        .on_hover_text(strings.import_project.as_str())
+                        .clicked()
+                    {
+                        self.start_project_dialog(ProjectDialogMode::Open);
+                        ui.close();
+                    }
+                    if has_source
+                        && matches!(self.application.state(), OpenState::Failed { .. })
+                        && ui
+                            .button(strings.rebind_source.as_str())
+                            .on_hover_text(strings.rebind_source.as_str())
+                            .clicked()
+                    {
+                        self.start_file_dialog(FileDialogPurpose::RebindSource);
                         ui.close();
                     }
 

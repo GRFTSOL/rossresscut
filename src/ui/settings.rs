@@ -199,34 +199,198 @@ pub(super) fn config_directory() -> Option<PathBuf> {
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
 }
 
-/// UI settings persisted to `config.toml`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// UI settings used by the application.
+///
+/// The on-disk layout splits these into `[general]` and `[export]` so
+/// application preferences and export preferences can evolve independently.
+/// The in-memory type stays flat so call sites do not need to know the split.
+#[derive(Clone, Debug, PartialEq)]
 pub(super) struct UiSettings {
     pub(super) follow_system_theme: bool,
     pub(super) theme: ThemeChoice,
     pub(super) language: Language,
-    #[serde(default = "default_true")]
-    pub(super) export_chapters: bool,
-    #[serde(default = "default_true")]
-    pub(super) export_to_source_dir: bool,
-    #[serde(default)]
-    pub(super) export_directory: String,
-    #[serde(default = "default_font_zoom")]
     pub(super) font_zoom: f32,
-    #[serde(default)]
     pub(super) font_path: String,
-    #[serde(default)]
     pub(super) font_index: u32,
-    #[serde(default = "default_shortcuts")]
     pub(super) shortcuts: BTreeMap<String, String>,
+    pub(super) autosave_projects: bool,
+    pub(super) project_to_source_dir: bool,
+    pub(super) project_directory: String,
+    pub(super) export_chapters: bool,
+    pub(super) export_to_source_dir: bool,
+    pub(super) export_directory: String,
+    pub(super) export_title: String,
+    pub(super) smart_cut: bool,
 }
 
-pub(super) fn default_true() -> bool {
-    true
+/// `config.toml` layout.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub(super) struct SettingsFile {
+    general: GeneralSettings,
+    export: ExportSettings,
 }
 
-pub(super) fn default_font_zoom() -> f32 {
-    1.0
+/// Application-level preferences (`[general]`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub(super) struct GeneralSettings {
+    follow_system_theme: bool,
+    theme: ThemeChoice,
+    language: Language,
+    font_zoom: f32,
+    font_path: String,
+    font_index: u32,
+    autosave_projects: bool,
+    project_to_source_dir: bool,
+    project_directory: String,
+    shortcuts: BTreeMap<String, String>,
+}
+
+impl Default for GeneralSettings {
+    fn default() -> Self {
+        let defaults = UiSettings::default();
+        Self {
+            follow_system_theme: defaults.follow_system_theme,
+            theme: defaults.theme,
+            language: defaults.language,
+            font_zoom: defaults.font_zoom,
+            font_path: defaults.font_path,
+            font_index: defaults.font_index,
+            autosave_projects: defaults.autosave_projects,
+            project_to_source_dir: defaults.project_to_source_dir,
+            project_directory: defaults.project_directory,
+            shortcuts: defaults.shortcuts,
+        }
+    }
+}
+
+/// Export preferences (`[export]`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub(super) struct ExportSettings {
+    chapters: bool,
+    to_source_dir: bool,
+    directory: String,
+    title: String,
+    smart_cut: bool,
+}
+
+impl Default for ExportSettings {
+    fn default() -> Self {
+        let defaults = UiSettings::default();
+        Self {
+            chapters: defaults.export_chapters,
+            to_source_dir: defaults.export_to_source_dir,
+            directory: defaults.export_directory,
+            title: defaults.export_title,
+            smart_cut: defaults.smart_cut,
+        }
+    }
+}
+
+impl From<SettingsFile> for UiSettings {
+    fn from(file: SettingsFile) -> Self {
+        let general = file.general;
+        let export = file.export;
+        Self {
+            follow_system_theme: general.follow_system_theme,
+            theme: general.theme,
+            language: general.language,
+            font_zoom: general.font_zoom,
+            font_path: general.font_path,
+            font_index: general.font_index,
+            shortcuts: general.shortcuts,
+            autosave_projects: general.autosave_projects,
+            project_to_source_dir: general.project_to_source_dir,
+            project_directory: general.project_directory,
+            export_chapters: export.chapters,
+            export_to_source_dir: export.to_source_dir,
+            export_directory: export.directory,
+            export_title: export.title,
+            smart_cut: export.smart_cut,
+        }
+    }
+}
+
+impl From<&UiSettings> for SettingsFile {
+    fn from(settings: &UiSettings) -> Self {
+        Self {
+            general: GeneralSettings {
+                follow_system_theme: settings.follow_system_theme,
+                theme: settings.theme,
+                language: settings.language,
+                font_zoom: settings.font_zoom,
+                font_path: settings.font_path.clone(),
+                font_index: settings.font_index,
+                autosave_projects: settings.autosave_projects,
+                project_to_source_dir: settings.project_to_source_dir,
+                project_directory: settings.project_directory.clone(),
+                shortcuts: settings.shortcuts.clone(),
+            },
+            export: ExportSettings {
+                chapters: settings.export_chapters,
+                to_source_dir: settings.export_to_source_dir,
+                directory: settings.export_directory.clone(),
+                title: settings.export_title.clone(),
+                smart_cut: settings.smart_cut,
+            },
+        }
+    }
+}
+
+/// Flat layout used by `config.toml` before the `[general]` / `[export]` split.
+#[derive(Deserialize)]
+#[serde(default)]
+struct LegacySettings {
+    follow_system_theme: bool,
+    theme: ThemeChoice,
+    language: Language,
+    export_chapters: bool,
+    export_to_source_dir: bool,
+    export_directory: String,
+    font_zoom: f32,
+    font_path: String,
+    font_index: u32,
+    shortcuts: BTreeMap<String, String>,
+}
+
+impl Default for LegacySettings {
+    fn default() -> Self {
+        Self {
+            follow_system_theme: true,
+            theme: ThemeChoice::Dark,
+            language: Language::English,
+            export_chapters: true,
+            export_to_source_dir: true,
+            export_directory: String::new(),
+            font_zoom: 1.0,
+            font_path: String::new(),
+            font_index: 0,
+            shortcuts: default_shortcuts(),
+        }
+    }
+}
+
+impl From<LegacySettings> for UiSettings {
+    fn from(legacy: LegacySettings) -> Self {
+        Self {
+            follow_system_theme: legacy.follow_system_theme,
+            theme: legacy.theme,
+            language: legacy.language,
+            font_zoom: legacy.font_zoom,
+            font_path: legacy.font_path,
+            font_index: legacy.font_index,
+            shortcuts: legacy.shortcuts,
+            autosave_projects: true,
+            project_to_source_dir: true,
+            project_directory: String::new(),
+            export_chapters: legacy.export_chapters,
+            export_to_source_dir: legacy.export_to_source_dir,
+            export_directory: legacy.export_directory,
+            export_title: String::new(),
+            smart_cut: false,
+        }
+    }
 }
 
 impl UiSettings {
@@ -245,13 +409,18 @@ impl Default for UiSettings {
             follow_system_theme: true,
             theme: ThemeChoice::Dark,
             language: Language::English,
-            export_chapters: true,
-            export_to_source_dir: true,
-            export_directory: String::new(),
             font_zoom: 1.0,
             font_path: String::new(),
             font_index: 0,
             shortcuts: default_shortcuts(),
+            autosave_projects: true,
+            project_to_source_dir: true,
+            project_directory: String::new(),
+            export_chapters: true,
+            export_to_source_dir: true,
+            export_directory: String::new(),
+            export_title: String::new(),
+            smart_cut: false,
         }
     }
 }
@@ -272,19 +441,30 @@ pub(super) fn load_settings() -> UiSettings {
         return UiSettings::default();
     };
     match fs::read_to_string(&path) {
-        Ok(text) => match toml::from_str(&text) {
-            Ok(settings) => settings,
-            Err(error) => {
-                log::warn!("could not parse {}: {error}", path.display());
-                UiSettings::default()
-            }
-        },
+        Ok(text) => parse_settings(&text).unwrap_or_else(|| {
+            log::warn!("could not parse {}; using defaults", path.display());
+            UiSettings::default()
+        }),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => UiSettings::default(),
         Err(error) => {
             log::warn!("could not read {}: {error}", path.display());
             UiSettings::default()
         }
     }
+}
+
+/// Parses `config.toml`, accepting the flat layout written by older builds.
+pub(super) fn parse_settings(text: &str) -> Option<UiSettings> {
+    let value: toml::Value = toml::from_str(text).ok()?;
+    let table = value.as_table()?;
+    if table.contains_key("general") || table.contains_key("export") {
+        return toml::from_str::<SettingsFile>(text)
+            .ok()
+            .map(UiSettings::from);
+    }
+    toml::from_str::<LegacySettings>(text)
+        .ok()
+        .map(UiSettings::from)
 }
 
 pub(super) fn save_settings(settings: &UiSettings) {
@@ -298,7 +478,8 @@ pub(super) fn save_settings(settings: &UiSettings) {
         log::warn!("could not create {}: {error}", parent.display());
         return;
     }
-    match toml::to_string_pretty(settings) {
+    let file = SettingsFile::from(settings);
+    match toml::to_string_pretty(&file) {
         Ok(text) => {
             if let Err(error) = fs::write(&path, text) {
                 log::warn!("could not write {}: {error}", path.display());

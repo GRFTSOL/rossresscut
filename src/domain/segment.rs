@@ -197,6 +197,43 @@ impl Timeline {
         self.next_id = 1;
     }
 
+    /// Rebinds the timeline to `source` while keeping the segments.
+    ///
+    /// Used when a saved project points at a media file that was moved or
+    /// renamed and the user picks a replacement.
+    pub fn rebind(&mut self, source: PathBuf) {
+        self.source = Some(source);
+    }
+
+    /// Returns the next identifier that [`Timeline::push`] would hand out.
+    pub fn next_id(&self) -> u64 {
+        self.next_id
+    }
+
+    /// Rebuilds a timeline from saved parts, rejecting inconsistent input.
+    ///
+    /// Returns `None` when the source is empty, when an identifier is not below
+    /// `next_id`, or when two segments share an identifier. Callers must build
+    /// each [`Segment`] through [`Segment::new`] so `start < end` still holds.
+    pub fn restore(source: PathBuf, segments: Vec<Segment>, next_id: u64) -> Option<Self> {
+        if source.as_os_str().is_empty() || next_id == 0 {
+            return None;
+        }
+
+        let mut seen = std::collections::BTreeSet::new();
+        for segment in &segments {
+            if segment.id.get() >= next_id || !seen.insert(segment.id) {
+                return None;
+            }
+        }
+
+        Some(Self {
+            source: Some(source),
+            segments,
+            next_id,
+        })
+    }
+
     /// Removes all segments and the source binding.
     pub fn clear(&mut self) {
         self.source = None;

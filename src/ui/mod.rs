@@ -37,7 +37,7 @@ use crate::domain::segment::SegmentId;
 use crate::domain::time::Timestamp;
 use crate::media::preview::HardwareAcceleration;
 
-use dialogs::DialogError;
+use dialogs::{DialogError, DirectoryTarget, FileDialogPurpose, ProjectDialogMode};
 use fonts::{FontFamilyChoice, scan_fonts};
 use i18n::Strings;
 use preview::RenderDiagnostics;
@@ -88,9 +88,13 @@ pub struct RossresscutApp {
     scrub_was_playing: bool,
     last_scrub_target: Option<i64>,
     last_scrub_start: Option<Instant>,
-    file_dialog: Option<Receiver<Option<PathBuf>>>,
+    file_dialog: Option<(FileDialogPurpose, Receiver<Option<PathBuf>>)>,
     dialog_error: Option<DialogError>,
-    directory_dialog: Option<Receiver<Option<PathBuf>>>,
+    directory_dialog: Option<(DirectoryTarget, Receiver<Option<PathBuf>>)>,
+    project_dialog: Option<(ProjectDialogMode, Receiver<Option<PathBuf>>)>,
+    project_error: Option<String>,
+    last_autosave_revision: u64,
+    last_autosave_at: Option<Instant>,
     export_error: Option<String>,
     export_panel_open: bool,
     ffmpeg_command_open: bool,
@@ -215,12 +219,14 @@ impl eframe::App for RossresscutApp {
         self.apply_theme(ui.ctx());
         self.poll_file_dialog();
         self.poll_directory_dialog();
+        self.poll_project_dialog();
         self.sync_segment_inputs();
         self.handle_shortcuts(ui.ctx());
 
         if self.application.update() {
             ui.ctx().request_repaint();
         }
+        self.autosave_project();
 
         // A diagnostic run has no input injection, so it seeks and starts
         // playback once the media is ready. Only enabled by an environment
@@ -372,26 +378,54 @@ mod tests {
 
     #[test]
     fn persists_ui_settings() {
+        use super::settings::SettingsFile;
+
         let mut settings = UiSettings {
             follow_system_theme: false,
             theme: ThemeChoice::Light,
-            language: Language::English,
-            export_chapters: true,
-            export_to_source_dir: true,
-            export_directory: String::new(),
-            font_zoom: 1.0,
-            font_path: String::new(),
-            font_index: 0,
-            shortcuts: default_shortcuts(),
+            ..UiSettings::default()
         };
 
         for language in Language::ALL {
             settings.language = language;
-            let text = toml::to_string(&settings).expect("serialize settings");
-            let parsed: UiSettings = toml::from_str(&text).expect("parse settings");
+            let file = SettingsFile::from(&settings);
+            let text = toml::to_string(&file).expect("serialize settings");
 
+            assert!(text.contains("[general]"), "{text}");
+            assert!(text.contains("[export]"), "{text}");
+
+            let parsed =
+                UiSettings::from(toml::from_str::<SettingsFile>(&text).expect("parse settings"));
             assert_eq!(parsed, settings);
         }
+    }
+
+    #[test]
+    fn migrates_the_flat_settings_layout() {
+        use super::settings::parse_settings;
+
+        let legacy = "follow_system_theme = false\n\
+                      theme = \"light\"\n\
+                      language = \"zh_hans\"\n\
+                      export_chapters = false\n\
+                      export_to_source_dir = false\n\
+                      export_directory = \"/tmp/out\"\n\
+                      font_zoom = 1.2\n\
+                      font_path = \"/fonts/test.ttf\"\n\
+                      font_index = 2\n";
+
+        let settings = parse_settings(legacy).expect("legacy settings");
+
+        assert!(!settings.follow_system_theme);
+        assert_eq!(settings.theme, ThemeChoice::Light);
+        assert_eq!(settings.language, Language::SimplifiedChinese);
+        assert!(!settings.export_chapters);
+        assert_eq!(settings.export_directory, "/tmp/out");
+        assert_eq!(settings.font_zoom, 1.2);
+        assert_eq!(settings.font_index, 2);
+        // New fields fall back to their defaults.
+        assert!(settings.autosave_projects);
+        assert!(settings.export_title.is_empty());
     }
 
     #[test]

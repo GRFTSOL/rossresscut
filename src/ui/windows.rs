@@ -6,8 +6,9 @@ use eframe::egui;
 
 use crate::application::ExportCommandError;
 
+use super::dialogs::DirectoryTarget;
 use super::i18n::{Language, fill};
-use super::settings::{detect_system_theme, theme_label};
+use super::settings::{detect_system_theme, save_settings, theme_label};
 use super::{
     FONT_ZOOM_STEP, MAX_FONT_ZOOM, MIN_FONT_ZOOM, RossresscutApp, ShortcutAction, Strings,
     ThemeChoice,
@@ -23,7 +24,7 @@ impl RossresscutApp {
         ui.add_enabled_ui(!self.settings.export_to_source_dir, |ui| {
             ui.horizontal(|ui| {
                 if ui.button(strings.choose_directory.as_str()).clicked() {
-                    self.start_directory_dialog();
+                    self.start_directory_dialog(DirectoryTarget::Export);
                 }
                 ui.add(
                     egui::TextEdit::singleline(&mut self.settings.export_directory)
@@ -97,10 +98,11 @@ impl RossresscutApp {
                         .clicked()
                         && let Some(output) = output.clone()
                     {
-                        match self
-                            .application
-                            .start_export(output, self.settings.export_chapters)
-                        {
+                        match self.application.start_export(
+                            output,
+                            self.settings.export_chapters,
+                            Some(self.settings.export_title.clone()),
+                        ) {
                             Ok(()) => {
                                 self.export_error = None;
                                 self.export_panel_open = false;
@@ -243,6 +245,37 @@ impl RossresscutApp {
                             }
                         });
                         self.font_family_ui(ui, strings);
+
+                        ui.separator();
+                        ui.checkbox(
+                            &mut self.settings.autosave_projects,
+                            strings.autosave_projects.as_str(),
+                        )
+                        .on_hover_text(strings.autosave_projects_hint.as_str());
+                        ui.add_enabled_ui(self.settings.autosave_projects, |ui| {
+                            ui.checkbox(
+                                &mut self.settings.project_to_source_dir,
+                                strings.project_to_source_dir.as_str(),
+                            )
+                            .on_hover_text(strings.project_to_source_dir.as_str());
+                            ui.add_enabled_ui(!self.settings.project_to_source_dir, |ui| {
+                                ui.horizontal(|ui| {
+                                    if ui
+                                        .button(strings.choose_project_directory.as_str())
+                                        .clicked()
+                                    {
+                                        self.start_directory_dialog(DirectoryTarget::Project);
+                                    }
+                                    ui.add(
+                                        egui::TextEdit::singleline(
+                                            &mut self.settings.project_directory,
+                                        )
+                                        .desired_width(360.0)
+                                        .hint_text(strings.project_directory.as_str()),
+                                    );
+                                });
+                            });
+                        });
                     });
 
                 egui::CollapsingHeader::new(strings.export.as_str())
@@ -254,6 +287,18 @@ impl RossresscutApp {
                         )
                         .on_hover_text(strings.export_chapters_hint.as_str());
                         self.export_directory_ui(ui, strings);
+
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            ui.label(strings.export_title.as_str());
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.settings.export_title)
+                                    .desired_width(320.0),
+                            )
+                            .on_hover_text(strings.export_title_hint.as_str());
+                        });
+                        ui.checkbox(&mut self.settings.smart_cut, strings.smart_cut.as_str())
+                            .on_hover_text(strings.smart_cut_hint.as_str());
                     });
 
                 egui::CollapsingHeader::new(strings.shortcuts.as_str())
@@ -313,6 +358,11 @@ impl RossresscutApp {
             });
 
         self.settings_open = open;
+        // `eframe` only calls `App::save` when persistence is configured, so
+        // settings are written when the window is closed instead.
+        if !open {
+            save_settings(&self.settings);
+        }
     }
 
     pub(super) fn about_window(&mut self, context: &egui::Context) {

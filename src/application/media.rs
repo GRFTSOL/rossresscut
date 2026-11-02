@@ -5,6 +5,7 @@ use std::sync::mpsc::{self, TryRecvError};
 use std::thread;
 
 use crate::domain::media::MediaFile;
+use crate::domain::segment::Timeline;
 use crate::error::AppError;
 use crate::media::ffprobe;
 
@@ -12,14 +13,23 @@ use super::playback::preview_video_stream;
 use super::{Application, KeyframeJob, Markers, OpenState, ProbeJob};
 
 impl Application {
-    /// Starts a background probe for `path`.
+    /// Starts a background probe for `path` and clears the timeline.
     ///
     /// This method only spawns a worker; it never waits for FFprobe. Failures
     /// that prevent the worker from starting are exposed through
     /// [`OpenState::Failed`].
     pub fn open_media(&mut self, path: PathBuf) {
-        self.playback.reset();
+        self.pending_project = None;
         self.reset_editing();
+        self.start_probe(path);
+    }
+
+    /// Starts a background probe for `path` and leaves the timeline alone.
+    ///
+    /// [`Self::poll_probe`] either restores the pending project segments or
+    /// resets the timeline to the newly probed source.
+    pub(super) fn start_probe(&mut self, path: PathBuf) {
+        self.playback.reset();
         self.keyframes = None;
         self.keyframe_job = None;
         self.reset_waveform();
@@ -75,6 +85,7 @@ impl Application {
         self.cancel_export();
         self.playback.reset();
         self.reset_editing();
+        self.pending_project = None;
         self.media = None;
         self.probe = None;
         self.keyframes = None;
@@ -106,8 +117,20 @@ impl Application {
                     media.chapters.len()
                 );
                 self.playback.load(&media);
+                let pending = self.pending_project.take();
                 self.reset_editing();
-                self.timeline.reset(media.path.clone());
+                match pending {
+                    Some(project) => {
+                        self.timeline = Timeline::restore(
+                            media.path.clone(),
+                            project.segments,
+                            project.next_id,
+                        )
+                        .unwrap_or_else(|| Timeline::new(media.path.clone()));
+                        self.timeline_revision += 1;
+                    }
+                    None => self.timeline.reset(media.path.clone()),
+                }
                 self.start_keyframes(&media);
                 self.start_waveform(&media);
                 self.media = Some(media);

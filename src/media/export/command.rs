@@ -20,6 +20,7 @@ pub struct ExportRequest {
     end: Timestamp,
     output: PathBuf,
     chapters: Vec<ChapterSpec>,
+    title: Option<String>,
 }
 
 impl ExportRequest {
@@ -44,6 +45,7 @@ impl ExportRequest {
             end,
             output,
             chapters: Vec::new(),
+            title: None,
         })
     }
 
@@ -51,6 +53,17 @@ impl ExportRequest {
     pub fn with_chapters(mut self, chapters: Vec<ChapterSpec>) -> Self {
         self.chapters = chapters;
         self
+    }
+
+    /// Sets the output title metadata. Empty titles are ignored.
+    pub fn with_title(mut self, title: Option<String>) -> Self {
+        self.title = title.filter(|title| !title.trim().is_empty());
+        self
+    }
+
+    /// Returns the output title metadata, when set.
+    pub fn title(&self) -> Option<&str> {
+        self.title.as_deref()
     }
 
     /// Returns the chapters to write.
@@ -128,6 +141,11 @@ pub fn build_args(request: &ExportRequest, metadata: Option<&Path>) -> Vec<OsStr
         args.push("1".into());
     }
 
+    if let Some(title) = &request.title {
+        args.push("-metadata".into());
+        args.push(format!("title={title}").into());
+    }
+
     if cuts_start {
         // Rebase the output to zero so the saved segment starts at 0.
         args.push("-avoid_negative_ts".into());
@@ -196,6 +214,21 @@ mod tests {
         assert!(duration > input);
         assert_eq!(values[seek + 1], "5.000000");
         assert_eq!(values[duration + 1], "3.500000");
+    }
+
+    #[test]
+    fn writes_the_requested_title_and_ignores_blank_ones() {
+        let titled = request(0, 1_000_000).with_title(Some("Episode 1".to_owned()));
+        let values = args(&titled);
+        assert_eq!(
+            values[position(&values, "-metadata") + 1],
+            "title=Episode 1"
+        );
+
+        let blank = request(0, 1_000_000).with_title(Some("   ".to_owned()));
+        assert!(blank.title().is_none());
+        let values = args(&blank);
+        assert!(!values.iter().any(|value| value == "-metadata"));
     }
 
     #[test]

@@ -6,6 +6,7 @@ use eframe::egui;
 
 use crate::application::OpenState;
 
+use super::dialogs::FileDialogPurpose;
 use super::i18n::fill;
 use super::panels::{centered_message, file_title};
 use super::{FILE_DIALOG_SUPPORTED, RossresscutApp};
@@ -183,7 +184,7 @@ impl RossresscutApp {
                     let response = self.preview_open_response(ui);
                     centered_message(ui, strings.open_media_prompt.as_str());
                     if FILE_DIALOG_SUPPORTED && response.clicked() {
-                        self.start_file_dialog();
+                        self.start_file_dialog(FileDialogPurpose::OpenMedia);
                     }
                 }
                 OpenState::Probing { path } => {
@@ -193,13 +194,16 @@ impl RossresscutApp {
                 OpenState::Failed { path, message } => {
                     let title = file_title(path);
                     let response = self.preview_open_response(ui);
-                    let mut text =
-                        fill(&strings.could_not_open, &[title.as_str(), message.as_str()]);
+                    let mut text = if self.application.missing_project_source().is_some() {
+                        fill(&strings.project_missing_source, &[title.as_str()])
+                    } else {
+                        fill(&strings.could_not_open, &[title.as_str(), message.as_str()])
+                    };
                     text.push_str("\n\n");
                     text.push_str(&strings.open_media_prompt);
                     centered_message(ui, text);
                     if FILE_DIALOG_SUPPORTED && response.clicked() {
-                        self.start_file_dialog();
+                        self.start_file_dialog(FileDialogPurpose::OpenMedia);
                     }
                 }
                 OpenState::Ready => {
