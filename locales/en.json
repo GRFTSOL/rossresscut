@@ -148,7 +148,7 @@
   "silence_replaces": "Replaces the current segments; undo restores them.",
   "silence_threshold": "Silence threshold",
   "smart_cut": "Smart cut",
-  "smart_cut_hint": "Re-encode the non-keyframe head of each segment (not implemented yet).",
+  "smart_cut_hint": "Re-encode the part before the next keyframe so each segment starts exactly. This is not lossless for that head; it fails instead of falling back when it cannot run.",
   "sort_segments": "Sort by start time",
   "split_segment": "Split segment",
   "streams": "Streams",

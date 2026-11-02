@@ -254,6 +254,19 @@ impl FrameRate {
     pub const fn denominator(self) -> u32 {
         self.denominator
     }
+
+    /// Returns the nominal duration of one frame.
+    ///
+    /// The result is rounded to the nearest microsecond. Returns `None` when
+    /// the rate is unusable or the duration overflows.
+    pub fn frame_duration(self) -> Option<Duration> {
+        let numerator = i128::from(self.denominator).checked_mul(i128::from(MICROS_PER_SECOND))?;
+        let micros = div_round_half_away_from_zero(numerator, i128::from(self.numerator))?;
+        if micros <= 0 {
+            return None;
+        }
+        u64::try_from(micros).ok().map(Duration::from_micros)
+    }
 }
 
 impl fmt::Display for FrameRate {
@@ -395,6 +408,18 @@ mod tests {
         assert_eq!(
             TimeBase::MICROSECONDS.micros_to_ticks(1_234_567),
             Some(1_234_567)
+        );
+    }
+
+    #[test]
+    fn computes_one_frame_duration() {
+        assert_eq!(
+            FrameRate::parse("30/1").and_then(FrameRate::frame_duration),
+            Some(Duration::from_micros(33_333))
+        );
+        assert_eq!(
+            FrameRate::parse("30000/1001").and_then(FrameRate::frame_duration),
+            Some(Duration::from_micros(33_367))
         );
     }
 

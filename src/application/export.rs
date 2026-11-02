@@ -5,13 +5,16 @@ use std::io;
 use std::path::PathBuf;
 use std::process::ExitStatus;
 
-use crate::domain::time::{Duration, Timestamp};
+use crate::domain::media::{MediaFile, VideoStream};
+use crate::domain::time::{Duration, FrameRate, Timestamp};
 pub use crate::media::export::ExportStage;
 
 use crate::media::export::{
     ExportError, ExportEvent, ExportProcess, MultiExport, MultiExportError, MultiExportEvent,
-    render_command,
+    SmartCutContext, StreamSelection, VideoEncodeSpec, encoder_for, render_command,
 };
+
+use super::Application;
 
 /// State of the current export, if any.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -85,6 +88,8 @@ pub enum ExportCommandError {
     Start(ExportError),
     /// A multi-segment export could not be started.
     StartMulti(MultiExportError),
+    /// Smart cut cannot run for the current media.
+    SmartCut(String),
 }
 
 impl fmt::Display for ExportCommandError {
@@ -98,6 +103,7 @@ impl fmt::Display for ExportCommandError {
             }
             Self::Start(error) => write!(formatter, "{error}"),
             Self::StartMulti(error) => write!(formatter, "{error}"),
+            Self::SmartCut(message) => write!(formatter, "smart cut is unavailable: {message}"),
         }
     }
 }
@@ -218,6 +224,114 @@ impl ExportJob {
                 .collect(),
         }
     }
+}
+
+impl Application {
+    /// Builds the smart-cut settings for the current media.
+    ///
+    /// Smart cut only works on the preview video stream, because that is the
+    /// stream the keyframe index describes.
+    pub(super) fn smart_cut_context(
+        &self,
+        streams: Option<&StreamSelection>,
+    ) -> Result<SmartCutContext, ExportCommandError> {
+        let media = self.media.as_ref().ok_or(ExportCommandError::NoMedia)?;
+        let keyframes = self
+            .keyframes
+            .clone()
+            .ok_or_else(|| smart_cut_error("the keyframe index is not ready yet"))?;
+        let video = smart_cut_video(media, streams)?;
+
+        let codec = video
+            .info
+            .codec_name
+            .as_deref()
+            .ok_or_else(|| smart_cut_error("the video codec is unknown"))?;
+        let encoder = encoder_for(codec)
+            .ok_or_else(|| smart_cut_error(format!("no software encoder for codec '{codec}'")))?;
+
+        let frame_duration = video
+            .average_frame_rate
+            .or(video.frame_rate)
+            .and_then(FrameRate::frame_duration)
+            .ok_or_else(|| smart_cut_error("the video frame rate is unknown"))?;
+
+        let bit_rate = smart_cut_bit_rate(media, video)?;
+        // Same 20% headroom as the reference implementation, to absorb
+        // encoder differences and avoid visible quality loss.
+        let bit_rate = bit_rate
+            .checked_add(bit_rate / 5)
+            .ok_or_else(|| smart_cut_error("the video bit rate overflows"))?;
+
+        let timescale = video
+            .info
+            .time_base
+            .filter(|time_base| time_base.numerator() == 1)
+            .map(|time_base| u64::from(time_base.denominator()));
+
+        Ok(SmartCutContext {
+            encode: VideoEncodeSpec {
+                encoder: encoder.to_owned(),
+                bit_rate,
+                b_frames: video.has_b_frames,
+                timescale,
+            },
+            frame_duration,
+            keyframes,
+        })
+    }
+}
+
+/// Returns the video stream smart cut may re-encode.
+///
+/// It must be the preview stream: the keyframe index describes that one.
+fn smart_cut_video<'a>(
+    media: &'a MediaFile,
+    streams: Option<&StreamSelection>,
+) -> Result<&'a VideoStream, ExportCommandError> {
+    let preview = super::playback::preview_video_stream(media)
+        .ok_or_else(|| smart_cut_error("the file has no video stream"))?;
+
+    let selected = match streams {
+        Some(selection) => {
+            if selection.video.len() != 1 {
+                return Err(smart_cut_error(
+                    "smart cut needs exactly one selected video stream",
+                ));
+            }
+            selection.video[0]
+        }
+        None => preview.info.index,
+    };
+    if selected != preview.info.index {
+        return Err(smart_cut_error(
+            "smart cut can only use the preview video stream",
+        ));
+    }
+    Ok(preview)
+}
+
+/// Returns the video bit rate, falling back to the container size and duration.
+fn smart_cut_bit_rate(media: &MediaFile, video: &VideoStream) -> Result<u64, ExportCommandError> {
+    video
+        .info
+        .bit_rate
+        .or_else(|| {
+            media.format.size.and_then(|size| {
+                let micros = media.duration?.micros();
+                if micros == 0 {
+                    return None;
+                }
+                size.checked_mul(8)?
+                    .checked_mul(1_000_000)?
+                    .checked_div(micros)
+            })
+        })
+        .ok_or_else(|| smart_cut_error("the video bit rate cannot be determined"))
+}
+
+fn smart_cut_error(message: impl Into<String>) -> ExportCommandError {
+    ExportCommandError::SmartCut(message.into())
 }
 
 fn single_error(stderr: String, ended: bool, exit: io::Result<ExitStatus>) -> Option<String> {

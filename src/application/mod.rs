@@ -175,6 +175,8 @@ pub struct ExportOptions {
     pub subtitle_keep_partial: bool,
     /// Restricts the output to these streams; `None` keeps every stream.
     pub streams: Option<StreamSelection>,
+    /// Whether the encoded head of each segment should be re-created.
+    pub smart_cut: bool,
 }
 
 /// Returns whether `codec_name` is a text subtitle format FFmpeg can convert.
@@ -462,6 +464,11 @@ impl Application {
             .map(Path::to_path_buf)
             .ok_or(ExportCommandError::NoMedia)?;
         let subtitle = self.prepare_subtitles(options.subtitle_keep_partial);
+        let smart_cut = if options.smart_cut {
+            Some(self.smart_cut_context(options.streams.as_ref())?)
+        } else {
+            None
+        };
 
         let segments: Vec<_> = self
             .timeline
@@ -474,7 +481,7 @@ impl Application {
             return Err(ExportCommandError::NoSegment);
         }
 
-        if segments.len() == 1 {
+        if segments.len() == 1 && smart_cut.is_none() {
             let segment = segments[0];
             let request =
                 ExportRequest::new(source, segment.start(), segment.end(), output.clone())
@@ -516,7 +523,8 @@ impl Application {
             .with_chapters(options.chapters)
             .with_title(options.title)
             .with_subtitle(subtitle)
-            .with_streams(options.streams);
+            .with_streams(options.streams)
+            .with_smart_cut(smart_cut);
         let duration = request.total_duration();
         let process = MultiExport::start(request).map_err(ExportCommandError::StartMulti)?;
 

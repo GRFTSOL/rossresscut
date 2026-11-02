@@ -148,7 +148,7 @@
   "silence_replaces": "将替换现有片段；可用撤销恢复。",
   "silence_threshold": "静音阈值",
   "smart_cut": "智能裁切",
-  "smart_cut_hint": "重新编码每个片段中非关键帧的头部（尚未实现）。",
+  "smart_cut_hint": "重新编码下一个关键帧之前的部分，使每个片段从精确位置开始。这段头部不是无损的；无法执行时会直接失败，不会静默回退。",
   "sort_segments": "按开始时间排序",
   "split_segment": "分割片段",
   "streams": "流",

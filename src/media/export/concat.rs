@@ -16,11 +16,13 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::domain::media::KeyframeIndex;
 use crate::domain::time::{Duration, Timestamp};
 use crate::media::ffprobe;
 
 use super::chapters::{ChapterSpec, render_ffmetadata};
-use super::command::{StreamSelection, SubtitlePlan};
+use super::command::{StreamSelection, SubtitlePlan, VideoEncodeSpec};
+use super::smart_cut::{SmartCutPlan, SmartCutUnavailable};
 use super::{ExportError, ExportEvent, ExportProcess, ExportRequest};
 
 /// One source-time range in a multi-segment export.
@@ -52,6 +54,20 @@ impl ExportSegment {
     }
 }
 
+/// Everything a multi-segment export needs to smart cut its parts.
+///
+/// The caller has already validated that exactly one video stream is being
+/// exported and that a software encoder exists for its codec.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SmartCutContext {
+    /// Re-encode settings for every encoded head.
+    pub encode: VideoEncodeSpec,
+    /// Nominal duration of one frame.
+    pub frame_duration: Duration,
+    /// Keyframes of the exported video stream.
+    pub keyframes: KeyframeIndex,
+}
+
 /// A validated multi-segment export request.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MultiExportRequest {
@@ -62,6 +78,7 @@ pub struct MultiExportRequest {
     title: Option<String>,
     subtitle: Option<SubtitlePlan>,
     streams: Option<StreamSelection>,
+    smart_cut: Option<SmartCutContext>,
 }
 
 impl MultiExportRequest {
@@ -87,6 +104,7 @@ impl MultiExportRequest {
             title: None,
             subtitle: None,
             streams: None,
+            smart_cut: None,
         })
     }
 
@@ -124,6 +142,12 @@ impl MultiExportRequest {
         self
     }
 
+    /// Enables smart cutting for every segment.
+    pub fn with_smart_cut(mut self, smart_cut: Option<SmartCutContext>) -> Self {
+        self.smart_cut = smart_cut;
+        self
+    }
+
     /// Returns the source file.
     pub fn source(&self) -> &Path {
         &self.source
@@ -145,6 +169,46 @@ impl MultiExportRequest {
             total.checked_add(segment.duration()).unwrap_or(total)
         })
     }
+}
+
+/// One temporary part produced by a multi-segment export.
+#[derive(Clone, Debug)]
+struct PartSpec {
+    /// Index of the segment this part belongs to.
+    segment: usize,
+    start: Timestamp,
+    end: Timestamp,
+    encode: bool,
+    path: PathBuf,
+}
+
+impl PartSpec {
+    fn duration(&self) -> Duration {
+        self.end.duration_since(self.start).unwrap_or_default()
+    }
+}
+
+/// Splits every segment according to the smart-cut settings.
+fn plan_segments(
+    segments: &[ExportSegment],
+    context: Option<&SmartCutContext>,
+) -> Result<Vec<SmartCutPlan>, MultiExportError> {
+    segments
+        .iter()
+        .enumerate()
+        .map(|(index, segment)| {
+            let Some(context) = context else {
+                return Ok(SmartCutPlan::copy_only(segment.start(), segment.end()));
+            };
+            SmartCutPlan::plan(
+                segment.start(),
+                segment.end(),
+                &context.keyframes,
+                Some(context.frame_duration),
+            )
+            .map_err(|reason| MultiExportError::SmartCut { index, reason })
+        })
+        .collect()
 }
 
 /// Stage reported while a multi-segment export runs.
@@ -192,6 +256,13 @@ pub enum MultiExportError {
         /// Zero-based segment index.
         index: usize,
     },
+    /// A segment cannot be smart cut.
+    SmartCut {
+        /// Zero-based segment index.
+        index: usize,
+        /// Why the segment cannot be smart cut.
+        reason: SmartCutUnavailable,
+    },
     /// An FFmpeg process could not be started.
     Export(ExportError),
 }
@@ -206,6 +277,9 @@ impl fmt::Display for MultiExportError {
             Self::InvalidPart { index } => {
                 write!(formatter, "segment {index} has an invalid range")
             }
+            Self::SmartCut { index, reason } => {
+                write!(formatter, "segment {index} cannot be smart cut: {reason}")
+            }
             Self::Export(error) => write!(formatter, "{error}"),
         }
     }
@@ -216,7 +290,7 @@ impl std::error::Error for MultiExportError {
         match self {
             Self::WorkDir(error) | Self::TempFile(error) => Some(error),
             Self::Export(error) => Some(error),
-            Self::InvalidPart { .. } => None,
+            Self::InvalidPart { .. } | Self::SmartCut { .. } => None,
         }
     }
 }
@@ -226,7 +300,7 @@ pub struct MultiExport {
     source: PathBuf,
     segments: Vec<ExportSegment>,
     output: PathBuf,
-    parts: Vec<PathBuf>,
+    parts: Vec<PartSpec>,
     work_dir: TempDir,
     chapters: bool,
     total_duration: Duration,
@@ -237,6 +311,7 @@ pub struct MultiExport {
     title: Option<String>,
     subtitle: Option<SubtitlePlan>,
     streams: Option<StreamSelection>,
+    smart_cut: Option<SmartCutContext>,
 }
 
 enum Stage {
@@ -263,11 +338,25 @@ impl MultiExport {
             .extension()
             .and_then(|extension| extension.to_str())
             .unwrap_or("mkv");
-        let parts: Vec<PathBuf> = (0..request.segments.len())
-            .map(|index| work_dir.path().join(format!("part-{index:04}.{extension}")))
-            .collect();
-        let total_duration = request.total_duration();
-        let part_durations = vec![Duration::ZERO; parts.len()];
+        let plans = plan_segments(&request.segments, request.smart_cut.as_ref())?;
+        let total_duration = plans.iter().fold(Duration::ZERO, |total, plan| {
+            total.checked_add(plan.total_duration()).unwrap_or(total)
+        });
+        let mut parts = Vec::new();
+        for (segment, plan) in plans.iter().enumerate() {
+            for (piece, part) in plan.pieces().iter().enumerate() {
+                parts.push(PartSpec {
+                    segment,
+                    start: part.start(),
+                    end: part.end(),
+                    encode: part.encode(),
+                    path: work_dir
+                        .path()
+                        .join(format!("part-{segment:04}-{piece}.{extension}")),
+                });
+            }
+        }
+        let part_durations = vec![Duration::ZERO; request.segments.len()];
         let command_capacity = parts.len() + 1;
 
         let mut export = Self {
@@ -280,6 +369,7 @@ impl MultiExport {
             title: request.title,
             subtitle: request.subtitle,
             streams: request.streams,
+            smart_cut: request.smart_cut,
             total_duration,
             completed_duration: Duration::ZERO,
             part_durations,
@@ -309,7 +399,7 @@ impl MultiExport {
                         self.stage = Some(Stage::Cutting { index, process });
                         return Some(MultiExportEvent::Progress {
                             stage: ExportStage::Cutting {
-                                index,
+                                index: self.parts[index].segment,
                                 total: self.segments.len(),
                             },
                             out_time: Timestamp::from_micros(
@@ -328,10 +418,10 @@ impl MultiExport {
                         }
                         self.completed_duration = self
                             .completed_duration
-                            .checked_add(self.segments[index].duration())
+                            .checked_add(self.parts[index].duration())
                             .unwrap_or(self.completed_duration);
 
-                        if index + 1 < self.segments.len() {
+                        if index + 1 < self.parts.len() {
                             if let Err(error) = self.start_cut(index + 1) {
                                 self.stage = Some(Stage::Failed);
                                 return Some(MultiExportEvent::Finished {
@@ -428,19 +518,31 @@ impl MultiExport {
     }
 
     fn start_cut(&mut self, index: usize) -> Result<(), MultiExportError> {
-        let segment = self.segments[index];
-        let request = ExportRequest::new(
-            &self.source,
-            segment.start(),
-            segment.end(),
-            &self.parts[index],
-        )
-        .ok_or(MultiExportError::InvalidPart { index })?
-        .with_streams(self.streams.clone());
+        let part = &self.parts[index];
+        let (start, end, path, encode, segment) = (
+            part.start,
+            part.end,
+            part.path.clone(),
+            part.encode,
+            part.segment,
+        );
+        let mut request = ExportRequest::new(&self.source, start, end, &path)
+            .ok_or(MultiExportError::InvalidPart { index: segment })?
+            .with_streams(self.streams.clone())
+            // Concatenated parts keep their timestamps; rebasing would open a
+            // hole at the join.
+            .with_rebase_negative(self.smart_cut.is_none());
+        if encode {
+            let context = self
+                .smart_cut
+                .as_ref()
+                .ok_or(MultiExportError::InvalidPart { index: segment })?;
+            request = request.with_encode(Some(context.encode.clone()));
+        }
         let subtitle_path = self
             .subtitle
             .as_ref()
-            .map(|plan| plan.crop_for(segment.start(), segment.end()))
+            .map(|plan| plan.crop_for(start, end))
             .filter(|text| !text.trim().is_empty())
             .map(|text| {
                 let path = self.work_dir.path().join(format!("part-{index:04}.srt"));
@@ -448,7 +550,7 @@ impl MultiExport {
             })
             .and_then(|(path, text)| std::fs::write(&path, text).ok().map(|_| path));
         let args = super::build_args(&request, None, subtitle_path.as_deref());
-        let process = ExportProcess::start_with_args(args.clone(), &self.parts[index])
+        let process = ExportProcess::start_with_args(args.clone(), &path)
             .map_err(MultiExportError::Export)?;
         self.commands.push(args);
         self.stage = Some(Stage::Cutting { index, process });
@@ -460,30 +562,32 @@ impl MultiExport {
     /// Chapters must use the real part lengths: `-ss` falls back to the
     /// previous keyframe, so a part is usually longer than its request.
     fn start_probing_durations(&mut self) -> Result<(), MultiExportError> {
-        let parts = self.parts.clone();
-        let requested: Vec<Duration> = self
-            .segments
+        let parts: Vec<(usize, PathBuf, Duration)> = self
+            .parts
             .iter()
-            .map(|segment| segment.duration())
+            .map(|part| (part.segment, part.path.clone(), part.duration()))
             .collect();
+        let segment_count = self.segments.len();
         let (sender, receiver) = mpsc::channel();
         let spawned = thread::Builder::new()
             .name("export-chapter-probe".to_owned())
             .spawn(move || {
-                let durations = parts
-                    .iter()
-                    .zip(requested)
-                    .map(|(part, requested)| match ffprobe::probe(part) {
+                let mut durations = vec![Duration::ZERO; segment_count];
+                for (segment, path, requested) in parts {
+                    let duration = match ffprobe::probe(&path) {
                         Ok(media) => media.duration.unwrap_or(requested),
                         Err(error) => {
                             log::warn!(
                                 "could not probe {} for chapter timing: {error}",
-                                part.display()
+                                path.display()
                             );
                             requested
                         }
-                    })
-                    .collect();
+                    };
+                    durations[segment] = durations[segment]
+                        .checked_add(duration)
+                        .unwrap_or(durations[segment]);
+                }
                 // The receiver is dropped when the export is cancelled.
                 let _ = sender.send(durations);
             });
@@ -503,7 +607,7 @@ impl MultiExport {
         let list_path = self.work_dir.path().join("concat.txt");
         let mut list = String::new();
         for part in &self.parts {
-            list.push_str(&concat_line(part));
+            list.push_str(&concat_line(&part.path));
             list.push('\n');
         }
         fs::write(&list_path, list).map_err(MultiExportError::TempFile)?;
@@ -540,6 +644,7 @@ impl MultiExport {
             &self.output,
             metadata_path.as_deref(),
             self.title.as_deref(),
+            self.smart_cut.is_none(),
         );
         let process = ExportProcess::start_with_args(args.clone(), &self.output)
             .map_err(MultiExportError::Export)?;
@@ -570,6 +675,7 @@ fn concat_args(
     output: &Path,
     metadata: Option<&Path>,
     title: Option<&str>,
+    rebase_negative: bool,
 ) -> Vec<OsString> {
     let mut args: Vec<OsString> = vec![
         "-nostdin".into(),
@@ -604,13 +710,11 @@ fn concat_args(
         args.push("1".into());
     }
 
-    args.extend([
-        "-ignore_unknown".into(),
-        "-avoid_negative_ts".into(),
-        "make_zero".into(),
-        "-y".into(),
-        output.as_os_str().to_owned(),
-    ]);
+    args.extend(["-ignore_unknown".into()]);
+    if rebase_negative {
+        args.extend(["-avoid_negative_ts".into(), "make_zero".into()]);
+    }
+    args.extend(["-y".into(), output.as_os_str().to_owned()]);
 
     args
 }

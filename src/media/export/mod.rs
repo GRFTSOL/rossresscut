@@ -9,6 +9,7 @@ mod command;
 mod concat;
 mod merge;
 mod progress;
+mod smart_cut;
 
 use std::ffi::OsString;
 use std::fmt;
@@ -27,12 +28,14 @@ use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use chapters::ChapterSpec;
-pub use command::{ExportRequest, StreamSelection, SubtitlePlan, build_args};
+pub use command::{ExportRequest, StreamSelection, SubtitlePlan, VideoEncodeSpec, build_args};
 pub use concat::{
-    ExportSegment, ExportStage, MultiExport, MultiExportError, MultiExportEvent, MultiExportRequest,
+    ExportSegment, ExportStage, MultiExport, MultiExportError, MultiExportEvent,
+    MultiExportRequest, SmartCutContext,
 };
 pub use merge::{MergeError, merge_files};
 pub use progress::{ProgressUpdate, parse_progress_line};
+pub use smart_cut::{SmartCutPiece, SmartCutPlan, SmartCutUnavailable, encoder_for};
 
 /// Renders an FFmpeg argument list as a copyable shell command.
 ///

@@ -46,6 +46,22 @@ impl StreamSelection {
     }
 }
 
+/// Video re-encode settings for a smart-cut head.
+///
+/// The encoder is a software encoder: exporting must not depend on the local
+/// GPU or on a hardware encoder being compiled in.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VideoEncodeSpec {
+    /// FFmpeg encoder name, for example `libx264`.
+    pub encoder: String,
+    /// Target video bit rate in bits per second.
+    pub bit_rate: u64,
+    /// Source B-frame count, copied so the encoder keeps the same structure.
+    pub b_frames: Option<u32>,
+    /// Source video timescale, when it can be expressed as an integer.
+    pub timescale: Option<u64>,
+}
+
 /// A validated request for one lossless segment export.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExportRequest {
@@ -57,6 +73,8 @@ pub struct ExportRequest {
     title: Option<String>,
     subtitle: Option<SubtitlePlan>,
     streams: Option<StreamSelection>,
+    encode: Option<VideoEncodeSpec>,
+    rebase_negative: bool,
 }
 
 impl ExportRequest {
@@ -84,6 +102,8 @@ impl ExportRequest {
             title: None,
             subtitle: None,
             streams: None,
+            encode: None,
+            rebase_negative: true,
         })
     }
 
@@ -124,6 +144,31 @@ impl ExportRequest {
     /// Returns the stream selection, when restricted.
     pub fn streams(&self) -> Option<&StreamSelection> {
         self.streams.as_ref()
+    }
+
+    /// Re-encodes the video stream instead of copying it.
+    pub fn with_encode(mut self, encode: Option<VideoEncodeSpec>) -> Self {
+        self.encode = encode;
+        self
+    }
+
+    /// Returns the video re-encode settings, when set.
+    pub fn encode(&self) -> Option<&VideoEncodeSpec> {
+        self.encode.as_ref()
+    }
+
+    /// Controls whether a cut start is rebased to zero.
+    ///
+    /// Parts that are later concatenated must keep their timestamps, otherwise
+    /// the join gains a one-frame hole.
+    pub fn with_rebase_negative(mut self, rebase: bool) -> Self {
+        self.rebase_negative = rebase;
+        self
+    }
+
+    /// Returns whether a cut start is rebased to zero.
+    pub const fn rebase_negative(&self) -> bool {
+        self.rebase_negative
     }
 
     /// Returns the chapters to write.
@@ -197,6 +242,13 @@ pub fn build_args(
         args.push(subtitle.as_os_str().to_owned());
     }
 
+    if request.encode().is_some() {
+        // Without this the input seek offset leaks into the encoded part and
+        // the concatenated output starts with a hole.
+        args.push("-ss".into());
+        args.push("0".into());
+    }
+
     args.push("-t".into());
     args.push(format_duration(request.duration()).into());
 
@@ -249,6 +301,21 @@ pub fn build_args(
     args.push("-c".into());
     args.push("copy".into());
 
+    if let Some(encode) = request.encode() {
+        args.push("-c:v".into());
+        args.push(encode.encoder.clone().into());
+        args.push("-b:v".into());
+        args.push(encode.bit_rate.to_string().into());
+        if let Some(b_frames) = encode.b_frames.filter(|count| *count > 0) {
+            args.push("-bf".into());
+            args.push(b_frames.to_string().into());
+        }
+        if let Some(timescale) = encode.timescale {
+            args.push("-video_track_timescale".into());
+            args.push(timescale.to_string().into());
+        }
+    }
+
     if subtitle_included {
         args.push("-c:s".into());
         args.push(subtitle_codec(&request.output).into());
@@ -264,7 +331,7 @@ pub fn build_args(
         args.push(format!("title={title}").into());
     }
 
-    if cuts_start {
+    if cuts_start && request.rebase_negative() {
         // Rebase the output to zero so the saved segment starts at 0.
         args.push("-avoid_negative_ts".into());
         args.push("make_zero".into());
@@ -423,6 +490,52 @@ mod tests {
         assert_eq!(values[position(&values, "-c") + 1], "copy");
         assert!(!values.iter().any(|value| value == "-c:v"));
         assert!(!values.iter().any(|value| value == "libx264"));
+    }
+
+    #[test]
+    fn encodes_the_video_head_and_keeps_the_other_streams_copied() {
+        let request = request(5_500_000, 6_000_000)
+            .with_encode(Some(VideoEncodeSpec {
+                encoder: "libx264".to_owned(),
+                bit_rate: 1_000_000,
+                b_frames: Some(3),
+                timescale: Some(15_360),
+            }))
+            .with_rebase_negative(false);
+        let values = args(&request);
+
+        assert_eq!(values[position(&values, "-c") + 1], "copy");
+        assert_eq!(values[position(&values, "-c:v") + 1], "libx264");
+        assert_eq!(values[position(&values, "-b:v") + 1], "1000000");
+        assert_eq!(values[position(&values, "-bf") + 1], "3");
+        assert_eq!(
+            values[position(&values, "-video_track_timescale") + 1],
+            "15360"
+        );
+        assert!(!values.iter().any(|value| value == "-avoid_negative_ts"));
+    }
+
+    #[test]
+    fn resets_the_output_timestamps_after_the_input_seek() {
+        let request = request(5_500_000, 6_000_000).with_encode(Some(VideoEncodeSpec {
+            encoder: "libx264".to_owned(),
+            bit_rate: 1_000_000,
+            b_frames: None,
+            timescale: None,
+        }));
+        let values = args(&request);
+        let seeks: Vec<usize> = values
+            .iter()
+            .enumerate()
+            .filter(|(_, value)| *value == "-ss")
+            .map(|(index, _)| index)
+            .collect();
+
+        assert_eq!(seeks.len(), 2);
+        assert!(seeks[1] > position(&values, "-i"));
+        assert_eq!(values[seeks[1] + 1], "0");
+        assert!(!values.iter().any(|value| value == "-bf"));
+        assert!(!values.iter().any(|value| value == "-video_track_timescale"));
     }
 
     #[test]

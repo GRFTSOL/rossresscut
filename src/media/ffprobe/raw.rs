@@ -56,6 +56,7 @@ pub(super) struct RawStream {
     pub pix_fmt: Option<String>,
     pub r_frame_rate: Option<String>,
     pub avg_frame_rate: Option<String>,
+    pub has_b_frames: Option<Scalar>,
     pub sample_rate: Option<Scalar>,
     pub channels: Option<u32>,
     pub channel_layout: Option<String>,

@@ -126,6 +126,11 @@ fn parse_stream(raw: &RawStream, position: usize, path: &Path) -> Result<MediaSt
                 &format!("stream #{index} avg_frame_rate"),
                 path,
             )?,
+            has_b_frames: parse_optional_u32(
+                raw.has_b_frames.as_ref(),
+                &format!("stream #{index} has_b_frames"),
+                path,
+            )?,
             color_range: raw.color_range.clone(),
             color_space: raw.color_space.clone(),
             color_transfer: raw.color_transfer.clone(),

@@ -2,7 +2,14 @@
 
 ## 当前阶段
 
-**Phase 5：多片段合并（单段 + 多段已实现）**
+**Phase 7C：媒体流与智能裁切（章节编辑未实现）**
+
+- Phase 5 多片段合并、Phase 7A 项目持久化、Phase 7B 场景/静音/批处理/合并均已完成。
+- Phase 7C 已完成：文本字幕裁剪、stream selection、smart cut 调查与实现。
+- Phase 7C 未完成：章节编辑界面。
+- 未解决问题记录在 `docs/open-questions.md`。
+
+## Phase 5 已完成要点
 
 - 单 Segment 导出已完成并提交（`7a81434`）。
 - Phase 5 调查：`docs/investigations/multi-segment-concat.md`。
@@ -13,7 +20,6 @@
   `tests/multi_export.rs::chapters_follow_actual_part_lengths`。
 - 切片不再使用 `-shortest`：源带附加图片/字幕流时它会提前结束，产物可能近乎为空。
 - 未完成：显式 metadata 处理、容器预检查、4K/VFR 验证。
-- 未解决问题记录在 `docs/open-questions.md`。
 
 ## 已完成的 UI 批次
 
@@ -717,13 +723,31 @@ ADR：`docs/decisions/0012-project-and-settings-format.md`。
   - 多段导出时各段必须得到相同的流布局，否则 concat 失败（与字幕裁剪的限制相同）。
   - 勾选集合为空（用户取消全部勾选）等价于“不映射任何流”，FFmpeg 会报错；
     当前不阻止该操作，只把错误显示给用户。
-- [ ] 智能裁切（裁切点为非关键帧时，从该帧到关键帧按该段平均码率重新编码）
-  - 导出设置已有开关并持久化，但**尚未生效**
-  - 实现前必须先完成下面的 LosslessCut 调查
-- [ ] Smart cut 技术调查（只调查，不实现；输出独立文档 / ADR）
-- [ ] Chapters 编辑（导出章节已实现，编辑界面未实现）
+- [x] 智能裁切（裁切点为非关键帧时，从该帧到关键帧按该段平均码率重新编码）
+  - 决策见 `docs/decisions/0013-smart-cut.md`；调查与实验见 `docs/investigations/smart-cut.md`
+  - 起点在关键帧 → 纯 copy；起点不在关键帧 → 编码头 + 无损尾；片段完全位于两个关键帧之间 → 整段编码
+  - 码率 = 源视频码率 × 1.2；源码率缺失时用容器大小 × 8 / 时长估算
+  - 视频编码器按源 codec 选择：`h264`→`libx264`、`hevc`→`libx265`、`av1`→`libsvtav1`、
+    `vp9`→`libvpx-vp9`、`prores`→`prores_ks` 等；不使用硬件编码
+  - 实现：`media::export::smart_cut`（分段计划与 encoder 映射）、
+    `ExportRequest::with_encode` / `with_rebase_negative`、`MultiExport` 的 `SmartCutContext`
+  - 智能裁切开启时，即使只有一个片段也走临时片段 + concat，以复用同一条路径
+  - 已验证：`tests/smart_cut_export.rs` 覆盖起点精确、普通 copy 回退对照、
+    多段 Timeline 顺序、无可用编码器时报错
+  - 真实素材验证：1080p30 HEVC 请求 5s → 输出约 5.04s，首帧对源切点 PSNR 36.9 dB
 
-smart cut 在实现前必须先完成技术调查（LosslessCut 的边界判定、关键帧处理、重编码范围、FFmpeg 行为），形成独立 ADR；调查完成前不实现。
+  ### 已知限制
+
+  - 输出头部不是无损的；必须通过设置项 tooltip 告知用户。
+  - 片段末端仍可能比请求多 1–2 帧（无损段本身的溢出），smart cut 只解决起点。
+  - 起点与下一关键帧之间会丢弃约一帧，用于避免拼接处重复帧。
+  - 只支持恰好一个视频流，且必须是预览使用的那个流；否则直接失败。
+  - 关键帧索引未加载完成时失败，不自动等待。
+  - 不支持 VFR 的精确帧时长；使用平均帧率计算。
+  - 批处理暂不支持智能裁切（每个文件需要单独建立关键帧索引）。
+- [x] Smart cut 技术调查（只调查，不实现；输出独立文档 / ADR）
+  - `docs/investigations/smart-cut.md`、`docs/decisions/0013-smart-cut.md`
+- [ ] Chapters 编辑（导出章节已实现，编辑界面未实现）
 
 每个功能在实现前都需要独立设计。
 

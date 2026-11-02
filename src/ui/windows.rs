@@ -183,6 +183,7 @@ impl RossresscutApp {
                                 title: Some(self.settings.export_title.clone()),
                                 subtitle_keep_partial: self.settings.subtitle_keep_partial,
                                 streams: self.current_stream_selection(),
+                                smart_cut: self.settings.smart_cut,
                             },
                         ) {
                             Ok(()) => {

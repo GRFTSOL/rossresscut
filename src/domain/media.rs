@@ -110,6 +110,8 @@ pub struct VideoStream {
     pub frame_rate: Option<FrameRate>,
     /// Average frame rate reported by FFprobe.
     pub average_frame_rate: Option<FrameRate>,
+    /// Number of B-frames reported by FFprobe, used when re-encoding the head.
+    pub has_b_frames: Option<u32>,
     /// Color range, for example `tv` or `pc`.
     pub color_range: Option<String>,
     /// Color space, for example `bt709`.
@@ -172,7 +174,7 @@ pub struct Chapter {
 
 /// Keyframe timestamps for one video stream, ordered and normalized to the
 /// media timeline.
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct KeyframeIndex {
     times: Vec<Timestamp>,
 }
@@ -205,6 +207,12 @@ impl KeyframeIndex {
     pub fn previous(&self, position: Timestamp) -> Option<Timestamp> {
         let index = self.times.partition_point(|time| *time < position);
         self.times.get(index.checked_sub(1)?).copied()
+    }
+
+    /// Returns the earliest keyframe at or after `position`.
+    pub fn at_or_after(&self, position: Timestamp) -> Option<Timestamp> {
+        let index = self.times.partition_point(|time| *time < position);
+        self.times.get(index).copied()
     }
 
     /// Returns the earliest keyframe strictly after `position`.
