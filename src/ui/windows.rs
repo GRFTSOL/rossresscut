@@ -4,7 +4,8 @@ use std::path::PathBuf;
 
 use eframe::egui;
 
-use crate::application::ExportCommandError;
+use crate::application::{ExportCommandError, SilenceError, SilenceOptions};
+use crate::domain::time::Duration;
 
 use super::dialogs::DirectoryTarget;
 use super::i18n::{Language, fill};
@@ -363,6 +364,109 @@ impl RossresscutApp {
         if !open {
             save_settings(&self.settings);
         }
+    }
+
+    /// Opens the silence detection dialog and refreshes its preview.
+    pub(super) fn open_silence_dialog(&mut self) {
+        self.silence_dialog_open = true;
+        self.refresh_silence_preview();
+    }
+
+    fn refresh_silence_preview(&mut self) {
+        self.silence_preview = Some(self.silence_preview_for(self.silence_options));
+    }
+
+    fn silence_preview_for(&self, options: SilenceOptions) -> Result<usize, String> {
+        let strings = self.strings();
+        self.application
+            .count_silence_segments(options)
+            .map_err(|error| match error {
+                SilenceError::NoWaveform => strings.silence_no_waveform.clone(),
+                SilenceError::NoAudibleRange | SilenceError::NoDuration => {
+                    strings.silence_no_audible.clone()
+                }
+            })
+    }
+
+    pub(super) fn silence_window(&mut self, context: &egui::Context) {
+        if !self.silence_dialog_open {
+            return;
+        }
+        let strings = self.strings();
+        let mut open = self.silence_dialog_open;
+        let mut recompute = false;
+        let mut close_requested = false;
+
+        egui::Window::new(strings.silence_detection.as_str())
+            .id(egui::Id::unique("silence_window"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(360.0)
+            .show(context, |ui| {
+                ui.label(strings.silence_replaces.as_str());
+
+                let threshold = ui.add(
+                    egui::Slider::new(&mut self.silence_options.threshold_db, -80.0..=-20.0)
+                        .text(strings.silence_threshold.as_str())
+                        .suffix(" dB")
+                        .fixed_decimals(0),
+                );
+                if threshold.drag_stopped() || (threshold.changed() && !threshold.dragged()) {
+                    recompute = true;
+                }
+
+                let mut seconds = self.silence_options.min_duration.micros() as f64 / 1_000_000.0;
+                let minimum = ui.add(
+                    egui::Slider::new(&mut seconds, 0.1..=10.0)
+                        .text(strings.silence_min_duration.as_str())
+                        .suffix(" s")
+                        .step_by(0.1),
+                );
+                if minimum.drag_stopped() || (minimum.changed() && !minimum.dragged()) {
+                    self.silence_options.min_duration =
+                        Duration::from_micros((seconds * 1_000_000.0).round() as u64);
+                    recompute = true;
+                }
+
+                if let Some(result) = &self.silence_preview {
+                    match result {
+                        Ok(count) => {
+                            ui.label(fill(
+                                &strings.silence_preview,
+                                &[count.to_string().as_str()],
+                            ));
+                        }
+                        Err(message) => {
+                            ui.colored_label(ui.visuals().error_fg_color, message);
+                        }
+                    }
+                }
+
+                ui.horizontal(|ui| {
+                    if ui.button(strings.apply.as_str()).clicked() {
+                        match self.application.segments_from_silence(self.silence_options) {
+                            Ok(count) => {
+                                log::info!("created {count} segments from silence");
+                                self.segment_error = None;
+                                close_requested = true;
+                            }
+                            Err(error) => self.segment_error = Some(error.to_string()),
+                        }
+                    }
+                    if ui.button(strings.cancel.as_str()).clicked() {
+                        close_requested = true;
+                    }
+                });
+            });
+
+        if recompute {
+            self.refresh_silence_preview();
+        }
+        if close_requested {
+            open = false;
+        }
+        self.silence_dialog_open = open;
     }
 
     pub(super) fn about_window(&mut self, context: &egui::Context) {

@@ -108,6 +108,9 @@ pub struct RossresscutApp {
     recording_pending: Option<(ShortcutAction, egui::Key, egui::Modifiers)>,
     settings_open: bool,
     about_open: bool,
+    silence_dialog_open: bool,
+    silence_options: crate::application::SilenceOptions,
+    silence_preview: Option<Result<usize, String>>,
     wheel_accumulator: f32,
     waveform_cache: Option<WaveformCache>,
     segment_error: Option<String>,
@@ -269,6 +272,7 @@ impl eframe::App for RossresscutApp {
         self.info_panel(ui);
         self.preview_panel(ui);
         self.settings_window(ui.ctx());
+        self.silence_window(ui.ctx());
         self.export_panel(ui.ctx());
         self.ffmpeg_command_window(ui.ctx());
         self.about_window(ui.ctx());

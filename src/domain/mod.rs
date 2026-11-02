@@ -5,5 +5,6 @@
 
 pub mod media;
 pub mod segment;
+pub mod silence;
 pub mod time;
 pub mod waveform;

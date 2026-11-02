@@ -24,6 +24,7 @@ mod export;
 mod media;
 mod playback;
 mod project;
+mod silence;
 mod transport;
 mod waveform;
 
@@ -34,6 +35,7 @@ use export::{ExportJob, JobEvent};
 #[cfg(feature = "mpv-preview")]
 use playback::{fit_within, preview_video_stream};
 pub use project::{PROJECT_EXTENSION, ProjectError};
+pub use silence::{SilenceError, SilenceOptions};
 
 /// State of the media-opening workflow.
 #[derive(Debug, Default)]
