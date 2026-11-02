@@ -7,6 +7,7 @@
 mod chapters;
 mod command;
 mod concat;
+mod merge;
 mod progress;
 
 use std::ffi::OsString;
@@ -27,6 +28,7 @@ pub use command::{ExportRequest, build_args};
 pub use concat::{
     ExportSegment, ExportStage, MultiExport, MultiExportError, MultiExportEvent, MultiExportRequest,
 };
+pub use merge::{MergeError, merge_files};
 pub use progress::{ProgressUpdate, parse_progress_line};
 
 /// Renders an FFmpeg argument list as a copyable shell command.

@@ -663,7 +663,13 @@ ADR：`docs/decisions/0012-project-and-settings-format.md`。
   - 输出写到各自源文件旁的 `<stem>-export.<扩展名>`，或导出目录中
   - 后台线程逐个 probe + 导出，UI 不阻塞；可取消，可清除已完成项
   - 实现：`application::batch`；集成测试 `tests/batch_export.rs`
-- [ ] 合并多文件（下一个 commit：在多文件对话框里提供「合并」）
+- [x] 合并多文件
+  - 多文件对话框提供「合并成一个视频」：按文件名排序后加入队列并立即开始
+  - 每个文件先按当前片段导出为 `<stem>-export.<ext>`，
+    全部成功后再用 concat demuxer 合成 `<第一个文件>-merged.<ext>`
+  - 只 remux，不重新编码；合并时关闭章节生成（各文件章节无法可靠拼接）
+  - 合并结果与失败原因显示在批处理面板
+  - 实现：`media::export::merge`；集成测试 `tests/batch_export.rs::merges_the_batch_outputs_into_one_file`
 
 ## Phase 7C：媒体流与智能裁切
 

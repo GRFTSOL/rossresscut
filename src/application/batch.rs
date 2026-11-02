@@ -74,6 +74,17 @@ pub struct BatchRequest {
     pub chapters: bool,
     /// Output title metadata.
     pub title: Option<String>,
+    /// When set, the finished outputs are concatenated into this file.
+    pub merge_output: Option<PathBuf>,
+}
+
+/// Result of merging the finished batch outputs.
+#[derive(Clone, Debug)]
+pub struct BatchMerge {
+    /// Where the merged file was written.
+    pub output: PathBuf,
+    /// Failure description, or `None` on success.
+    pub error: Option<String>,
 }
 
 pub(super) struct BatchJob {
@@ -87,6 +98,10 @@ enum BatchEvent {
         index: usize,
         status: BatchItemStatus,
     },
+    Merged {
+        output: PathBuf,
+        error: Option<String>,
+    },
 }
 
 impl Application {
@@ -98,6 +113,11 @@ impl Application {
     /// Returns whether a batch is currently running.
     pub fn is_batching(&self) -> bool {
         self.batch_job.is_some()
+    }
+
+    /// Returns the merge result of the last batch, when it asked for one.
+    pub fn batch_merge(&self) -> Option<&BatchMerge> {
+        self.batch_merge.as_ref()
     }
 
     /// Replaces the queue with `files`, all waiting to start.
@@ -119,9 +139,10 @@ impl Application {
     /// Returns `false` when another batch is still running or the request is
     /// empty.
     pub fn start_batch(&mut self, request: BatchRequest) -> bool {
-        if self.batch_job.is_some() || request.files.is_empty() || request.segments.is_empty() {
+        if self.batch_job.is_some() || request.files.is_empty() {
             return false;
         }
+        self.batch_merge = None;
 
         self.batch_items = request
             .files
@@ -166,6 +187,7 @@ impl Application {
     pub fn clear_batch(&mut self) {
         if self.batch_job.is_none() {
             self.batch_items.clear();
+            self.batch_merge = None;
         }
     }
 
@@ -185,6 +207,9 @@ impl Application {
                             item.status = status;
                         }
                     }
+                    Ok(BatchEvent::Merged { output, error }) => {
+                        self.batch_merge = Some(BatchMerge { output, error });
+                    }
                     Err(TryRecvError::Empty) => break,
                     Err(TryRecvError::Disconnected) => {
                         disconnected = true;
@@ -200,6 +225,8 @@ impl Application {
 }
 
 fn run_batch(request: BatchRequest, sender: Sender<BatchEvent>, cancel: Arc<AtomicBool>) {
+    let mut outputs = Vec::new();
+
     for (index, path) in request.files.iter().enumerate() {
         if cancel.load(Ordering::Relaxed) {
             return;
@@ -208,9 +235,24 @@ fn run_batch(request: BatchRequest, sender: Sender<BatchEvent>, cancel: Arc<Atom
             return;
         }
         let status = process_file(path, &request, &cancel);
+        if let BatchItemStatus::Completed { output } = &status {
+            outputs.push(output.clone());
+        }
         if sender.send(BatchEvent::Finished { index, status }).is_err() {
             return;
         }
+    }
+
+    if let Some(target) = &request.merge_output {
+        let result = if outputs.is_empty() {
+            Err("no file was exported to merge".to_owned())
+        } else {
+            crate::media::export::merge_files(&outputs, target).map_err(|error| error.to_string())
+        };
+        let _ = sender.send(BatchEvent::Merged {
+            output: target.clone(),
+            error: result.err(),
+        });
     }
 }
 

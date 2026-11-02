@@ -583,7 +583,7 @@ fn concat_args(
     args
 }
 
-fn concat_line(path: &Path) -> String {
+pub(super) fn concat_line(path: &Path) -> String {
     let text = path.to_string_lossy().replace('\'', "'\\''");
     format!("file '{text}'")
 }
@@ -597,12 +597,12 @@ fn failure(stderr: String) -> String {
     }
 }
 
-struct TempDir {
+pub(super) struct TempDir {
     path: PathBuf,
 }
 
 impl TempDir {
-    fn create() -> io::Result<Self> {
+    pub(super) fn create() -> io::Result<Self> {
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(io::Error::other)?;
@@ -615,7 +615,7 @@ impl TempDir {
         Ok(Self { path })
     }
 
-    fn path(&self) -> &Path {
+    pub(super) fn path(&self) -> &Path {
         &self.path
     }
 }

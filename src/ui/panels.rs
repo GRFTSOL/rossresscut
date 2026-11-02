@@ -299,6 +299,50 @@ impl RossresscutApp {
         Some(PathBuf::from(&self.settings.export_directory))
     }
 
+    /// Returns the enabled segments of the current timeline.
+    pub(super) fn enabled_segments(&self) -> Vec<(Timestamp, Timestamp)> {
+        self.application
+            .timeline()
+            .segments()
+            .iter()
+            .filter(|segment| segment.enabled())
+            .map(|segment| (segment.start(), segment.end()))
+            .collect()
+    }
+
+    /// Starts a merge of `files`, sorted by file name.
+    pub(super) fn start_merge(&mut self, mut files: Vec<PathBuf>) -> bool {
+        files.sort_by(|left, right| left.file_name().cmp(&right.file_name()));
+        let Some(output) = self.merge_output_path(&files) else {
+            return false;
+        };
+
+        let segments = self.enabled_segments();
+        self.application.queue_batch(files.clone());
+        self.batch_panel_open = true;
+        self.application
+            .start_batch(crate::application::BatchRequest {
+                files,
+                segments,
+                output_directory: self.batch_output_directory(),
+                // Chapters of separate files cannot be concatenated reliably.
+                chapters: false,
+                title: Some(self.settings.export_title.clone()),
+                merge_output: Some(output),
+            })
+    }
+
+    fn merge_output_path(&self, files: &[PathBuf]) -> Option<PathBuf> {
+        let first = files.first()?;
+        let stem = first.file_stem()?.to_string_lossy();
+        let extension = first.extension()?.to_string_lossy();
+        let name = format!("{stem}-merged.{extension}");
+        match self.batch_output_directory() {
+            Some(directory) => Some(directory.join(name)),
+            None => first.parent().map(|parent| parent.join(name)),
+        }
+    }
+
     /// Renders the batch queue and its controls.
     pub(super) fn batch_panel(&mut self, ui: &mut egui::Ui, strings: &'static Strings) {
         ui.horizontal(|ui| {
@@ -337,20 +381,13 @@ impl RossresscutApp {
             });
 
         let running = self.application.is_batching();
-        let segments: Vec<(Timestamp, Timestamp)> = self
-            .application
-            .timeline()
-            .segments()
-            .iter()
-            .filter(|segment| segment.enabled())
-            .map(|segment| (segment.start(), segment.end()))
-            .collect();
+        let segments = self.enabled_segments();
 
         ui.horizontal(|ui| {
-            let can_start = !running && !segments.is_empty();
+            let can_start = !running && !self.application.batch_items().is_empty();
             if ui
                 .add_enabled(can_start, egui::Button::new(strings.batch_start.as_str()))
-                .on_disabled_hover_text(strings.batch_needs_segments.as_str())
+                .on_disabled_hover_text(strings.batch_empty.as_str())
                 .clicked()
             {
                 let files: Vec<PathBuf> = self
@@ -366,6 +403,7 @@ impl RossresscutApp {
                         output_directory: self.batch_output_directory(),
                         chapters: self.settings.export_chapters,
                         title: Some(self.settings.export_title.clone()),
+                        merge_output: None,
                     });
             }
             if ui
@@ -381,6 +419,20 @@ impl RossresscutApp {
                 self.application.clear_batch();
             }
         });
+
+        if let Some(merge) = self.application.batch_merge() {
+            match &merge.error {
+                None => {
+                    ui.label(fill(&strings.batch_merged, &[&file_title(&merge.output)]));
+                }
+                Some(message) => {
+                    ui.colored_label(
+                        ui.visuals().error_fg_color,
+                        fill(&strings.batch_merge_failed, &[message.as_str()]),
+                    );
+                }
+            }
+        }
     }
 }
 

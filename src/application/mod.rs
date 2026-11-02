@@ -32,7 +32,7 @@ mod waveform;
 
 #[cfg(feature = "mpv-preview")]
 use crate::media::preview::{MpvPreview, MpvPreviewError};
-pub use batch::{BatchItem, BatchItemStatus, BatchRequest};
+pub use batch::{BatchItem, BatchItemStatus, BatchMerge, BatchRequest};
 pub use export::{ExportCommandError, ExportStage, ExportStatus};
 use export::{ExportJob, JobEvent};
 #[cfg(feature = "mpv-preview")]
@@ -116,6 +116,7 @@ pub struct Application {
     scene_job: Option<SceneJob>,
     batch_items: Vec<BatchItem>,
     batch_job: Option<batch::BatchJob>,
+    batch_merge: Option<batch::BatchMerge>,
     playback: Playback,
     timeline: Timeline,
     markers: Markers,

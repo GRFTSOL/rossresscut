@@ -584,6 +584,10 @@ impl RossresscutApp {
                 });
             ui.separator();
             ui.horizontal(|ui| {
+                if ui.button(strings.drop_merge.as_str()).clicked() {
+                    self.start_merge(files.clone());
+                    close = true;
+                }
                 if ui.button(strings.drop_batch.as_str()).clicked() {
                     self.application.queue_batch(files.clone());
                     self.batch_panel_open = true;
