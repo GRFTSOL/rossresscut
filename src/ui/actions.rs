@@ -149,7 +149,7 @@ impl RossresscutApp {
             ShortcutAction::PlayPause => self.application.toggle_playback(),
             ShortcutAction::AddCut => {
                 let position = self.application.position();
-                if let Err(error) = self.application.add_cut_point(position) {
+                if let Err(error) = self.application.add_cut_point_or_set_start(position) {
                     self.segment_error = Some(error.to_string());
                 } else {
                     self.segment_error = None;
@@ -157,9 +157,13 @@ impl RossresscutApp {
                 }
             }
             ShortcutAction::RemoveCut => {
-                self.application.remove_cut_point();
-                self.segment_error = None;
-                self.segment_input_segment = None;
+                let position = self.application.position();
+                if let Err(error) = self.application.set_end_or_clear_cut_points(position) {
+                    self.segment_error = Some(error.to_string());
+                } else {
+                    self.segment_error = None;
+                    self.segment_input_segment = None;
+                }
             }
             ShortcutAction::Split => {
                 if let Err(error) = self.application.split_selected_segment() {

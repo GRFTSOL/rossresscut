@@ -377,3 +377,71 @@ fn inverting_segments_creates_the_complement() {
     assert_eq!(segments[0].start(), micros(1_000_000));
     assert!(segments[0].end() > micros(1_000_000));
 }
+
+#[test]
+fn cut_shortcut_edits_the_selected_segment_head_and_tail() {
+    let mut application = Application::new();
+    application.open_media(fixture("sample-keyframes.mp4"));
+    wait_until_ready(&mut application);
+
+    application.set_in_point(micros(500_000));
+    application.set_out_point(micros(1_500_000));
+    let id = application.add_segment().expect("segment");
+    application.select_segment(Some(id));
+
+    // A playhead inside the selected segment moves its head.
+    application
+        .add_cut_point_or_set_start(micros(700_000))
+        .expect("set start");
+    let segment = *application.timeline().get(id).expect("segment");
+    assert_eq!(segment.start(), micros(700_000));
+    assert_eq!(segment.end(), micros(1_500_000));
+
+    // The same contextual family sets the tail.
+    application
+        .set_end_or_clear_cut_points(micros(1_200_000))
+        .expect("set end");
+    let segment = *application.timeline().get(id).expect("segment");
+    assert_eq!(segment.end(), micros(1_200_000));
+}
+
+#[test]
+fn cut_shortcut_after_the_segment_end_starts_a_new_marker() {
+    let mut application = Application::new();
+    application.open_media(fixture("sample-keyframes.mp4"));
+    wait_until_ready(&mut application);
+
+    application.set_in_point(micros(500_000));
+    application.set_out_point(micros(1_500_000));
+    let id = application.add_segment().expect("segment");
+    application.select_segment(Some(id));
+
+    // The playhead sits after the selected segment, so the shortcut starts a
+    // new cut point instead of moving the existing head.
+    application
+        .add_cut_point_or_set_start(micros(2_500_000))
+        .expect("new cut point");
+    assert_eq!(application.in_point(), Some(micros(2_500_000)));
+    let segment = *application.timeline().get(id).expect("segment");
+    assert_eq!(segment.start(), micros(500_000));
+}
+
+#[test]
+fn cut_shortcut_without_a_selection_uses_markers() {
+    let mut application = Application::new();
+    application.open_media(fixture("sample-keyframes.mp4"));
+    wait_until_ready(&mut application);
+
+    application.select_segment(None);
+    application
+        .add_cut_point_or_set_start(micros(500_000))
+        .expect("in point");
+    assert_eq!(application.in_point(), Some(micros(500_000)));
+
+    // O without a selection clears the pending cut point.
+    application
+        .set_end_or_clear_cut_points(micros(800_000))
+        .expect("clear markers");
+    assert!(application.in_point().is_none());
+    assert!(application.timeline().segments().is_empty());
+}

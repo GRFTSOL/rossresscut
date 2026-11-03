@@ -270,6 +270,37 @@ impl Application {
         }
     }
 
+    /// Adds a cut point, or moves the selected segment's start to `position`.
+    ///
+    /// The cut shortcut is contextual: with a selected segment and the
+    /// playhead inside it, the same key moves the segment head instead of
+    /// adding an unrelated marker.
+    pub fn add_cut_point_or_set_start(
+        &mut self,
+        position: Timestamp,
+    ) -> Result<(), SegmentCommandError> {
+        let selected = self
+            .selected_segment
+            .and_then(|id| self.timeline.get(id).copied());
+        match selected {
+            Some(segment) if position < segment.end() => self.set_selected_segment_start(position),
+            _ => self.add_cut_point(position),
+        }
+    }
+
+    /// Sets the selected segment's end, or clears pending cut points.
+    pub fn set_end_or_clear_cut_points(
+        &mut self,
+        position: Timestamp,
+    ) -> Result<(), SegmentCommandError> {
+        if self.selected_segment.is_some() {
+            self.set_selected_segment_end(position)
+        } else {
+            self.remove_cut_point();
+            Ok(())
+        }
+    }
+
     /// Removes pending cut points, or the selected segment when none is
     /// pending.
     pub fn remove_cut_point(&mut self) {

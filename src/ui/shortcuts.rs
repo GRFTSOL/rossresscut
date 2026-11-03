@@ -119,8 +119,8 @@ impl ShortcutAction {
     pub(super) fn label(self, strings: &Strings) -> String {
         match self {
             Self::PlayPause => format!("{} / {}", strings.play, strings.pause),
-            Self::AddCut => strings.add_cut_point.clone(),
-            Self::RemoveCut => strings.remove_cut_point.clone(),
+            Self::AddCut => strings.add_cut_or_start.clone(),
+            Self::RemoveCut => strings.remove_cut_or_end.clone(),
             Self::Split => strings.split_segment.clone(),
             Self::ClearMarkers => strings.clear_markers.clone(),
             Self::CloseMedia => strings.close_media.clone(),
@@ -156,9 +156,9 @@ impl ShortcutAction {
     pub(super) const fn default_binding(self) -> &'static str {
         match self {
             Self::PlayPause => "Space",
-            Self::AddCut => "I",
-            Self::RemoveCut => "O",
-            Self::Split => "Enter",
+            Self::AddCut => "Alt+I",
+            Self::RemoveCut => "Alt+O",
+            Self::Split => "Alt+B",
             Self::ClearMarkers => "Escape",
             Self::CloseMedia => "Ctrl+W",
             Self::OpenSettings => "Ctrl+,",

@@ -301,6 +301,8 @@ impl From<SettingsFile> for UiSettings {
     fn from(file: SettingsFile) -> Self {
         let general = file.general;
         let export = file.export;
+        let mut shortcuts = general.shortcuts;
+        migrate_legacy_shortcut_defaults(&mut shortcuts);
         Self {
             follow_system_theme: general.follow_system_theme,
             theme: general.theme,
@@ -308,7 +310,7 @@ impl From<SettingsFile> for UiSettings {
             font_zoom: general.font_zoom,
             font_path: general.font_path,
             font_index: general.font_index,
-            shortcuts: general.shortcuts,
+            shortcuts,
             autosave_projects: general.autosave_projects,
             subtitle_keep_partial: general.subtitle_keep_partial,
             project_to_source_dir: general.project_to_source_dir,
@@ -384,6 +386,8 @@ impl Default for LegacySettings {
 
 impl From<LegacySettings> for UiSettings {
     fn from(legacy: LegacySettings) -> Self {
+        let mut shortcuts = legacy.shortcuts;
+        migrate_legacy_shortcut_defaults(&mut shortcuts);
         Self {
             follow_system_theme: legacy.follow_system_theme,
             theme: legacy.theme,
@@ -391,7 +395,7 @@ impl From<LegacySettings> for UiSettings {
             font_zoom: legacy.font_zoom,
             font_path: legacy.font_path,
             font_index: legacy.font_index,
-            shortcuts: legacy.shortcuts,
+            shortcuts,
             autosave_projects: true,
             subtitle_keep_partial: false,
             project_to_source_dir: true,
@@ -403,6 +407,34 @@ impl From<LegacySettings> for UiSettings {
             smart_cut: false,
         }
     }
+}
+
+/// Rewrites the old default cut bindings to the contextual Alt bindings.
+///
+/// Only applies when all three bindings still hold their old defaults, so a
+/// user who mapped anything by hand keeps their choices.
+fn migrate_legacy_shortcut_defaults(shortcuts: &mut BTreeMap<String, String>) {
+    let legacy = shortcuts
+        .get(ShortcutAction::AddCut.key())
+        .map(String::as_str)
+        == Some("I")
+        && shortcuts
+            .get(ShortcutAction::RemoveCut.key())
+            .map(String::as_str)
+            == Some("O")
+        && shortcuts
+            .get(ShortcutAction::Split.key())
+            .map(String::as_str)
+            == Some("Enter");
+    if !legacy {
+        return;
+    }
+    shortcuts.insert(ShortcutAction::AddCut.key().to_owned(), "Alt+I".to_owned());
+    shortcuts.insert(
+        ShortcutAction::RemoveCut.key().to_owned(),
+        "Alt+O".to_owned(),
+    );
+    shortcuts.insert(ShortcutAction::Split.key().to_owned(), "Alt+B".to_owned());
 }
 
 impl UiSettings {
@@ -499,5 +531,39 @@ pub(super) fn save_settings(settings: &UiSettings) {
             }
         }
         Err(error) => log::warn!("could not serialize settings: {error}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn legacy_shortcuts() -> BTreeMap<String, String> {
+        let mut shortcuts = default_shortcuts();
+        shortcuts.insert("add_cut".to_owned(), "I".to_owned());
+        shortcuts.insert("remove_cut".to_owned(), "O".to_owned());
+        shortcuts.insert("split".to_owned(), "Enter".to_owned());
+        shortcuts
+    }
+
+    #[test]
+    fn migrates_the_old_cut_shortcuts_to_alt() {
+        let mut shortcuts = legacy_shortcuts();
+        migrate_legacy_shortcut_defaults(&mut shortcuts);
+
+        assert_eq!(shortcuts["add_cut"], "Alt+I");
+        assert_eq!(shortcuts["remove_cut"], "Alt+O");
+        assert_eq!(shortcuts["split"], "Alt+B");
+    }
+
+    #[test]
+    fn keeps_custom_shortcuts_when_only_one_matches_the_old_default() {
+        let mut shortcuts = legacy_shortcuts();
+        shortcuts.insert("split".to_owned(), "Ctrl+B".to_owned());
+        migrate_legacy_shortcut_defaults(&mut shortcuts);
+
+        assert_eq!(shortcuts["add_cut"], "I");
+        assert_eq!(shortcuts["remove_cut"], "O");
+        assert_eq!(shortcuts["split"], "Ctrl+B");
     }
 }

@@ -770,33 +770,33 @@ mod tests {
                 },
             ],
         );
-        assert_eq!(app.settings.binding(ShortcutAction::AddCut), "I");
+        assert_eq!(app.settings.binding(ShortcutAction::AddCut), "Alt+I");
 
         run_shortcut_events(
             &context,
             &mut app,
             vec![egui::Event::Key {
-                key: egui::Key::I,
+                key: egui::Key::J,
                 physical_key: None,
                 pressed: true,
                 repeat: false,
                 modifiers: egui::Modifiers::ALT,
             }],
         );
-        assert_eq!(app.settings.binding(ShortcutAction::AddCut), "I");
+        assert_eq!(app.settings.binding(ShortcutAction::AddCut), "Alt+I");
 
         run_shortcut_events(
             &context,
             &mut app,
             vec![egui::Event::Key {
-                key: egui::Key::I,
+                key: egui::Key::J,
                 physical_key: None,
                 pressed: false,
                 repeat: false,
                 modifiers: egui::Modifiers::ALT,
             }],
         );
-        assert_eq!(app.settings.binding(ShortcutAction::AddCut), "Alt+I");
+        assert_eq!(app.settings.binding(ShortcutAction::AddCut), "Alt+J");
         assert!(app.recording_shortcut.is_none());
     }
 }
