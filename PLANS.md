@@ -820,6 +820,9 @@ ADR：`docs/decisions/0012-project-and-settings-format.md`。
 - [x] 打包格式：pacman 包（`packaging/PKGBUILD`，`./scripts/package-linux.sh`
   输出 `dist/rossresscut-<version>-<pkgrel>-x86_64.pkg.tar.zst`）
 - [x] desktop entry 与 hicolor 图标随包安装
+- [x] 已在 Arch / Wayland 上实际验证：`./scripts/package-linux.sh` 产出
+  `rossresscut-0.3.0-1-x86_64.pkg.tar.zst`，包内二进制可启动，
+  Wayland app_id 为 `rossresscut`，与 desktop entry 一致
 - [ ] 许可证：项目尚无 LICENSE，动链 `libmpv`（GPL-2.0-or-later）的合规方式未定；
   公开分发前必须解决，见 `RELEASING.md` 第 5 节
 - [ ] 公开仓库 / AUR 版本需要 tagged tarball 源、`url` 与校验和；

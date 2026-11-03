@@ -41,8 +41,8 @@ cargo fmt --all --check
 本节只记录**会改变构建与验证行为**的机器约定，不是产品支持范围。
 
 - **操作系统**：Arch Linux（滚动发行版）。系统包用 `pacman` 安装，例如 `sudo pacman -S ffmpeg`；不通过脚本直接下载系统级二进制。
-- **Rust 工具链**：由 `rustup` 管理，当前为 `stable-x86_64-unknown-linux-gnu`，`rustfmt` 与 `clippy` 已就位。缺组件时用 `rustup component add rustfmt clippy`。
-- **工具链固定**：仓库建立后应由 `rust-toolchain.toml` 固定版本；升级工具链是独立变更，不与功能改动混在一起。
+- **Rust 工具链**：由 `rustup` 管理，版本由 `rust-toolchain.toml` 固定（当前 `1.99.1`，含 `rustfmt` 与 `clippy`）。缺组件时用 `rustup component add rustfmt clippy`。
+- **工具链升级**：升级 `rust-toolchain.toml` 是独立变更，不与功能改动混在一起。
 - **FFmpeg / FFprobe**：使用系统包（`/usr/sbin/ffmpeg`、`/usr/sbin/ffprobe`；`ffprobe` 由 `ffmpeg` 包提供，不是独立包），项目不自带二进制。滚动发行版会改变实际版本，因此测试不得假设固定版本行为。
 - **桌面会话**：Wayland（`XDG_SESSION_TYPE=wayland`，合成器为 niri），没有 X11 会话。egui / winit 的行为验证必须在 Wayland 下进行，不依赖 X11 专属路径。
 - **交互 shell**：fish。脚本不依赖交互 shell 配置：显式写 shebang（`#!/usr/bin/env bash` 或 `#!/usr/bin/env fish`），并保证在非交互环境下可运行。
@@ -170,6 +170,22 @@ pacfiles -x '.*/libav(codec|format)\.so'
   action；拖动、滚轮和视频画面仍需截图或输入注入。
 - 颜色、字体渲染与布局细节仍必须用截图验证。
 - 脚本会过滤 AccessKit 与 pyatspi 之间已知的无害 AT-SPI 警告。
+
+## 发布打包（Linux）
+
+`scripts/package-linux.sh` 构建 release 二进制并生成 pacman 包：
+
+```bash
+./scripts/package-linux.sh
+```
+
+- 要求工作树干净；脚本会检查 `Cargo.toml` 与 `packaging/PKGBUILD` 的版本一致。
+- 依次执行 `./scripts/check.sh`、`cargo build --release --locked`、`makepkg`。
+- 产物在 `dist/`：`rossresscut-<version>-<pkgrel>-x86_64.pkg.tar.zst`；
+  包内容、运行时依赖与许可证说明见 `RELEASING.md`。
+- `packaging/PKGBUILD` 复用当前工作树的 `target/release`，不在 `build()` 里调用
+  cargo：makepkg 每次把 `SOURCE_DATE_EPOCH` 设为当前时间，该值属于 Cargo 指纹，
+  会让整个依赖图重新编译并冲掉本地 release 缓存。
 
 ## Git 与提交
 
