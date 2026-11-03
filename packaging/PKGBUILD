@@ -1,0 +1,61 @@
+# Maintainer: rossresscut contributors
+#
+# The package is built from the checkout that contains this file: the crate
+# root is `$startdir/..`, so the release binary, the git commit embedded by
+# build.rs and the version in Cargo.toml always agree.  Release from a clean
+# tree only; `scripts/package-linux.sh` enforces that.
+#
+# The project has not picked a license yet, so `license=('custom')` and
+# ATTRIBUTION.md is installed as the notice file.  See RELEASING.md before
+# publishing this package outside this machine.
+
+pkgname=rossresscut
+pkgver=0.3.0
+pkgrel=1
+pkgdesc='Native lossless media cutting tool built with Rust and egui'
+arch=('x86_64')
+license=('custom')
+depends=(
+  'alsa-lib'
+  'ffmpeg'
+  'gcc-libs'
+  'glibc'
+  'libglvnd'
+  'libxkbcommon'
+  'mesa'
+  'mpv'
+  'wayland'
+  'xdg-desktop-portal'
+)
+makedepends=('rust')
+optdepends=(
+  'xdg-desktop-portal-gtk: file chooser backend on compositors without a native portal'
+  'libx11: X11 sessions instead of Wayland'
+)
+source=()
+sha256sums=()
+
+build() {
+  cd "$startdir/.."
+
+  # Do not run cargo here: makepkg sets SOURCE_DATE_EPOCH to the current time
+  # on every run, which is part of Cargo's fingerprint, so building inside
+  # makepkg recompiles the whole dependency graph and invalidates the local
+  # release cache.  scripts/package-linux.sh builds the binary first and then
+  # calls makepkg; this function only verifies that it is present.
+  if [[ ! -x target/release/rossresscut ]]; then
+    echo "error: target/release/rossresscut is missing; run scripts/package-linux.sh" >&2
+    return 1
+  fi
+}
+
+package() {
+  cd "$startdir/.."
+
+  install -Dm755 target/release/rossresscut "$pkgdir/usr/bin/rossresscut"
+  install -Dm644 packaging/rossresscut.desktop \
+    "$pkgdir/usr/share/applications/rossresscut.desktop"
+  install -Dm644 packaging/rossresscut.svg \
+    "$pkgdir/usr/share/icons/hicolor/scalable/apps/rossresscut.svg"
+  install -Dm644 ATTRIBUTION.md "$pkgdir/usr/share/licenses/$pkgname/ATTRIBUTION.md"
+}

@@ -816,8 +816,14 @@ ADR：`docs/decisions/0012-project-and-settings-format.md`。
 ## Linux
 
 - [x] Release build 已验证（`cargo build --release`）
-- [ ] 发布包说明运行时依赖：`libmpv.so.2`、`ffmpeg` / `ffprobe`、XDG desktop portal、EGL / GBM
-- [ ] 打包格式（AppImage / flatpak / 发行版包）
+- [x] 发布包说明运行时依赖：`libmpv.so.2`、`ffmpeg` / `ffprobe`、XDG desktop portal、EGL / GBM
+- [x] 打包格式：pacman 包（`packaging/PKGBUILD`，`./scripts/package-linux.sh`
+  输出 `dist/rossresscut-<version>-<pkgrel>-x86_64.pkg.tar.zst`）
+- [x] desktop entry 与 hicolor 图标随包安装
+- [ ] 许可证：项目尚无 LICENSE，动链 `libmpv`（GPL-2.0-or-later）的合规方式未定；
+  公开分发前必须解决，见 `RELEASING.md` 第 5 节
+- [ ] 公开仓库 / AUR 版本需要 tagged tarball 源、`url` 与校验和；
+  当前 PKGBUILD 直接在当前工作树上构建
 
 ## Windows
 

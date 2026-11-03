@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=Rossresscut
+GenericName=Lossless Video Cutter
+Comment=Cut and merge media without re-encoding
+Exec=rossresscut %F
+TryExec=rossresscut
+Icon=rossresscut
+Terminal=false
+StartupNotify=true
+StartupWMClass=rossresscut
+Categories=AudioVideo;Video;AudioVideoEditing;
+Keywords=cut;trim;lossless;video;audio;segment;keyframe;
+MimeType=video/mp4;video/x-matroska;video/webm;video/quicktime;video/mpeg;video/ogg;video/x-msvideo;audio/mpeg;audio/flac;audio/ogg;audio/mp4;audio/x-wav;
