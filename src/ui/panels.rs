@@ -4,12 +4,15 @@ use std::path::PathBuf;
 
 use eframe::egui;
 
-use crate::application::{Application, BatchItemStatus, ExportStage, ExportStatus, OpenState};
+use crate::application::{
+    Application, BatchItemStatus, BatchSkipReason, ExportStage, ExportStatus, OpenState,
+};
 use crate::domain::media::{MediaFile, MediaStream, VideoStream};
 use crate::domain::segment::Segment;
-use crate::domain::time::Timestamp;
+use crate::domain::time::{Duration, Timestamp};
 
 use super::i18n::fill;
+use super::icons;
 use super::timeline::segment_color;
 use super::{FILE_DIALOG_SUPPORTED, RossresscutApp, ShortcutAction, Strings};
 
@@ -134,81 +137,32 @@ impl RossresscutApp {
     }
 
     fn segments_panel(&mut self, ui: &mut egui::Ui, strings: &'static Strings) {
+        // Keep custom backgrounds and outlines the same size while hovering:
+        // egui expands hovered/active widgets by one point by default, which
+        // made the selected segment frame visibly grow.
+        let widgets = &mut ui.style_mut().visuals.widgets;
+        widgets.hovered.expansion = 0.0;
+        widgets.active.expansion = 0.0;
+        widgets.hovered.bg_stroke = egui::Stroke::NONE;
+        widgets.active.bg_stroke = egui::Stroke::NONE;
+
         let has_media = self.application.media().is_some();
         let has_selection = self.application.selected_segment().is_some();
-        ui.heading(fill(
-            &strings.segments,
-            &[&self.application.timeline().len().to_string()],
-        ));
-
-        ui.horizontal_wrapped(|ui| {
-            if ui
-                .add_enabled(has_media, egui::Button::new(strings.add_cut_point.as_str()))
-                .on_hover_text(
-                    self.shortcut_tooltip(strings.add_cut_point.as_str(), ShortcutAction::AddCut),
-                )
-                .clicked()
-            {
-                let position = self.application.position();
-                if let Err(error) = self.application.add_cut_point(position) {
-                    self.segment_error = Some(error.to_string());
-                } else {
-                    self.segment_error = None;
-                    self.segment_input_segment = None;
-                }
-            }
-
-            if ui
-                .add_enabled(
-                    has_media,
-                    egui::Button::new(strings.remove_cut_point.as_str()),
-                )
-                .on_hover_text(
-                    self.shortcut_tooltip(
-                        strings.remove_cut_point.as_str(),
-                        ShortcutAction::RemoveCut,
-                    ),
-                )
-                .clicked()
-            {
-                self.application.remove_cut_point();
-                self.segment_error = None;
-                self.segment_input_segment = None;
-            }
-
-            if ui
-                .add_enabled(has_selection, egui::Button::new(strings.move_up.as_str()))
-                .on_hover_text(strings.move_up.as_str())
-                .clicked()
-            {
-                self.application.move_selected_segment_up();
-            }
-
-            if ui
-                .add_enabled(has_selection, egui::Button::new(strings.move_down.as_str()))
-                .on_hover_text(strings.move_down.as_str())
-                .clicked()
-            {
-                self.application.move_selected_segment_down();
-            }
-
-            if ui
-                .add_enabled(
-                    has_selection,
-                    egui::Button::new(strings.split_segment.as_str()),
-                )
-                .on_hover_text(
-                    self.shortcut_tooltip(strings.split_segment.as_str(), ShortcutAction::Split),
-                )
-                .clicked()
-            {
-                if let Err(error) = self.application.split_selected_segment() {
-                    self.segment_error = Some(error.to_string());
-                } else {
-                    self.segment_error = None;
-                    self.segment_input_segment = None;
-                }
-            }
+        let has_pending_cut = self.application.in_point().is_some();
+        let total = self
+            .application
+            .timeline()
+            .segments()
+            .iter()
+            .fold(Duration::ZERO, |total, segment| {
+                total.checked_add(segment.duration()).unwrap_or(total)
+            });
+        ui.horizontal(|ui| {
+            ui.heading(fill(
+                &strings.segments,
+                &[&self.application.timeline().len().to_string()],
+            ));
+            ui.label(format!("{} {total}", strings.total_duration));
         });
 
         if let Some(in_point) = self.application.in_point() {
@@ -275,6 +229,99 @@ impl RossresscutApp {
                 });
             }
         }
+
+        // Icon controls sit under the list and are horizontally centered.
+        let size = egui::vec2(36.0, 32.0);
+        let gap = ui.spacing().item_spacing.x;
+        let row_width = 5.0 * size.x + 4.0 * gap;
+        let padding = ((ui.available_width() - row_width) * 0.5).max(0.0);
+        ui.horizontal(|ui| {
+            ui.add_space(padding);
+
+            let (cut_icon, cut_tooltip) = if has_pending_cut {
+                (icons::REMOVE_CUT, strings.remove_cut_point.clone())
+            } else {
+                (
+                    icons::ADD_CUT,
+                    self.shortcut_tooltip(strings.add_cut_point.as_str(), ShortcutAction::AddCut),
+                )
+            };
+            if ui
+                .add_enabled(has_media, egui::Button::new(cut_icon).min_size(size))
+                .on_hover_text(cut_tooltip)
+                .clicked()
+            {
+                if has_pending_cut {
+                    self.application.clear_markers();
+                    self.segment_error = None;
+                    self.segment_input_segment = None;
+                } else {
+                    let position = self.application.position();
+                    if let Err(error) = self.application.add_cut_point(position) {
+                        self.segment_error = Some(error.to_string());
+                    } else {
+                        self.segment_error = None;
+                        self.segment_input_segment = None;
+                    }
+                }
+            }
+
+            if ui
+                .add_enabled(
+                    has_selection,
+                    egui::Button::new(icons::DELETE_SEGMENT).min_size(size),
+                )
+                .on_hover_text(self.shortcut_tooltip(
+                    strings.delete_segment.as_str(),
+                    ShortcutAction::DeleteSegment,
+                ))
+                .clicked()
+            {
+                self.application.remove_selected_segment();
+                self.segment_error = None;
+                self.segment_input_segment = None;
+            }
+
+            if ui
+                .add_enabled(
+                    has_selection,
+                    egui::Button::new(icons::MOVE_UP).min_size(size),
+                )
+                .on_hover_text(strings.move_up.as_str())
+                .clicked()
+            {
+                self.application.move_selected_segment_up();
+            }
+
+            if ui
+                .add_enabled(
+                    has_selection,
+                    egui::Button::new(icons::MOVE_DOWN).min_size(size),
+                )
+                .on_hover_text(strings.move_down.as_str())
+                .clicked()
+            {
+                self.application.move_selected_segment_down();
+            }
+
+            if ui
+                .add_enabled(
+                    has_selection,
+                    egui::Button::new(icons::SPLIT).min_size(size),
+                )
+                .on_hover_text(
+                    self.shortcut_tooltip(strings.split_segment.as_str(), ShortcutAction::Split),
+                )
+                .clicked()
+            {
+                if let Err(error) = self.application.split_selected_segment() {
+                    self.segment_error = Some(error.to_string());
+                } else {
+                    self.segment_error = None;
+                    self.segment_input_segment = None;
+                }
+            }
+        });
 
         if let Some(error) = &self.segment_error {
             ui.colored_label(ui.visuals().error_fg_color, error);
@@ -412,7 +459,19 @@ impl RossresscutApp {
         ui.horizontal(|ui| {
             ui.heading(strings.batch_queue.as_str());
             ui.label(format!("({})", self.application.batch_items().len()));
+            if ui
+                .add_enabled(
+                    FILE_DIALOG_SUPPORTED && !self.application.is_batching(),
+                    egui::Button::new(strings.batch_add_files.as_str()),
+                )
+                .on_hover_text(strings.batch_add_files.as_str())
+                .clicked()
+            {
+                self.start_batch_file_dialog();
+            }
         });
+
+        ui.label(egui::RichText::new(strings.batch_hint.as_str()).weak());
 
         if self.application.batch_items().is_empty() {
             ui.label(strings.batch_empty.as_str());
@@ -434,6 +493,17 @@ impl RossresscutApp {
                             fill(&strings.batch_failed, &[message.as_str()])
                         }
                         BatchItemStatus::Skipped { reason } => {
+                            let reason = match reason {
+                                BatchSkipReason::NoDuration => {
+                                    strings.batch_skipped_no_duration.clone()
+                                }
+                                BatchSkipReason::NoSegments => {
+                                    strings.batch_skipped_no_segments.clone()
+                                }
+                                BatchSkipReason::Cancelled => {
+                                    strings.batch_skipped_cancelled.clone()
+                                }
+                            };
                             fill(&strings.batch_skipped, &[reason.as_str()])
                         }
                     };
@@ -446,6 +516,9 @@ impl RossresscutApp {
 
         let running = self.application.is_batching();
         let segments = self.enabled_segments();
+        if segments.is_empty() {
+            ui.label(strings.batch_no_segments.as_str());
+        }
 
         ui.horizontal(|ui| {
             let can_start = !running && !self.application.batch_items().is_empty();

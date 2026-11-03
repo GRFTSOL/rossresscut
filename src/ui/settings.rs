@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 
-use super::fonts::font_definitions;
+use super::fonts::{font_definitions, install_icon_font};
 use super::i18n::{Language, Strings};
 use super::shortcuts::default_shortcuts;
 use super::{MAX_FONT_ZOOM, MIN_FONT_ZOOM, RossresscutApp, Shortcut, ShortcutAction};
@@ -45,20 +45,26 @@ impl RossresscutApp {
         if self.applied_font.as_ref()
             != Some(&(self.settings.font_path.clone(), self.settings.font_index))
         {
-            if self.settings.font_path.is_empty() {
-                context.set_fonts(egui::FontDefinitions::default());
-            } else if let Some(definitions) = font_definitions(
-                Path::new(&self.settings.font_path),
-                self.settings.font_index,
-            ) {
-                context.set_fonts(definitions);
+            let definitions = if self.settings.font_path.is_empty() {
+                Some(egui::FontDefinitions::default())
             } else {
-                log::warn!(
+                font_definitions(
+                    Path::new(&self.settings.font_path),
+                    self.settings.font_index,
+                )
+            };
+            match definitions {
+                Some(mut definitions) => {
+                    install_icon_font(&mut definitions);
+                    context.set_fonts(definitions);
+                    self.applied_font =
+                        Some((self.settings.font_path.clone(), self.settings.font_index));
+                }
+                None => log::warn!(
                     "could not load UI font {}; keeping the current font",
                     self.settings.font_path
-                );
+                ),
             }
-            self.applied_font = Some((self.settings.font_path.clone(), self.settings.font_index));
         }
     }
 
@@ -303,6 +309,7 @@ impl From<SettingsFile> for UiSettings {
         let export = file.export;
         let mut shortcuts = general.shortcuts;
         migrate_legacy_shortcut_defaults(&mut shortcuts);
+        fill_missing_shortcuts(&mut shortcuts);
         Self {
             follow_system_theme: general.follow_system_theme,
             theme: general.theme,
@@ -388,6 +395,7 @@ impl From<LegacySettings> for UiSettings {
     fn from(legacy: LegacySettings) -> Self {
         let mut shortcuts = legacy.shortcuts;
         migrate_legacy_shortcut_defaults(&mut shortcuts);
+        fill_missing_shortcuts(&mut shortcuts);
         Self {
             follow_system_theme: legacy.follow_system_theme,
             theme: legacy.theme,
@@ -426,15 +434,46 @@ fn migrate_legacy_shortcut_defaults(shortcuts: &mut BTreeMap<String, String>) {
             .get(ShortcutAction::Split.key())
             .map(String::as_str)
             == Some("Enter");
-    if !legacy {
-        return;
+    if legacy {
+        shortcuts.insert(ShortcutAction::AddCut.key().to_owned(), "Alt+I".to_owned());
+        shortcuts.insert(
+            ShortcutAction::RemoveCut.key().to_owned(),
+            "Alt+O".to_owned(),
+        );
+        shortcuts.insert(ShortcutAction::Split.key().to_owned(), "Alt+B".to_owned());
     }
-    shortcuts.insert(ShortcutAction::AddCut.key().to_owned(), "Alt+I".to_owned());
-    shortcuts.insert(
-        ShortcutAction::RemoveCut.key().to_owned(),
-        "Alt+O".to_owned(),
-    );
-    shortcuts.insert(ShortcutAction::Split.key().to_owned(), "Alt+B".to_owned());
+
+    // These actions were unbound in older builds; fill only empty values so a
+    // binding the user set stays untouched.
+    for (key, binding) in [
+        ("previous_segment", "ArrowUp"),
+        ("next_segment", "ArrowDown"),
+        ("previous_keyframe", "Alt+Left"),
+        ("next_keyframe", "Alt+Right"),
+    ] {
+        if shortcuts.get(key).is_some_and(String::is_empty) {
+            shortcuts.insert(key.to_owned(), binding.to_owned());
+        }
+    }
+
+    // The delete action now removes the selected segment instead of a marker.
+    if let Some(value) = shortcuts.remove("delete_cut_point") {
+        shortcuts
+            .entry(ShortcutAction::DeleteSegment.key().to_owned())
+            .or_insert(value);
+    }
+    shortcuts.remove("segment_set_start");
+    shortcuts.remove("segment_set_end");
+}
+
+/// Adds defaults for actions that did not exist when the file was written.
+///
+/// Explicitly cleared bindings are empty strings, not missing keys, so they are
+/// preserved.
+fn fill_missing_shortcuts(shortcuts: &mut BTreeMap<String, String>) {
+    for (key, value) in default_shortcuts() {
+        shortcuts.entry(key).or_insert(value);
+    }
 }
 
 impl UiSettings {

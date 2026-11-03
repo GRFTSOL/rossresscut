@@ -57,8 +57,19 @@ pub enum BatchItemStatus {
     /// The file was skipped, for example because no segment fits.
     Skipped {
         /// Why the file was skipped.
-        reason: String,
+        reason: BatchSkipReason,
     },
+}
+
+/// Why a queued file was not exported.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BatchSkipReason {
+    /// The media duration could not be probed.
+    NoDuration,
+    /// No enabled segment overlaps the file.
+    NoSegments,
+    /// The batch was cancelled before this file started.
+    Cancelled,
 }
 
 /// What every queued file should be exported with.
@@ -132,6 +143,18 @@ impl Application {
                 status: BatchItemStatus::Pending,
             })
             .collect();
+    }
+
+    /// Appends `files` to the queue, keeping existing items.
+    pub fn append_batch_files(&mut self, files: Vec<PathBuf>) {
+        if self.batch_job.is_some() {
+            return;
+        }
+        self.batch_items
+            .extend(files.into_iter().map(|path| BatchItem {
+                path,
+                status: BatchItemStatus::Pending,
+            }));
     }
 
     /// Replaces the queue and starts processing it.
@@ -259,7 +282,7 @@ fn run_batch(request: BatchRequest, sender: Sender<BatchEvent>, cancel: Arc<Atom
 fn process_file(path: &Path, request: &BatchRequest, cancel: &AtomicBool) -> BatchItemStatus {
     if cancel.load(Ordering::Relaxed) {
         return BatchItemStatus::Skipped {
-            reason: "cancelled".to_owned(),
+            reason: BatchSkipReason::Cancelled,
         };
     }
 
@@ -273,14 +296,14 @@ fn process_file(path: &Path, request: &BatchRequest, cancel: &AtomicBool) -> Bat
     };
     let Some(duration) = media.duration else {
         return BatchItemStatus::Skipped {
-            reason: "the duration is unknown".to_owned(),
+            reason: BatchSkipReason::NoDuration,
         };
     };
 
     let ranges = clamp_segments(&request.segments, duration);
     if ranges.is_empty() {
         return BatchItemStatus::Skipped {
-            reason: "no segment fits this file".to_owned(),
+            reason: BatchSkipReason::NoSegments,
         };
     }
 

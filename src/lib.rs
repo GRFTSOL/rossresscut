@@ -11,6 +11,3 @@ pub mod error;
 pub mod logging;
 pub mod media;
 pub mod ui;
-
-/// Current development phase, shown in the About window.
-pub const PHASE: &str = "Phase 7C";

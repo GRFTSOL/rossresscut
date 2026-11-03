@@ -12,6 +12,7 @@ pub(super) enum ShortcutAction {
     PlayPause,
     AddCut,
     RemoveCut,
+    DeleteSegment,
     Split,
     ClearMarkers,
     CloseMedia,
@@ -26,8 +27,6 @@ pub(super) enum ShortcutAction {
     SegmentEnd,
     NextSegment,
     GoToEnd,
-    SetSegmentStart,
-    SetSegmentEnd,
     Undo,
     Redo,
     Cut,
@@ -44,10 +43,11 @@ pub(super) enum ShortcutAction {
 }
 
 impl ShortcutAction {
-    pub(super) const ALL: [Self; 32] = [
+    pub(super) const ALL: [Self; 31] = [
         Self::PlayPause,
         Self::AddCut,
         Self::RemoveCut,
+        Self::DeleteSegment,
         Self::Split,
         Self::ClearMarkers,
         Self::CloseMedia,
@@ -62,8 +62,6 @@ impl ShortcutAction {
         Self::SegmentEnd,
         Self::NextSegment,
         Self::GoToEnd,
-        Self::SetSegmentStart,
-        Self::SetSegmentEnd,
         Self::Undo,
         Self::Redo,
         Self::Cut,
@@ -84,6 +82,7 @@ impl ShortcutAction {
             Self::PlayPause => "play_pause",
             Self::AddCut => "add_cut",
             Self::RemoveCut => "remove_cut",
+            Self::DeleteSegment => "delete_segment",
             Self::Split => "split",
             Self::ClearMarkers => "clear_markers",
             Self::CloseMedia => "close_media",
@@ -98,8 +97,6 @@ impl ShortcutAction {
             Self::SegmentEnd => "segment_end",
             Self::NextSegment => "next_segment",
             Self::GoToEnd => "go_to_end",
-            Self::SetSegmentStart => "segment_set_start",
-            Self::SetSegmentEnd => "segment_set_end",
             Self::Undo => "undo",
             Self::Redo => "redo",
             Self::Cut => "cut",
@@ -120,7 +117,8 @@ impl ShortcutAction {
         match self {
             Self::PlayPause => format!("{} / {}", strings.play, strings.pause),
             Self::AddCut => strings.add_cut_or_start.clone(),
-            Self::RemoveCut => strings.remove_cut_or_end.clone(),
+            Self::RemoveCut => strings.set_cut_end_or_finish.clone(),
+            Self::DeleteSegment => strings.delete_segment.clone(),
             Self::Split => strings.split_segment.clone(),
             Self::ClearMarkers => strings.clear_markers.clone(),
             Self::CloseMedia => strings.close_media.clone(),
@@ -135,8 +133,6 @@ impl ShortcutAction {
             Self::SegmentEnd => strings.go_to_segment_end.clone(),
             Self::NextSegment => strings.select_next_segment.clone(),
             Self::GoToEnd => strings.go_to_end.clone(),
-            Self::SetSegmentStart => strings.set_start_from_playhead.clone(),
-            Self::SetSegmentEnd => strings.set_end_from_playhead.clone(),
             Self::Undo => strings.undo.clone(),
             Self::Redo => strings.redo.clone(),
             Self::Cut => strings.cut.clone(),
@@ -158,21 +154,21 @@ impl ShortcutAction {
             Self::PlayPause => "Space",
             Self::AddCut => "Alt+I",
             Self::RemoveCut => "Alt+O",
+            Self::DeleteSegment => "Delete",
             Self::Split => "Alt+B",
             Self::ClearMarkers => "Escape",
             Self::CloseMedia => "Ctrl+W",
             Self::OpenSettings => "Ctrl+,",
+            Self::PreviousSegment => "ArrowUp",
+            Self::NextSegment => "ArrowDown",
+            Self::PreviousKeyframe => "Alt+Left",
+            Self::NextKeyframe => "Alt+Right",
             Self::GoToStart
-            | Self::PreviousSegment
             | Self::SegmentStart
-            | Self::PreviousKeyframe
             | Self::PreviousFrame
             | Self::NextFrame
-            | Self::NextKeyframe
             | Self::SegmentEnd
-            | Self::NextSegment
             | Self::GoToEnd => "",
-            Self::SetSegmentStart | Self::SetSegmentEnd => "",
             Self::Undo => "Ctrl+Z",
             Self::Redo => "Ctrl+Shift+Z",
             Self::Cut => "Ctrl+X",

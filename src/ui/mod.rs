@@ -15,6 +15,7 @@ mod actions;
 mod dialogs;
 mod fonts;
 mod i18n;
+mod icons;
 mod menu;
 mod panels;
 mod preview;
@@ -88,7 +89,7 @@ pub struct RossresscutApp {
     scrub_was_playing: bool,
     last_scrub_target: Option<i64>,
     last_scrub_start: Option<Instant>,
-    file_dialog: Option<(FileDialogPurpose, Receiver<Option<PathBuf>>)>,
+    file_dialog: Option<(FileDialogPurpose, Receiver<Option<Vec<PathBuf>>>)>,
     dialog_error: Option<DialogError>,
     directory_dialog: Option<(DirectoryTarget, Receiver<Option<PathBuf>>)>,
     project_dialog: Option<(ProjectDialogMode, Receiver<Option<PathBuf>>)>,
@@ -103,6 +104,8 @@ pub struct RossresscutApp {
     export_error: Option<String>,
     export_panel_open: bool,
     ffmpeg_command_open: bool,
+    random_dialog_open: bool,
+    random_count: usize,
     settings: UiSettings,
     font_zoom_draft: f32,
     fonts: Vec<FontFamilyChoice>,
@@ -119,6 +122,7 @@ pub struct RossresscutApp {
     scene_dialog_open: bool,
     scene_threshold: f32,
     batch_panel_open: bool,
+    batch_file_dialog: Option<Receiver<Option<Vec<PathBuf>>>>,
     pending_drop: Option<Vec<PathBuf>>,
     /// `None` exports every stream; `Some` holds the chosen stream indices.
     stream_selection: Option<std::collections::BTreeSet<usize>>,
@@ -135,7 +139,7 @@ pub struct RossresscutApp {
 
 impl RossresscutApp {
     /// Creates the window state and optionally opens `initial_path`.
-    pub fn new(context: &eframe::CreationContext<'_>, initial_path: Option<PathBuf>) -> Self {
+    pub fn new(context: &eframe::CreationContext<'_>, initial_paths: Vec<PathBuf>) -> Self {
         // The preview uses the command modifier with the wheel for seeking, so
         // egui must not also treat that gesture as a UI zoom.
         context
@@ -161,6 +165,7 @@ impl RossresscutApp {
             // A quarter of a frame-to-frame change is the FFmpeg default for
             // scene detection and works well as a starting point.
             scene_threshold: 0.4,
+            random_count: 5,
             ..Self::default()
         };
         #[cfg(feature = "mpv-preview")]
@@ -187,8 +192,10 @@ impl RossresscutApp {
             };
             app.application.set_preview_hardware(hardware);
         }
-        if let Some(path) = initial_path {
-            app.application.open_media(path);
+        match initial_paths.as_slice() {
+            [] => {}
+            [path] => app.application.open_media(path.clone()),
+            files => app.pending_drop = Some(files.to_vec()),
         }
         app
     }
@@ -271,6 +278,7 @@ impl eframe::App for RossresscutApp {
             self.project_error = None;
         }
         self.poll_file_dialog();
+        self.poll_batch_file_dialog();
         self.poll_directory_dialog();
         self.poll_project_dialog();
         self.handle_dropped_files(ui.ctx());
@@ -328,6 +336,7 @@ impl eframe::App for RossresscutApp {
         self.settings_window(ui.ctx());
         self.close_prompt_window(ui.ctx());
         self.silence_window(ui.ctx());
+        self.random_window(ui.ctx());
         self.scene_window(ui.ctx());
         self.drop_window(ui.ctx());
         self.export_panel(ui.ctx());
@@ -343,7 +352,7 @@ impl eframe::App for RossresscutApp {
 /// Starts the native event loop and blocks until the window closes.
 ///
 /// Must be called from the main thread.
-pub fn run(initial_path: Option<PathBuf>) -> Result<(), eframe::Error> {
+pub fn run(initial_paths: Vec<PathBuf>) -> Result<(), eframe::Error> {
     // `options.wgpu_options` is only assigned when mpv-preview is enabled.
     #[allow(unused_mut)]
     let mut options = eframe::NativeOptions {
@@ -378,7 +387,7 @@ pub fn run(initial_path: Option<PathBuf>) -> Result<(), eframe::Error> {
         Box::new(move |creation_context| {
             Ok(Box::new(RossresscutApp::new(
                 creation_context,
-                initial_path,
+                initial_paths,
             )))
         }),
     )
@@ -622,6 +631,7 @@ mod tests {
         }
         let settings = UiSettings::default();
         assert_eq!(settings.binding(ShortcutAction::PlayPause), "Space");
+        assert_eq!(settings.binding(ShortcutAction::DeleteSegment), "Delete");
         assert_eq!(
             settings.shortcut(ShortcutAction::OpenSettings),
             Shortcut::parse("Ctrl+,")

@@ -12,6 +12,7 @@ use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -753,11 +754,15 @@ pub(super) struct TempDir {
 
 impl TempDir {
     pub(super) fn create() -> io::Result<Self> {
+        // Parallel exports in one process can share a nanosecond stamp.
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(io::Error::other)?;
+        let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "rossresscut-export-{}-{}",
+            "rossresscut-export-{}-{}-{unique}",
             std::process::id(),
             stamp.as_nanos()
         ));

@@ -20,16 +20,24 @@ impl RossresscutApp {
         };
 
         match receiver.try_recv() {
-            Ok(Some(path)) => {
+            Ok(Some(mut paths)) => {
                 self.reset_scrub();
                 self.segment_error = None;
                 match purpose {
                     FileDialogPurpose::OpenMedia => {
                         self.stream_selection = None;
                         self.detach_project();
-                        self.application.open_media(path);
+                        match paths.len() {
+                            0 => {}
+                            1 => self.application.open_media(paths.remove(0)),
+                            _ => self.pending_drop = Some(paths),
+                        }
                     }
-                    FileDialogPurpose::RebindSource => self.application.rebind_source(path),
+                    FileDialogPurpose::RebindSource => {
+                        if let Some(path) = paths.into_iter().next() {
+                            self.application.rebind_source(path);
+                        }
+                    }
                 }
             }
             Ok(None) => {}
@@ -99,6 +107,50 @@ impl RossresscutApp {
         }
     }
 
+    pub(super) fn start_batch_file_dialog(&mut self) {
+        if self.batch_file_dialog.is_some() {
+            return;
+        }
+        self.dialog_error = None;
+
+        let (sender, receiver) = mpsc::channel();
+        let spawn = thread::Builder::new()
+            .name("batch-file-dialog".to_owned())
+            .spawn(move || {
+                let paths = pick_media_files();
+                if sender.send(paths).is_err() {
+                    log::debug!("batch file dialog result discarded: the window is closing");
+                }
+            });
+
+        match spawn {
+            Ok(_handle) => self.batch_file_dialog = Some(receiver),
+            Err(error) => {
+                log::error!("failed to start the batch file dialog thread: {error}");
+                self.dialog_error = Some(DialogError::Failed(error.to_string()));
+            }
+        }
+    }
+
+    pub(super) fn poll_batch_file_dialog(&mut self) {
+        let Some(receiver) = self.batch_file_dialog.take() else {
+            return;
+        };
+        match receiver.try_recv() {
+            Ok(Some(files)) => {
+                self.application.append_batch_files(files);
+                self.batch_panel_open = true;
+                self.dialog_error = None;
+            }
+            Ok(None) => {}
+            Err(TryRecvError::Empty) => self.batch_file_dialog = Some(receiver),
+            Err(TryRecvError::Disconnected) => {
+                log::warn!("batch file dialog thread stopped without a result");
+                self.dialog_error = Some(DialogError::Stopped);
+            }
+        }
+    }
+
     pub(super) fn start_file_dialog(&mut self, purpose: FileDialogPurpose) {
         if self.file_dialog.is_some() {
             return;
@@ -109,8 +161,11 @@ impl RossresscutApp {
         let spawn = thread::Builder::new()
             .name("file-dialog".to_owned())
             .spawn(move || {
-                let path = pick_media_file();
-                if sender.send(path).is_err() {
+                let paths = match purpose {
+                    FileDialogPurpose::OpenMedia => pick_media_files(),
+                    FileDialogPurpose::RebindSource => pick_media_file().map(|path| vec![path]),
+                };
+                if sender.send(paths).is_err() {
                     log::debug!("file dialog result discarded: the window is closing");
                 }
             });
@@ -377,20 +432,32 @@ pub(super) enum CloseIntent {
 }
 
 #[cfg(target_os = "linux")]
+const MEDIA_EXTENSIONS: &[&str] = &[
+    "mp4", "mkv", "mov", "avi", "wmv", "ts", "m2ts", "webm", "flv", "mpg", "mpeg", "m4v", "mp3",
+    "aac", "flac", "wav", "ogg", "opus", "mka", "srt", "ass",
+];
+
+#[cfg(target_os = "linux")]
 pub(super) fn pick_media_file() -> Option<PathBuf> {
     rfd::FileDialog::new()
-        .add_filter(
-            "Media files",
-            &[
-                "mp4", "mkv", "mov", "avi", "wmv", "ts", "m2ts", "webm", "flv", "mpg", "mpeg",
-                "m4v", "mp3", "aac", "flac", "wav", "ogg", "opus", "mka", "srt", "ass",
-            ],
-        )
+        .add_filter("Media files", MEDIA_EXTENSIONS)
         .pick_file()
 }
 
 #[cfg(not(target_os = "linux"))]
 pub(super) fn pick_media_file() -> Option<PathBuf> {
+    None
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn pick_media_files() -> Option<Vec<PathBuf>> {
+    rfd::FileDialog::new()
+        .add_filter("Media files", MEDIA_EXTENSIONS)
+        .pick_files()
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(super) fn pick_media_files() -> Option<Vec<PathBuf>> {
     None
 }
 

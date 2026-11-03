@@ -8,6 +8,7 @@ use crate::domain::waveform::{Peak, Waveform};
 
 use super::dialogs::DialogError;
 use super::i18n::fill;
+use super::icons;
 use super::{
     RossresscutApp, SEGMENT_COLORS, ShortcutAction, Strings, TIMELINE_HEIGHT,
     TIMELINE_HEIGHT_AUDIO, WHEEL_LINE_POINTS, WHEEL_PAGE_LINES, WHEEL_STEP_POINTS,
@@ -46,177 +47,191 @@ impl RossresscutApp {
         let has_media = self.application.media().is_some();
         let has_selection = self.application.selected_segment().is_some();
 
-        // `horizontal_wrapped` shrinks to its content height. A free
-        // `with_layout` would claim the panel's remaining height and collapse
-        // the preview pane.
+        // A fixed row height lets the larger play button sit centered with the
+        // smaller controls. A free `with_layout` would claim the panel's
+        // remaining height and collapse the preview pane.
+        let row_height = 36.0;
         let estimated_row_width = 740.0 * ui.ctx().zoom_factor();
         let padding = ((ui.available_width() - estimated_row_width) * 0.5).max(0.0);
-        ui.horizontal_wrapped(|ui| {
-            ui.add_space(padding);
-            ui.spacing_mut().button_padding = egui::vec2(7.0, 4.0);
-            if symbol_button(
-                ui,
-                "|<",
-                has_media,
-                &self.shortcut_tooltip(strings.go_to_start.as_str(), ShortcutAction::GoToStart),
-            ) {
-                self.application.seek_to_start();
-            }
-            if symbol_button(
-                ui,
-                "[<",
-                has_media && has_selection,
-                &self.shortcut_tooltip(
-                    strings.select_previous_segment.as_str(),
-                    ShortcutAction::PreviousSegment,
-                ),
-            ) {
-                self.application.select_previous_segment();
-            }
-            if symbol_button(
-                ui,
-                "<|",
-                has_media && has_selection,
-                &self.shortcut_tooltip(
-                    strings.go_to_segment_start.as_str(),
-                    ShortcutAction::SegmentStart,
-                ),
-            ) {
-                self.application.seek_to_selected_segment_start();
-            }
-            if symbol_button(
-                ui,
-                "[",
-                has_media && has_selection,
-                &self.shortcut_tooltip(
-                    strings.set_start_from_playhead.as_str(),
-                    ShortcutAction::SetSegmentStart,
-                ),
-            ) {
-                self.set_selected_start_from_playhead();
-            }
+        ui.allocate_ui_with_layout(
+            egui::vec2(ui.available_width(), row_height),
+            egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true),
+            |ui| {
+                ui.add_space(padding);
+                ui.spacing_mut().button_padding = egui::vec2(7.0, 4.0);
+                if symbol_button(
+                    ui,
+                    icons::GO_TO_START,
+                    has_media,
+                    &self.shortcut_tooltip(strings.go_to_start.as_str(), ShortcutAction::GoToStart),
+                ) {
+                    self.application.seek_to_start();
+                }
+                if symbol_button(
+                    ui,
+                    icons::PREVIOUS_SEGMENT,
+                    has_media && has_selection,
+                    &self.shortcut_tooltip(
+                        strings.select_previous_segment.as_str(),
+                        ShortcutAction::PreviousSegment,
+                    ),
+                ) {
+                    self.application.select_previous_segment();
+                }
+                if symbol_button(
+                    ui,
+                    icons::SEGMENT_START,
+                    has_media && has_selection,
+                    &self.shortcut_tooltip(
+                        strings.go_to_segment_start.as_str(),
+                        ShortcutAction::SegmentStart,
+                    ),
+                ) {
+                    self.application.seek_to_selected_segment_start();
+                }
+                if symbol_button(
+                    ui,
+                    icons::SET_START,
+                    has_media && has_selection,
+                    &self.shortcut_tooltip(
+                        strings.set_start_from_playhead.as_str(),
+                        ShortcutAction::AddCut,
+                    ),
+                ) {
+                    self.set_selected_start_from_playhead();
+                }
 
-            let time_width = time_field_width(ui);
-            let start_response = ui
-                .add_enabled(
-                    has_selection,
-                    egui::TextEdit::singleline(&mut self.segment_start_input)
-                        .desired_width(time_width),
-                )
-                .on_hover_text(strings.segment_start.as_str());
-            if start_response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter))
-            {
-                self.apply_segment_start_input();
-            }
+                let time_width = time_field_width(ui);
+                let start_response = ui
+                    .add_enabled(
+                        has_selection,
+                        egui::TextEdit::singleline(&mut self.segment_start_input)
+                            .desired_width(time_width),
+                    )
+                    .on_hover_text(strings.segment_start.as_str());
+                if start_response.lost_focus()
+                    && ui.input(|input| input.key_pressed(egui::Key::Enter))
+                {
+                    self.apply_segment_start_input();
+                }
 
-            if symbol_button(
-                ui,
-                "<<",
-                has_media,
-                &self.shortcut_tooltip(
-                    strings.previous_keyframe.as_str(),
-                    ShortcutAction::PreviousKeyframe,
-                ),
-            ) {
-                self.application.step_keyframe(false);
-            }
-            if symbol_button(
-                ui,
-                "<",
-                has_media,
-                &self.shortcut_tooltip(
-                    strings.previous_frame.as_str(),
-                    ShortcutAction::PreviousFrame,
-                ),
-            ) {
-                self.application.step_frame(false);
-            }
+                if symbol_button(
+                    ui,
+                    icons::PREVIOUS_KEYFRAME,
+                    has_media,
+                    &self.shortcut_tooltip(
+                        strings.previous_keyframe.as_str(),
+                        ShortcutAction::PreviousKeyframe,
+                    ),
+                ) {
+                    self.application.step_keyframe(false);
+                }
+                if symbol_button(
+                    ui,
+                    icons::PREVIOUS_FRAME,
+                    has_media,
+                    &self.shortcut_tooltip(
+                        strings.previous_frame.as_str(),
+                        ShortcutAction::PreviousFrame,
+                    ),
+                ) {
+                    self.application.step_frame(false);
+                }
 
-            let (play_label, play_tooltip) = if self.application.is_playing() {
-                ("||", strings.pause.as_str())
-            } else {
-                ("▶", strings.play.as_str())
-            };
-            if symbol_button(
-                ui,
-                play_label,
-                has_media,
-                &self.shortcut_tooltip(play_tooltip, ShortcutAction::PlayPause),
-            ) {
-                self.application.toggle_playback();
-            }
+                let (play_label, play_tooltip) = if self.application.is_playing() {
+                    (icons::PAUSE, strings.pause.as_str())
+                } else {
+                    (icons::PLAY, strings.play.as_str())
+                };
+                let play_tooltip = self.shortcut_tooltip(play_tooltip, ShortcutAction::PlayPause);
+                if ui
+                    .add_enabled(
+                        has_media,
+                        egui::Button::new(egui::RichText::new(play_label).size(24.0))
+                            .min_size(egui::vec2(48.0, 36.0)),
+                    )
+                    .on_hover_text(play_tooltip)
+                    .clicked()
+                {
+                    self.application.toggle_playback();
+                }
 
-            if symbol_button(
-                ui,
-                ">",
-                has_media,
-                &self.shortcut_tooltip(strings.next_frame.as_str(), ShortcutAction::NextFrame),
-            ) {
-                self.application.step_frame(true);
-            }
-            if symbol_button(
-                ui,
-                ">>",
-                has_media,
-                &self
-                    .shortcut_tooltip(strings.next_keyframe.as_str(), ShortcutAction::NextKeyframe),
-            ) {
-                self.application.step_keyframe(true);
-            }
+                if symbol_button(
+                    ui,
+                    icons::NEXT_FRAME,
+                    has_media,
+                    &self.shortcut_tooltip(strings.next_frame.as_str(), ShortcutAction::NextFrame),
+                ) {
+                    self.application.step_frame(true);
+                }
+                if symbol_button(
+                    ui,
+                    icons::NEXT_KEYFRAME,
+                    has_media,
+                    &self.shortcut_tooltip(
+                        strings.next_keyframe.as_str(),
+                        ShortcutAction::NextKeyframe,
+                    ),
+                ) {
+                    self.application.step_keyframe(true);
+                }
 
-            let end_response = ui
-                .add_enabled(
-                    has_selection,
-                    egui::TextEdit::singleline(&mut self.segment_end_input)
-                        .desired_width(time_width),
-                )
-                .on_hover_text(strings.segment_end.as_str());
-            if end_response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) {
-                self.apply_segment_end_input();
-            }
+                let end_response = ui
+                    .add_enabled(
+                        has_selection,
+                        egui::TextEdit::singleline(&mut self.segment_end_input)
+                            .desired_width(time_width),
+                    )
+                    .on_hover_text(strings.segment_end.as_str());
+                if end_response.lost_focus()
+                    && ui.input(|input| input.key_pressed(egui::Key::Enter))
+                {
+                    self.apply_segment_end_input();
+                }
 
-            if symbol_button(
-                ui,
-                "]",
-                has_media && has_selection,
-                &self.shortcut_tooltip(
-                    strings.set_end_from_playhead.as_str(),
-                    ShortcutAction::SetSegmentEnd,
-                ),
-            ) {
-                self.set_selected_end_from_playhead();
-            }
-            if symbol_button(
-                ui,
-                "|>",
-                has_media && has_selection,
-                &self.shortcut_tooltip(
-                    strings.go_to_segment_end.as_str(),
-                    ShortcutAction::SegmentEnd,
-                ),
-            ) {
-                self.application.seek_to_selected_segment_end();
-            }
-            if symbol_button(
-                ui,
-                ">]",
-                has_media && has_selection,
-                &self.shortcut_tooltip(
-                    strings.select_next_segment.as_str(),
-                    ShortcutAction::NextSegment,
-                ),
-            ) {
-                self.application.select_next_segment();
-            }
-            if symbol_button(
-                ui,
-                ">|",
-                has_media,
-                &self.shortcut_tooltip(strings.go_to_end.as_str(), ShortcutAction::GoToEnd),
-            ) {
-                self.application.seek_to_end();
-            }
-        });
+                if symbol_button(
+                    ui,
+                    icons::SET_END,
+                    has_media && has_selection,
+                    &self.shortcut_tooltip(
+                        strings.set_end_from_playhead.as_str(),
+                        ShortcutAction::RemoveCut,
+                    ),
+                ) {
+                    self.set_selected_end_from_playhead();
+                }
+                if symbol_button(
+                    ui,
+                    icons::SEGMENT_END,
+                    has_media && has_selection,
+                    &self.shortcut_tooltip(
+                        strings.go_to_segment_end.as_str(),
+                        ShortcutAction::SegmentEnd,
+                    ),
+                ) {
+                    self.application.seek_to_selected_segment_end();
+                }
+                if symbol_button(
+                    ui,
+                    icons::NEXT_SEGMENT,
+                    has_media && has_selection,
+                    &self.shortcut_tooltip(
+                        strings.select_next_segment.as_str(),
+                        ShortcutAction::NextSegment,
+                    ),
+                ) {
+                    self.application.select_next_segment();
+                }
+                if symbol_button(
+                    ui,
+                    icons::GO_TO_END,
+                    has_media,
+                    &self.shortcut_tooltip(strings.go_to_end.as_str(), ShortcutAction::GoToEnd),
+                ) {
+                    self.application.seek_to_end();
+                }
+            },
+        );
     }
 
     fn timeline_bar(&mut self, ui: &mut egui::Ui) {
@@ -635,12 +650,19 @@ pub(super) fn time_field_width(ui: &egui::Ui) -> f32 {
 }
 
 pub(super) fn symbol_button(ui: &mut egui::Ui, label: &str, enabled: bool, tooltip: &str) -> bool {
-    ui.add_enabled(
-        enabled,
-        egui::Button::new(label).min_size(egui::vec2(32.0, 24.0)),
-    )
-    .on_hover_text(tooltip)
-    .clicked()
+    symbol_button_sized(ui, label, enabled, tooltip, egui::vec2(32.0, 24.0))
+}
+
+pub(super) fn symbol_button_sized(
+    ui: &mut egui::Ui,
+    label: &str,
+    enabled: bool,
+    tooltip: &str,
+    size: egui::Vec2,
+) -> bool {
+    ui.add_enabled(enabled, egui::Button::new(label).min_size(size))
+        .on_hover_text(tooltip)
+        .clicked()
 }
 
 /// Parses `HH:MM:SS.mmm` or decimal seconds from a segment input field.

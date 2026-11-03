@@ -279,6 +279,12 @@ impl Application {
         &mut self,
         position: Timestamp,
     ) -> Result<(), SegmentCommandError> {
+        // A pending cut point takes precedence: the user is already building a
+        // new segment, so the same key continues that flow even when another
+        // segment is selected.
+        if self.markers.in_point.is_some() {
+            return self.add_cut_point(position);
+        }
         let selected = self
             .selected_segment
             .and_then(|id| self.timeline.get(id).copied());
@@ -288,17 +294,31 @@ impl Application {
         }
     }
 
-    /// Sets the selected segment's end, or clears pending cut points.
-    pub fn set_end_or_clear_cut_points(
+    /// Sets the selected segment's end, or closes the pending cut point.
+    ///
+    /// With a pending in point the playhead becomes the out point and the
+    /// segment is created, which is the second half of the cut workflow.
+    /// Without a selection or a pending point the command does nothing.
+    pub fn set_end_or_complete_cut_point(
         &mut self,
         position: Timestamp,
     ) -> Result<(), SegmentCommandError> {
-        if self.selected_segment.is_some() {
-            self.set_selected_segment_end(position)
-        } else {
-            self.remove_cut_point();
-            Ok(())
+        // Finish the pending point before touching the selected segment.
+        if let Some(start) = self.markers.in_point {
+            let Some(media) = self.media.as_ref() else {
+                return Err(SegmentCommandError::NoMedia);
+            };
+            let position = clamp_position(position, media.duration);
+            if position <= start {
+                return Err(SegmentCommandError::EmptyRange);
+            }
+            self.markers.out_point = Some(position);
+            return self.add_segment().map(|_| ());
         }
+        if self.selected_segment.is_some() {
+            return self.set_selected_segment_end(position);
+        }
+        Ok(())
     }
 
     /// Removes pending cut points, or the selected segment when none is
@@ -541,37 +561,69 @@ impl Application {
         self.selected_segment = None;
     }
 
-    /// Appends a random segment inside the media bounds.
-    pub fn add_random_segment(&mut self) -> Result<SegmentId, SegmentCommandError> {
-        if self.media.is_none() {
+    /// Appends `count` random segments that never overlap.
+    ///
+    /// The timeline is split into `count` slots and each segment is placed
+    /// inside its own slot, with a length between 3% and 10% of the media
+    /// duration, capped to the slot size. Returns how many were created.
+    pub fn add_random_segments(&mut self, count: usize) -> Result<usize, SegmentCommandError> {
+        let Some(media) = self.media.as_ref() else {
             return Err(SegmentCommandError::NoMedia);
-        }
-        let duration = self
-            .media
-            .as_ref()
-            .and_then(|media| media.duration)
-            .map_or(0, |duration| duration.micros());
-        if duration < 1_000_000 {
+        };
+        let duration = media.duration.map_or(0, |duration| duration.micros());
+        if count == 0 || duration < 1_000_000 {
             return Err(SegmentCommandError::EmptyRange);
         }
-        let max_length = (duration / 4).clamp(1_000_000, 10_000_000);
-        let min_length = (max_length / 2).max(500_000);
-        let length = min_length + self.next_random() % (max_length - min_length + 1);
-        let start = self.next_random() % (duration - length + 1);
+
+        let count = count.min(100);
+        let slot = duration / count as u64;
+        if slot < 100_000 {
+            return Err(SegmentCommandError::EmptyRange);
+        }
+
         self.checkpoint();
-        let id = self
-            .timeline
-            .push(
+        let mut created = 0;
+        let mut last = None;
+        for index in 0..count {
+            let slot_start = slot * index as u64;
+            let slot_len = if index + 1 == count {
+                duration - slot_start
+            } else {
+                slot
+            };
+
+            // 3.0%..10.0% of the whole timeline, capped to the slot.
+            let permille = 30 + self.next_random() % 71;
+            let target = duration.saturating_mul(permille) / 1000;
+            let max_len = (slot_len * 85 / 100).max(1);
+            let len = target.clamp(1, max_len);
+            let room = slot_len - len;
+            let start = slot_start
+                + if room > 0 {
+                    self.next_random() % (room + 1)
+                } else {
+                    0
+                };
+            let end = start + len;
+            if start >= end || end > duration {
+                continue;
+            }
+
+            let Ok(id) = self.timeline.push(
                 Timestamp::from_micros(start as i64),
-                Timestamp::from_micros((start + length) as i64),
-            )
-            .map_err(|error| match error {
-                TimelineError::InvalidRange => SegmentCommandError::EmptyRange,
-                TimelineError::IdExhausted => SegmentCommandError::IdExhausted,
-                TimelineError::NotFound => SegmentCommandError::EmptyRange,
-            })?;
+                Timestamp::from_micros(end as i64),
+            ) else {
+                continue;
+            };
+            last = Some(id);
+            created += 1;
+        }
+
+        if created == 0 {
+            return Err(SegmentCommandError::EmptyRange);
+        }
         self.selection.clear();
-        self.selected_segment = Some(id);
-        Ok(id)
+        self.selected_segment = last;
+        Ok(created)
     }
 }

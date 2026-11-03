@@ -4,6 +4,8 @@ use eframe::egui;
 
 use crate::application::OpenState;
 
+use super::icons;
+
 use super::dialogs::{FileDialogPurpose, ProjectDialogMode};
 use super::{FILE_DIALOG_SUPPORTED, FONT_ZOOM_STEP, RossresscutApp, ShortcutAction};
 
@@ -331,7 +333,7 @@ impl RossresscutApp {
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
-                        .add(egui::Button::new("⚙").min_size(egui::vec2(36.0, 30.0)))
+                        .add(egui::Button::new(icons::SETTINGS).min_size(egui::vec2(36.0, 30.0)))
                         .on_hover_text(self.shortcut_tooltip(
                             strings.settings.as_str(),
                             ShortcutAction::OpenSettings,
@@ -341,7 +343,7 @@ impl RossresscutApp {
                         self.open_settings();
                     }
                     if ui
-                        .add(egui::Button::new("≡").min_size(egui::vec2(36.0, 30.0)))
+                        .add(egui::Button::new(icons::BATCH).min_size(egui::vec2(36.0, 30.0)))
                         .on_hover_text(strings.batch_export.as_str())
                         .clicked()
                     {

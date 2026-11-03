@@ -644,6 +644,57 @@ impl RossresscutApp {
         self.silence_dialog_open = open;
     }
 
+    /// Asks how many random, non-overlapping segments to create.
+    pub(super) fn random_window(&mut self, context: &egui::Context) {
+        if !self.random_dialog_open {
+            return;
+        }
+        let strings = self.strings();
+        let mut open = self.random_dialog_open;
+        let mut create = false;
+        let mut close_requested = false;
+
+        egui::Window::new(strings.random_segment.as_str())
+            .id(egui::Id::unique("random_window"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .default_width(320.0)
+            .show(context, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(strings.random_segments_count.as_str());
+                    ui.add(egui::DragValue::new(&mut self.random_count).range(1..=100));
+                });
+                if let Some(error) = &self.segment_error {
+                    ui.colored_label(ui.visuals().error_fg_color, error.as_str());
+                }
+                ui.horizontal(|ui| {
+                    if ui.button(strings.create.as_str()).clicked() {
+                        create = true;
+                    }
+                    if ui.button(strings.cancel.as_str()).clicked() {
+                        close_requested = true;
+                    }
+                });
+            });
+
+        if create {
+            match self.application.add_random_segments(self.random_count) {
+                Ok(_) => {
+                    self.segment_error = None;
+                    self.segment_input_segment = None;
+                    open = false;
+                }
+                Err(error) => self.segment_error = Some(error.to_string()),
+            }
+        }
+        if close_requested {
+            open = false;
+        }
+        self.random_dialog_open = open;
+    }
+
     /// Asks what to do with several files dropped at once.
     pub(super) fn drop_window(&mut self, context: &egui::Context) {
         let Some(files) = self.pending_drop.clone() else {
@@ -707,7 +758,6 @@ impl RossresscutApp {
                 ui.label(strings.about_description.as_str());
                 ui.label(fill(&strings.about_version, &[env!("CARGO_PKG_VERSION")]));
                 ui.label(fill(&strings.about_commit, &[env!("GIT_COMMIT")]));
-                ui.label(fill(&strings.about_phase, &[crate::PHASE]));
             });
 
         self.about_open = open;

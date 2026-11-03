@@ -31,7 +31,10 @@
 
 ## 素材与字体
 
-- 仓库不包含字体、图标、图片、音乐或视频成品。
+- `assets/fonts/JetBrainsMonoNerdFontPropo-Regular.ttf`：JetBrains Mono Nerd Font Propo
+  Regular，来自 Nerd Fonts v3.5.1（patched JetBrains Mono），
+  许可证 SIL Open Font License 1.1，见 `assets/fonts/OFL.txt`。
+  仅作为 UI 图标 glyph 的回退字体，不用于正文排版。
 - `tests/fixtures/` 中的媒体文件是使用 FFmpeg `lavfi` 生成的合成素材，不包含第三方内容；重新生成方式见 `tests/fixtures/README.md`。
-- UI 字体来自用户系统，通过 `fontdb` 枚举；项目不分发字体。
+- 正文 UI 字体来自用户系统，通过 `fontdb` 枚举；项目不分发正文排版字体。
 - 若以后加入其他素材，必须记录来源、作者、许可证，并更新本文件。

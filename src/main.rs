@@ -24,8 +24,8 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<(), AppError> {
-    let initial_path = std::env::args_os().nth(1).map(PathBuf::from);
+    let initial_paths: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
 
-    rossresscut::ui::run(initial_path)
+    rossresscut::ui::run(initial_paths)
         .map_err(|error| AppError::startup("starting the desktop window", error))
 }

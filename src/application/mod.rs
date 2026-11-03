@@ -35,7 +35,7 @@ mod waveform;
 
 #[cfg(feature = "mpv-preview")]
 use crate::media::preview::{MpvPreview, MpvPreviewError};
-pub use batch::{BatchItem, BatchItemStatus, BatchMerge, BatchRequest};
+pub use batch::{BatchItem, BatchItemStatus, BatchMerge, BatchRequest, BatchSkipReason};
 pub use export::{ExportCommandError, ExportStage, ExportStatus};
 use export::{ExportJob, JobEvent};
 #[cfg(feature = "mpv-preview")]

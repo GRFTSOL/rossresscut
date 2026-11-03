@@ -124,6 +124,10 @@ impl RossresscutApp {
             self.export_panel_open = false;
             return true;
         }
+        if self.random_dialog_open {
+            self.random_dialog_open = false;
+            return true;
+        }
         if self.pending_drop.is_some() {
             self.pending_drop = None;
             return true;
@@ -158,12 +162,17 @@ impl RossresscutApp {
             }
             ShortcutAction::RemoveCut => {
                 let position = self.application.position();
-                if let Err(error) = self.application.set_end_or_clear_cut_points(position) {
+                if let Err(error) = self.application.set_end_or_complete_cut_point(position) {
                     self.segment_error = Some(error.to_string());
                 } else {
                     self.segment_error = None;
                     self.segment_input_segment = None;
                 }
+            }
+            ShortcutAction::DeleteSegment => {
+                self.application.remove_selected_segment();
+                self.segment_error = None;
+                self.segment_input_segment = None;
             }
             ShortcutAction::Split => {
                 if let Err(error) = self.application.split_selected_segment() {
@@ -189,8 +198,6 @@ impl RossresscutApp {
             ShortcutAction::SegmentEnd => self.application.seek_to_selected_segment_end(),
             ShortcutAction::NextSegment => self.application.select_next_segment(),
             ShortcutAction::GoToEnd => self.application.seek_to_end(),
-            ShortcutAction::SetSegmentStart => self.set_selected_start_from_playhead(),
-            ShortcutAction::SetSegmentEnd => self.set_selected_end_from_playhead(),
             ShortcutAction::Undo => {
                 self.application.undo();
                 self.segment_input_segment = None;
@@ -214,12 +221,7 @@ impl RossresscutApp {
             }
             ShortcutAction::SelectAll => self.application.select_all_segments(),
             ShortcutAction::RandomSegment => {
-                if let Err(error) = self.application.add_random_segment() {
-                    self.segment_error = Some(error.to_string());
-                } else {
-                    self.segment_error = None;
-                    self.segment_input_segment = None;
-                }
+                self.random_dialog_open = true;
             }
             ShortcutAction::SortSegments => {
                 self.application.sort_segments();

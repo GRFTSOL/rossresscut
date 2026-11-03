@@ -341,8 +341,17 @@ fn random_shuffle_and_merge_stay_valid() {
     application.open_media(fixture("sample-keyframes.mp4"));
     wait_until_ready(&mut application);
 
-    let random = application.add_random_segment().expect("random segment");
-    assert!(application.timeline().get(random).is_some());
+    let created = application.add_random_segments(3).expect("random segments");
+    assert_eq!(created, 3);
+    assert_eq!(application.timeline().len(), 3);
+    let mut ranges: Vec<_> = application.timeline().segments().to_vec();
+    ranges.sort_by_key(|segment| segment.start());
+    for pair in ranges.windows(2) {
+        assert!(
+            pair[0].end() <= pair[1].start(),
+            "random segments must not overlap"
+        );
+    }
 
     application.clear_segments();
     application.set_in_point(micros(0));
@@ -399,7 +408,7 @@ fn cut_shortcut_edits_the_selected_segment_head_and_tail() {
 
     // The same contextual family sets the tail.
     application
-        .set_end_or_clear_cut_points(micros(1_200_000))
+        .set_end_or_complete_cut_point(micros(1_200_000))
         .expect("set end");
     let segment = *application.timeline().get(id).expect("segment");
     assert_eq!(segment.end(), micros(1_200_000));
@@ -427,7 +436,7 @@ fn cut_shortcut_after_the_segment_end_starts_a_new_marker() {
 }
 
 #[test]
-fn cut_shortcut_without_a_selection_uses_markers() {
+fn cut_shortcut_without_a_selection_completes_the_cut_point() {
     let mut application = Application::new();
     application.open_media(fixture("sample-keyframes.mp4"));
     wait_until_ready(&mut application);
@@ -438,10 +447,89 @@ fn cut_shortcut_without_a_selection_uses_markers() {
         .expect("in point");
     assert_eq!(application.in_point(), Some(micros(500_000)));
 
-    // O without a selection clears the pending cut point.
+    // The same family closes the pending point instead of deleting it.
     application
-        .set_end_or_clear_cut_points(micros(800_000))
-        .expect("clear markers");
+        .set_end_or_complete_cut_point(micros(800_000))
+        .expect("out point");
     assert!(application.in_point().is_none());
+    let segments = application.timeline().segments();
+    assert_eq!(segments.len(), 1);
+    assert_eq!(segments[0].start(), micros(500_000));
+    assert_eq!(segments[0].end(), micros(800_000));
+}
+
+#[test]
+fn a_pending_cut_point_takes_precedence_over_the_selection() {
+    let mut application = Application::new();
+    application.open_media(fixture("sample-keyframes.mp4"));
+    wait_until_ready(&mut application);
+
+    application.set_in_point(micros(0));
+    application.set_out_point(micros(1_000_000));
+    let existing = application.add_segment().expect("existing segment");
+
+    application.select_segment(Some(existing));
+    application
+        .add_cut_point_or_set_start(micros(2_000_000))
+        .expect("pending point");
+    assert_eq!(application.in_point(), Some(micros(2_000_000)));
+
+    // Alt+O finishes the pending point instead of moving the selected segment.
+    application
+        .set_end_or_complete_cut_point(micros(2_500_000))
+        .expect("complete the pending point");
+
+    let unchanged = *application.timeline().get(existing).expect("existing");
+    assert_eq!(unchanged.end(), micros(1_000_000));
+    assert_eq!(application.timeline().segments().len(), 2);
+    let created = application.timeline().segments()[1];
+    assert_eq!(created.start(), micros(2_000_000));
+    assert_eq!(created.end(), micros(2_500_000));
+}
+
+#[test]
+fn a_pending_cut_point_keeps_alt_i_in_the_cut_flow() {
+    let mut application = Application::new();
+    application.open_media(fixture("sample-keyframes.mp4"));
+    wait_until_ready(&mut application);
+
+    application.set_in_point(micros(0));
+    application.set_out_point(micros(1_000_000));
+    let existing = application.add_segment().expect("existing segment");
+
+    // Start a pending point without a selection, then select the old segment.
+    application.select_segment(None);
+    application
+        .add_cut_point_or_set_start(micros(500_000))
+        .expect("pending point");
+    application.select_segment(Some(existing));
+
+    // Alt+I continues the pending cut even though the playhead is inside the
+    // selected segment; the old segment must not lose its head.
+    application
+        .add_cut_point_or_set_start(micros(800_000))
+        .expect("complete the pending point");
+
+    let unchanged = *application.timeline().get(existing).expect("existing");
+    assert_eq!(unchanged.start(), micros(0));
+    assert_eq!(application.timeline().segments().len(), 2);
+}
+
+#[test]
+fn completing_a_cut_point_rejects_a_reversed_range() {
+    let mut application = Application::new();
+    application.open_media(fixture("sample-keyframes.mp4"));
+    wait_until_ready(&mut application);
+
+    application.select_segment(None);
+    application
+        .add_cut_point_or_set_start(micros(1_000_000))
+        .expect("in point");
+
+    let error = application
+        .set_end_or_complete_cut_point(micros(500_000))
+        .expect_err("end before start");
+    assert_eq!(error, SegmentCommandError::EmptyRange);
+    assert_eq!(application.in_point(), Some(micros(1_000_000)));
     assert!(application.timeline().segments().is_empty());
 }

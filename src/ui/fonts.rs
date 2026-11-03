@@ -208,6 +208,26 @@ pub(super) fn font_definitions(path: &Path, index: u32) -> Option<egui::FontDefi
     Some(definitions)
 }
 
+/// Nerd Fonts Propo, used as a fallback for icon glyphs.
+const ICON_FONT: &[u8] =
+    include_bytes!("../../assets/fonts/JetBrainsMonoNerdFontPropo-Regular.ttf");
+
+/// Appends the icon font to both families so missing glyphs fall back to it.
+pub(super) fn install_icon_font(definitions: &mut egui::FontDefinitions) {
+    const FAMILY: &str = "nerd_icons";
+    definitions.font_data.insert(
+        FAMILY.to_owned(),
+        Arc::new(egui::FontData::from_static(ICON_FONT)),
+    );
+    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+        definitions
+            .families
+            .entry(family)
+            .or_default()
+            .push(FAMILY.to_owned());
+    }
+}
+
 pub(super) fn face_label(face: &FontFaceChoice) -> String {
     let weight = match face.weight {
         100 => "Thin".to_owned(),
