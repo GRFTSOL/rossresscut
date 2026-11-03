@@ -79,6 +79,7 @@ pub struct MultiExportRequest {
     subtitle: Option<SubtitlePlan>,
     streams: Option<StreamSelection>,
     smart_cut: Option<SmartCutContext>,
+    chapter_titles: Vec<String>,
 }
 
 impl MultiExportRequest {
@@ -105,6 +106,7 @@ impl MultiExportRequest {
             subtitle: None,
             streams: None,
             smart_cut: None,
+            chapter_titles: Vec::new(),
         })
     }
 
@@ -145,6 +147,14 @@ impl MultiExportRequest {
     /// Enables smart cutting for every segment.
     pub fn with_smart_cut(mut self, smart_cut: Option<SmartCutContext>) -> Self {
         self.smart_cut = smart_cut;
+        self
+    }
+
+    /// Sets the chapter title of every segment, in output order.
+    ///
+    /// Missing or blank entries fall back to `Segment N`.
+    pub fn with_chapter_titles(mut self, titles: Vec<String>) -> Self {
+        self.chapter_titles = titles;
         self
     }
 
@@ -312,6 +322,7 @@ pub struct MultiExport {
     subtitle: Option<SubtitlePlan>,
     streams: Option<StreamSelection>,
     smart_cut: Option<SmartCutContext>,
+    chapter_titles: Vec<String>,
 }
 
 enum Stage {
@@ -370,6 +381,7 @@ impl MultiExport {
             subtitle: request.subtitle,
             streams: request.streams,
             smart_cut: request.smart_cut,
+            chapter_titles: request.chapter_titles,
             total_duration,
             completed_duration: Duration::ZERO,
             part_durations,
@@ -625,11 +637,13 @@ impl MultiExport {
                     duration
                 };
                 let end = start.checked_add(duration).unwrap_or(start);
-                chapters.push(ChapterSpec {
-                    start,
-                    end,
-                    title: format!("Segment {}", index + 1),
-                });
+                let title = self
+                    .chapter_titles
+                    .get(index)
+                    .filter(|title| !title.trim().is_empty())
+                    .cloned()
+                    .unwrap_or_else(|| format!("Segment {}", index + 1));
+                chapters.push(ChapterSpec { start, end, title });
                 start = end;
             }
             let path = self.work_dir.path().join("chapters.txt");

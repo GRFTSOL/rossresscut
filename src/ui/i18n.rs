@@ -94,6 +94,9 @@ pub struct Strings {
     pub batch_start: String,
     pub cancel: String,
     pub cancel_export: String,
+    pub chapter_hint: String,
+    pub chapters: String,
+    pub chapters_empty: String,
     pub choose_directory: String,
     pub choose_project_directory: String,
     pub clear_markers: String,
@@ -107,6 +110,7 @@ pub struct Strings {
     pub decoder_software: String,
     pub decrease_font_size: String,
     pub default_font: String,
+    pub discard: String,
     pub drop_batch: String,
     pub drop_files: String,
     pub drop_merge: String,
@@ -189,6 +193,7 @@ pub struct Strings {
     pub redo: String,
     pub remove_cut_point: String,
     pub reset_font_size: String,
+    pub save: String,
     pub scene_cuts: String,
     pub scene_detection: String,
     pub scene_no_cuts: String,
@@ -228,7 +233,10 @@ pub struct Strings {
     pub theme_dark: String,
     pub theme_light: String,
     pub undo: String,
+    pub unsaved_changes: String,
+    pub unsaved_changes_hint: String,
     pub video: String,
+    pub waveform_generating: String,
 }
 
 #[cfg(test)]

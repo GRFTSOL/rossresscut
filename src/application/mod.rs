@@ -3,9 +3,10 @@
 //! The UI sends commands and polls [`Application::update`]. FFprobe, preview
 //! decoding, and audio playback all run outside the UI thread.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 use std::time::Instant;
 
@@ -21,6 +22,7 @@ use crate::media::ffprobe::ProbeError;
 use crate::media::preview::{HardwareAcceleration, PreviewAudio, PreviewVideo, VideoFrame};
 
 mod batch;
+mod chapters;
 mod editing;
 mod export;
 mod media;
@@ -124,6 +126,7 @@ pub struct Application {
     selected_segment: Option<SegmentId>,
     selection: BTreeSet<SegmentId>,
     clipboard: Vec<Segment>,
+    chapter_titles: BTreeMap<SegmentId, String>,
     history: Vec<TimelineSnapshot>,
     redo_stack: Vec<TimelineSnapshot>,
     rng_state: u64,
@@ -152,6 +155,7 @@ pub(super) struct KeyframeJob {
 
 pub(super) struct WaveformJob {
     receiver: Receiver<Result<Waveform, crate::media::waveform::WaveformError>>,
+    progress: Arc<crate::media::waveform::WaveformProgress>,
 }
 
 pub(super) struct SceneJob {
@@ -162,6 +166,7 @@ pub(super) struct SceneJob {
 pub(super) struct PendingProject {
     pub(super) segments: Vec<Segment>,
     pub(super) next_id: u64,
+    pub(super) chapter_titles: BTreeMap<SegmentId, String>,
 }
 
 /// Options applied to one export run.
@@ -481,7 +486,10 @@ impl Application {
             return Err(ExportCommandError::NoSegment);
         }
 
-        if segments.len() == 1 && smart_cut.is_none() {
+        // Chapters use the actual container length of each produced part, which
+        // is only known after cutting. A single segment therefore takes the
+        // multi-segment path when chapters are requested.
+        if segments.len() == 1 && smart_cut.is_none() && !options.chapters {
             let segment = segments[0];
             let request =
                 ExportRequest::new(source, segment.start(), segment.end(), output.clone())
@@ -491,10 +499,11 @@ impl Application {
                     .with_streams(options.streams.clone());
             let duration = request.duration();
             let request = if options.chapters {
+                let title = self.export_chapter_title(segment.id(), 0);
                 request.with_chapters(vec![ChapterSpec {
                     start: Duration::ZERO,
                     end: duration,
-                    title: "Segment 1".to_owned(),
+                    title,
                 }])
             } else {
                 request
@@ -518,9 +527,15 @@ impl Application {
                     .ok_or(ExportCommandError::InvalidOutput)
             })
             .collect::<Result<_, _>>()?;
+        let chapter_titles: Vec<String> = segments
+            .iter()
+            .enumerate()
+            .map(|(index, segment)| self.export_chapter_title(segment.id(), index))
+            .collect();
         let request = MultiExportRequest::new(source, export_segments, output.clone())
             .ok_or(ExportCommandError::InvalidOutput)?
             .with_chapters(options.chapters)
+            .with_chapter_titles(chapter_titles)
             .with_title(options.title)
             .with_subtitle(subtitle)
             .with_streams(options.streams)

@@ -102,6 +102,7 @@ impl Application {
         self.selected_segment = None;
         self.selection.clear();
         self.clipboard.clear();
+        self.reset_chapter_titles();
         self.history.clear();
         self.redo_stack.clear();
     }
@@ -129,9 +130,13 @@ impl Application {
                             project.next_id,
                         )
                         .unwrap_or_else(|| Timeline::new(media.path.clone()));
+                        self.chapter_titles = project.chapter_titles;
                         self.timeline_revision += 1;
                     }
-                    None => self.timeline.reset(media.path.clone()),
+                    None => {
+                        self.timeline.reset(media.path.clone());
+                        self.segments_from_container_chapters(&media);
+                    }
                 }
                 self.start_keyframes(&media);
                 self.start_waveform(&media);

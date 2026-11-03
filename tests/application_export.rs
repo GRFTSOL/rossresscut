@@ -238,6 +238,60 @@ fn chapter_count(path: &Path) -> usize {
     value["chapters"].as_array().map_or(0, Vec::len)
 }
 
+fn chapter_titles(path: &Path) -> Vec<String> {
+    let output = Command::new("ffprobe")
+        .args(["-v", "error", "-show_chapters", "-of", "json"])
+        .arg(path)
+        .output()
+        .expect("run ffprobe for chapters");
+    assert!(output.status.success(), "ffprobe failed on chapters");
+    let value: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("parse chapter json");
+    value["chapters"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|chapter| chapter["tags"]["title"].as_str().map(str::to_owned))
+        .collect()
+}
+
+fn chapter_end_times(path: &Path) -> Vec<f64> {
+    let output = Command::new("ffprobe")
+        .args(["-v", "error", "-show_chapters", "-of", "json"])
+        .arg(path)
+        .output()
+        .expect("run ffprobe for chapters");
+    assert!(output.status.success(), "ffprobe failed on chapters");
+    let value: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("parse chapter json");
+    value["chapters"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|chapter| chapter["end_time"].as_str()?.parse().ok())
+        .collect()
+}
+
+fn output_duration(path: &Path) -> f64 {
+    let output = Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "csv=p=0",
+        ])
+        .arg(path)
+        .output()
+        .expect("run ffprobe for duration");
+    assert!(output.status.success(), "ffprobe failed on duration");
+    String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse()
+        .expect("duration is a number")
+}
+
 #[test]
 fn cut_points_create_and_split_segments() {
     let directory = fixture_directory();
@@ -325,6 +379,112 @@ fn exports_enabled_segments_in_timeline_order() {
         "application export must follow timeline order"
     );
     assert_eq!(chapter_count(&output), 3, "one chapter per segment");
+
+    if let Err(error) = fs::remove_dir_all(&directory) {
+        eprintln!("could not remove {}: {error}", directory.display());
+    }
+}
+
+#[test]
+fn exports_custom_chapter_titles() {
+    let directory = fixture_directory();
+    let source = directory.join("source.mp4");
+    let output = directory.join("titled.mp4");
+    generate_fixture(&source);
+
+    let mut application = Application::new();
+    application.open_media(source);
+    wait_for_ready(&mut application);
+
+    let mut ids = Vec::new();
+    for (start, end) in [(0, 5), (5, 10)] {
+        application.set_in_point(Timestamp::from_micros(start * 1_000_000));
+        application.set_out_point(Timestamp::from_micros(end * 1_000_000));
+        ids.push(
+            application
+                .add_segment()
+                .expect("create a segment from the markers"),
+        );
+    }
+    application.set_chapter_title(ids[0], "Opening".to_owned());
+    application.set_chapter_title(ids[1], "Climax".to_owned());
+
+    application
+        .start_export(
+            output.clone(),
+            rossresscut::application::ExportOptions {
+                chapters: true,
+                ..Default::default()
+            },
+        )
+        .expect("start multi-segment export");
+    wait_for_export(&mut application);
+
+    assert!(
+        matches!(application.export_status(), ExportStatus::Completed { .. }),
+        "export did not complete: {:?}",
+        application.export_status()
+    );
+    assert_eq!(chapter_titles(&output), vec!["Opening", "Climax"]);
+
+    if let Err(error) = fs::remove_dir_all(&directory) {
+        eprintln!("could not remove {}: {error}", directory.display());
+    }
+}
+
+#[test]
+fn single_segment_chapter_uses_the_actual_output_duration() {
+    let directory = fixture_directory();
+    let source = directory.join("source.mp4");
+    let output = directory.join("single.mp4");
+    generate_fixture(&source);
+
+    let mut application = Application::new();
+    application.open_media(source);
+    wait_for_ready(&mut application);
+
+    // The fixture has a one-second GOP, so a 1.5s start falls back to 1.0s and
+    // the output is longer than the requested 4.5s.
+    application.set_in_point(Timestamp::from_micros(1_500_000));
+    application.set_out_point(Timestamp::from_micros(6_000_000));
+    application
+        .add_segment()
+        .expect("create a segment from the markers");
+
+    application
+        .start_export(
+            output.clone(),
+            rossresscut::application::ExportOptions {
+                chapters: true,
+                ..Default::default()
+            },
+        )
+        .expect("start single-segment export");
+    wait_for_export(&mut application);
+
+    assert!(
+        matches!(application.export_status(), ExportStatus::Completed { .. }),
+        "export did not complete: {:?}",
+        application.export_status()
+    );
+
+    let duration = output_duration(&output);
+    let ends = chapter_end_times(&output);
+    assert_eq!(ends.len(), 1, "one chapter for the single segment");
+    assert!(
+        duration > 4.7,
+        "stream copy should start before 1.5s, got {duration}s"
+    );
+    assert!(
+        (ends[0] - duration).abs() < 0.1,
+        "chapter end {} should follow the output duration {duration}",
+        ends[0]
+    );
+    assert_eq!(
+        application.last_ffmpeg_commands().len(),
+        2,
+        "cutting and concatenating are separate processes"
+    );
 
     if let Err(error) = fs::remove_dir_all(&directory) {
         eprintln!("could not remove {}: {error}", directory.display());

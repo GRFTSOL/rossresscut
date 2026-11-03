@@ -10,8 +10,14 @@ use rossresscut::media::waveform;
 
 #[test]
 fn extracts_peaks_from_a_real_audio_stream() {
-    let waveform = waveform::extract(Path::new("tests/fixtures/sample.mp4"), 1, Timestamp::ZERO)
-        .expect("waveform");
+    let waveform = waveform::extract(
+        Path::new("tests/fixtures/sample.mp4"),
+        1,
+        Timestamp::ZERO,
+        None,
+        None,
+    )
+    .expect("waveform");
 
     assert!(!waveform.is_empty());
     let micros = waveform.duration().micros();
@@ -32,8 +38,8 @@ fn extracts_peaks_from_a_real_audio_stream() {
 fn keeps_the_requested_start_time() {
     let start = Timestamp::from_micros(2_000_000);
 
-    let waveform =
-        waveform::extract(Path::new("tests/fixtures/sample.mp4"), 1, start).expect("waveform");
+    let waveform = waveform::extract(Path::new("tests/fixtures/sample.mp4"), 1, start, None, None)
+        .expect("waveform");
 
     assert_eq!(waveform.start(), start);
     assert_eq!(
@@ -48,6 +54,8 @@ fn reports_a_stream_without_audio() {
         Path::new("tests/fixtures/sample-keyframes.mp4"),
         0,
         Timestamp::ZERO,
+        None,
+        None,
     )
     .expect_err("video-only media has no waveform");
 
@@ -64,6 +72,8 @@ fn reports_a_missing_file() {
         Path::new("tests/fixtures/does-not-exist.mp4"),
         1,
         Timestamp::ZERO,
+        None,
+        None,
     )
     .expect_err("missing files cannot be scanned");
 

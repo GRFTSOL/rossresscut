@@ -2,8 +2,6 @@
 
 use eframe::egui;
 
-use crate::application::OpenState;
-
 use super::shortcuts::{Shortcut, is_modifier_key};
 use super::timeline::parse_time_input;
 use super::{RossresscutApp, ShortcutAction};
@@ -128,13 +126,7 @@ impl RossresscutApp {
                 self.application.clear_markers();
                 self.segment_error = None;
             }
-            ShortcutAction::CloseMedia => {
-                if !matches!(self.application.state(), OpenState::Empty) {
-                    self.application.close_media();
-                    self.reset_scrub();
-                    self.segment_error = None;
-                }
-            }
+            ShortcutAction::CloseMedia => self.request_close_media(),
             ShortcutAction::OpenSettings => self.open_settings(),
             ShortcutAction::GoToStart => self.application.seek_to_start(),
             ShortcutAction::PreviousSegment => self.application.select_previous_segment(),

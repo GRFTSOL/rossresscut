@@ -25,6 +25,9 @@
   "batch_start": "开始批处理",
   "cancel": "取消",
   "cancel_export": "取消导出",
+  "chapter_hint": "标题会写入导出的章节；留空时使用 Segment N。",
+  "chapters": "章节",
+  "chapters_empty": "启用一个片段后才会生成章节。",
   "choose_directory": "选择目录…",
   "choose_project_directory": "选择项目目录…",
   "clear_markers": "清除标记",
@@ -38,6 +41,7 @@
   "decoder_software": "软件",
   "decrease_font_size": "减小字体大小",
   "default_font": "默认",
+  "discard": "不保存",
   "drop_batch": "按当前片段批量导出",
   "drop_files": "导入 {} 个文件",
   "drop_merge": "合并成一个视频",
@@ -120,6 +124,7 @@
   "redo": "重做",
   "remove_cut_point": "删除剪切点",
   "reset_font_size": "复位字体大小",
+  "save": "保存",
   "scene_cuts": "检测到 {} 个场景切换",
   "scene_detection": "检测场景切换",
   "scene_no_cuts": "没有检测到场景切换。",
@@ -159,5 +164,8 @@
   "theme_dark": "深色",
   "theme_light": "浅色",
   "undo": "撤销",
-  "video": "视频"
+  "unsaved_changes": "有未保存的修改",
+  "unsaved_changes_hint": "关闭前是否保存项目文件？",
+  "video": "视频",
+  "waveform_generating": "正在生成音频波形, 进度: "
 }

@@ -244,14 +244,14 @@ headless/`vo=null`/`audio=no` 下精确 seek 不触发 `PlaybackRestart`，需�
 
 **问题**：没有显式 metadata / chapter 编辑。
 
-**当前状态**：Stream selection 已在 Phase 7C 实现；导出章节自动生成；
-metadata 只有输出标题。章节编辑界面未实现。
+**当前状态**：Stream selection、章节标题编辑与项目持久化已在 Phase 7C 实现；
+导出章节自动生成；metadata 只有输出标题。
 
-**影响**：不能逐项编辑 metadata，也不能手工编辑章节。
+**影响**：不能逐项编辑 metadata。
 
-**计划时机**：Phase 7C（章节编辑）、后续 metadata 需求出现时。
+**计划时机**：metadata 需求出现时。
 
-**解除条件**：按独立设计实现章节编辑与需要的 metadata 字段。
+**解除条件**：按独立设计实现需要的 metadata 字段。
 
 ### OQ-17 4K / 60fps / VFR / 字幕 / 章节验证
 
@@ -294,11 +294,18 @@ metadata 只有输出标题。章节编辑界面未实现。
 **问题**：章节时间按请求时长累计，实际切片会回退到关键帧，章节边界可能与输出内容不完全对齐。
 
 **当前状态**：已解决。多段导出在 concat 前用后台线程 `ffprobe` 读取每个临时片段
-的实际容器时长，再按实际时长累计章节时间。
+的实际容器时长，再按实际时长累计章节时间。启用章节的单段导出同样走
+临时片段 + concat，因此也使用实际时长。
 
-**影响**：章节边界现在跟随实际输出；偏差不超过容器时长报告精度。
+**参考实现**：LosslessCut 导出后对每个片段重新 ffprobe，再用实际时长生成章节。
 
-**解除条件**：`tests/multi_export.rs::chapters_follow_actual_part_lengths` 已覆盖。
+**已排除的方案**：省略 ffmetadata 的 END 让播放器延伸到文件末尾。
+FFmpeg 实测要求每个 `[CHAPTER]` 都有 END（`Expected chapter end timestamp`）。
+
+**影响**：章节边界跟随实际输出；启用章节的单段导出多一次 stream copy remux。
+
+**解除条件**：`tests/multi_export.rs::chapters_follow_actual_part_lengths`、
+`tests/application_export.rs::single_segment_chapter_uses_the_actual_output_duration`。
 
 ### OQ-21 mpv 精确 seek 后的短暂旧帧
 

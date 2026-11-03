@@ -2,11 +2,10 @@
 
 ## 当前阶段
 
-**Phase 7C：媒体流与智能裁切（章节编辑未实现）**
+**Phase 7C：媒体流与智能裁切（已完成）**
 
 - Phase 5 多片段合并、Phase 7A 项目持久化、Phase 7B 场景/静音/批处理/合并均已完成。
-- Phase 7C 已完成：文本字幕裁剪、stream selection、smart cut 调查与实现。
-- Phase 7C 未完成：章节编辑界面。
+- Phase 7C 已完成：文本字幕裁剪、stream selection、smart cut 调查与实现、章节标题编辑。
 - 未解决问题记录在 `docs/open-questions.md`。
 
 ## Phase 5 已完成要点
@@ -747,7 +746,44 @@ ADR：`docs/decisions/0012-project-and-settings-format.md`。
   - 批处理暂不支持智能裁切（每个文件需要单独建立关键帧索引）。
 - [x] Smart cut 技术调查（只调查，不实现；输出独立文档 / ADR）
   - `docs/investigations/smart-cut.md`、`docs/decisions/0013-smart-cut.md`
-- [ ] Chapters 编辑（导出章节已实现，编辑界面未实现）
+- [x] Chapters 编辑（导出章节已实现，编辑界面已实现）
+  - 右侧「片段」下方列出所有启用片段的导出章节，可按输出时间顺序查看
+  - 每章可编辑标题，按 `SegmentId` 保存，重排/删除片段不会错位
+  - 标题为空时导出回退到 `Segment N`；单段与多段导出都接入
+  - 章节标题随项目保存：写入 `.rrc` 的 `[[timeline.segments]] chapter_title`，
+    加载项目时原样恢复（ADR-0012 已补充）
+  - 实现：`application::chapters`（标题读写）、`ui::panels::chapters_panel`、
+    `MultiExportRequest::with_chapter_titles`
+  - 已验证：`tests/application_export.rs::exports_custom_chapter_titles`、
+    `tests/application_export.rs::single_segment_chapter_uses_the_actual_output_duration`、
+    `tests/project.rs::saves_and_restores_chapter_titles`
+
+  ### 已知限制
+
+  - 配置了项目的媒体，只显示导出章节；不能编辑或导入源容器自带的章节。
+  - 所有章节都按各临时片段的**实际容器时长**累计；为获得实际时长，
+    启用章节的单段导出也会走临时片段 + concat（多一次 stream copy remux）。
+  - 参考实现（LosslessCut）同样在导出后重新 probe 每个片段再用实际时长生成章节。
+- [x] 项目关闭 / 退出提示
+  - 从 `.rrc` 打开或手动保存过的项目，在关闭媒体、关闭窗口、退出应用时
+    若有未保存修改则询问保存
+  - 直接导入媒体不提示；手动保存后继续编辑会重新提示
+  - 标题等编辑也会推进 `timeline_revision`，因此同样触发提示与自动保存
+  - 实现：`ui::dialogs::{has_unsaved_project, request_close_media, finish_close}`、
+    `ui::windows::close_prompt_window`
+  - 已验证：`ui::tests` 中的 dirty 判定、保存后关闭、不保存关闭
+- [x] 容器章节自动转为片段
+  - 打开媒体且没有待恢复项目时，如果容器带章节，按章节创建 Segment
+  - 章节时间减去容器 `start_time` 并裁剪到媒体时长；空或反向章节跳过
+  - 章节标题同时写入对应 Segment 的章节标题
+  - 已验证：`tests/project.rs::creates_segments_from_container_chapters`
+- [x] Waveform 生成进度
+  - 主界面左下角时间右侧显示「正在生成音频波形, 进度: 」+ 进度条
+  - 总样本数未知时使用不确定动画；生成期间每 100ms 请求重绘
+  - 实现：`media::waveform::WaveformProgress`、`Application::waveform_progress`
+- [x] 菜单与设置/导出窗口控件尺寸统一
+  - 全局 `button_padding = (10, 6)`、`interact_size.y = 28`
+  - 菜单栏设置/菜单按钮 36x30；设置页快捷键按钮高度 26
 
 每个功能在实现前都需要独立设计。
 

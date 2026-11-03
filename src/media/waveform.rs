@@ -8,17 +8,66 @@ use std::fmt;
 use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::thread;
 
 use crate::domain::time::{Duration, Timestamp};
 use crate::domain::waveform::{Peak, Waveform};
 
-/// Peak rate: one peak per 5 ms.
+/// Peaks per second of audio.
 const PEAKS_PER_SECOND: u64 = 200;
 /// Mono sample rate used for peak extraction.
 const SAMPLE_RATE: u32 = 8_000;
 /// Samples folded into one peak.
 const SAMPLES_PER_PEAK: usize = (SAMPLE_RATE as u64 / PEAKS_PER_SECOND) as usize;
+
+/// Shared progress of one waveform extraction.
+///
+/// The worker thread writes the value and the UI thread reads it every frame.
+/// `determinate` is false when the expected sample count is unknown; the UI
+/// then shows an animated bar instead of a percentage.
+#[derive(Debug)]
+pub struct WaveformProgress {
+    permille: AtomicU32,
+    determinate: bool,
+}
+
+impl WaveformProgress {
+    /// Creates progress tracking with the given determinacy.
+    pub const fn new(determinate: bool) -> Self {
+        Self {
+            permille: AtomicU32::new(0),
+            determinate,
+        }
+    }
+
+    /// Returns the progress in `0.0..=1.0`.
+    pub fn fraction(&self) -> f32 {
+        self.permille.load(Ordering::Relaxed) as f32 / 1000.0
+    }
+
+    /// Returns whether the total sample count is known.
+    pub const fn determinate(&self) -> bool {
+        self.determinate
+    }
+
+    /// Records how many samples have been folded into peaks so far.
+    fn set(&self, processed: u64, total: u64) {
+        if total == 0 {
+            return;
+        }
+        let permille = processed.saturating_mul(1000) / total;
+        self.permille.store(
+            u32::try_from(permille.min(999)).unwrap_or(999),
+            Ordering::Relaxed,
+        );
+    }
+
+    /// Marks the extraction as finished.
+    fn finish(&self) {
+        self.permille.store(1000, Ordering::Relaxed);
+    }
+}
 
 /// Errors produced while extracting a waveform.
 #[derive(Debug)]
@@ -100,6 +149,11 @@ impl std::error::Error for WaveformError {
     }
 }
 
+/// Returns the number of mono samples [`extract`] produces for `duration`.
+pub fn expected_samples(duration: Duration) -> u64 {
+    duration.micros().saturating_mul(u64::from(SAMPLE_RATE)) / 1_000_000
+}
+
 /// Decodes `stream_index` of `path` and returns its amplitude envelope.
 ///
 /// `start` is the stream's own start time; the returned waveform keeps it so
@@ -111,6 +165,8 @@ pub fn extract(
     path: &Path,
     stream_index: usize,
     start: Timestamp,
+    expected_samples: Option<u64>,
+    progress: Option<&WaveformProgress>,
 ) -> Result<Waveform, WaveformError> {
     let mut child =
         command_for(path, stream_index)
@@ -130,7 +186,7 @@ pub fn extract(
     // while the sample pipe is still being read.
     let stderr_reader = stderr.map(|stderr| thread::spawn(move || read_text(stderr)));
 
-    let peaks = read_peaks(stdout, path);
+    let peaks = read_peaks(stdout, path, expected_samples, progress);
     let status = child.wait();
 
     let stderr = stderr_reader
@@ -156,6 +212,9 @@ pub fn extract(
     }
 
     let duration = Duration::from_micros(peaks.len() as u64 * 1_000_000 / PEAKS_PER_SECOND);
+    if let Some(progress) = progress {
+        progress.finish();
+    }
     Waveform::new(start, duration, peaks).ok_or_else(|| WaveformError::Empty {
         path: path.to_path_buf(),
     })
@@ -190,7 +249,12 @@ fn command_for(path: &Path, stream_index: usize) -> Command {
 }
 
 /// Folds little-endian `i16` samples into min/max peaks.
-fn read_peaks<R: Read>(reader: R, path: &Path) -> Result<Vec<Peak>, WaveformError> {
+fn read_peaks<R: Read>(
+    reader: R,
+    path: &Path,
+    expected_samples: Option<u64>,
+    progress: Option<&WaveformProgress>,
+) -> Result<Vec<Peak>, WaveformError> {
     let mut reader = BufReader::with_capacity(64 * 1024, reader);
     let mut buffer = vec![0u8; 64 * 1024];
     let read_error = |source| WaveformError::Read {
@@ -203,6 +267,7 @@ fn read_peaks<R: Read>(reader: R, path: &Path) -> Result<Vec<Peak>, WaveformErro
     let mut min = i16::MAX;
     let mut max = i16::MIN;
     let mut samples_in_peak = 0usize;
+    let mut processed_samples = 0u64;
 
     loop {
         let read = reader.read(&mut buffer).map_err(read_error)?;
@@ -225,6 +290,10 @@ fn read_peaks<R: Read>(reader: R, path: &Path) -> Result<Vec<Peak>, WaveformErro
                 max = i16::MIN;
                 samples_in_peak = 0;
             }
+        }
+        processed_samples = processed_samples.saturating_add((usable / 2) as u64);
+        if let (Some(progress), Some(expected)) = (progress, expected_samples) {
+            progress.set(processed_samples, expected);
         }
 
         if usable < data.len() {
@@ -253,7 +322,7 @@ mod tests {
     use std::io::Cursor;
 
     fn peaks_from(bytes: &[u8]) -> Vec<Peak> {
-        read_peaks(Cursor::new(bytes.to_vec()), Path::new("test")).expect("peaks")
+        read_peaks(Cursor::new(bytes.to_vec()), Path::new("test"), None, None).expect("peaks")
     }
 
     #[test]

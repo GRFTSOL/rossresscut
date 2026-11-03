@@ -4,6 +4,7 @@
 //! counter. It deliberately does not store the media metadata, keyframes or
 //! waveform: those are re-probed when the project is opened.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -142,6 +143,9 @@ struct ProjectSegment {
     end: i64,
     #[serde(default = "default_enabled")]
     enabled: bool,
+    /// Export chapter title, when one was set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    chapter_title: Option<String>,
 }
 
 fn default_enabled() -> bool {
@@ -154,6 +158,7 @@ struct ProjectData {
     source: PathBuf,
     segments: Vec<Segment>,
     next_id: u64,
+    chapter_titles: BTreeMap<SegmentId, String>,
 }
 
 impl Application {
@@ -172,6 +177,7 @@ impl Application {
                 start: segment.start().micros(),
                 end: segment.end().micros(),
                 enabled: segment.enabled(),
+                chapter_title: self.chapter_titles.get(&segment.id()).cloned(),
             })
             .collect();
 
@@ -211,33 +217,39 @@ impl Application {
     /// caller can offer [`Application::rebind_source`].
     pub fn load_project(&mut self, path: &Path) -> Result<(), ProjectError> {
         let project = read_project(path)?;
-        let timeline = Timeline::restore(
-            project.source.clone(),
-            project.segments.clone(),
-            project.next_id,
-        )
-        .ok_or_else(|| ProjectError::Invalid {
-            path: path.to_path_buf(),
-            detail: "the segments or the ID counter are inconsistent".to_owned(),
-        })?;
+        let ProjectData {
+            source,
+            segments,
+            next_id,
+            chapter_titles,
+        } = project;
+        let timeline =
+            Timeline::restore(source.clone(), segments.clone(), next_id).ok_or_else(|| {
+                ProjectError::Invalid {
+                    path: path.to_path_buf(),
+                    detail: "the segments or the ID counter are inconsistent".to_owned(),
+                }
+            })?;
 
         self.reset_editing();
         self.timeline = timeline;
+        self.chapter_titles = chapter_titles.clone();
         self.timeline_revision += 1;
 
-        if project.source.is_file() {
+        if source.is_file() {
             self.pending_project = Some(PendingProject {
-                segments: project.segments,
-                next_id: project.next_id,
+                segments,
+                next_id,
+                chapter_titles,
             });
-            self.start_probe(project.source);
+            self.start_probe(source);
             return Ok(());
         }
 
         self.pending_project = None;
         self.media = None;
         self.state = OpenState::Failed {
-            path: project.source,
+            path: source,
             message: "the project source file is missing; open it to rebind".to_owned(),
         };
         Ok(())
@@ -249,7 +261,12 @@ impl Application {
     pub fn rebind_source(&mut self, path: PathBuf) {
         let segments = self.timeline.segments().to_vec();
         let next_id = self.timeline.next_id();
-        self.pending_project = Some(PendingProject { segments, next_id });
+        let chapter_titles = self.chapter_titles.clone();
+        self.pending_project = Some(PendingProject {
+            segments,
+            next_id,
+            chapter_titles,
+        });
         self.timeline.rebind(path.clone());
         self.start_probe(path);
     }
@@ -301,6 +318,7 @@ fn read_project(path: &Path) -> Result<ProjectData, ProjectError> {
     }
 
     let mut segments = Vec::with_capacity(file.timeline.segments.len());
+    let mut chapter_titles = BTreeMap::new();
     for saved in file.timeline.segments {
         let id = SegmentId::new(saved.id);
         let Some(segment) = Segment::new(
@@ -313,6 +331,12 @@ fn read_project(path: &Path) -> Result<ProjectData, ProjectError> {
                 detail: format!("segment {id} has an empty or reversed range"),
             });
         };
+        if let Some(title) = saved.chapter_title {
+            let title = title.trim();
+            if !title.is_empty() {
+                chapter_titles.insert(id, title.to_owned());
+            }
+        }
         segments.push(segment.with_enabled(saved.enabled));
     }
 
@@ -320,6 +344,7 @@ fn read_project(path: &Path) -> Result<ProjectData, ProjectError> {
         source: file.source.path,
         segments,
         next_id: file.timeline.next_id,
+        chapter_titles,
     })
 }
 
@@ -378,6 +403,23 @@ mod tests {
         assert_eq!(data.segments[0].id().get(), 2);
         assert!(!data.segments[0].enabled());
         assert_eq!(data.segments[1].id().get(), 1);
+    }
+
+    #[test]
+    fn saves_and_restores_chapter_titles() {
+        let path = temporary_project("chapters");
+        let mut application = application_with_segments();
+        let first = application.timeline.segments()[1].id();
+        application.set_chapter_title(first, "Intro".to_owned());
+        application.save_project(&path).expect("save");
+
+        let data = read_project(&path).expect("parse");
+        fs::remove_file(&path).ok();
+
+        assert_eq!(
+            data.chapter_titles.get(&first).map(String::as_str),
+            Some("Intro")
+        );
     }
 
     #[test]

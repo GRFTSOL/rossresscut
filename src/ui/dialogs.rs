@@ -5,7 +5,9 @@ use std::sync::mpsc::{self, TryRecvError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::application::PROJECT_EXTENSION;
+use eframe::egui;
+
+use crate::application::{OpenState, PROJECT_EXTENSION};
 
 use super::RossresscutApp;
 use super::i18n::fill;
@@ -24,6 +26,7 @@ impl RossresscutApp {
                 match purpose {
                     FileDialogPurpose::OpenMedia => {
                         self.stream_selection = None;
+                        self.detach_project();
                         self.application.open_media(path);
                     }
                     FileDialogPurpose::RebindSource => self.application.rebind_source(path),
@@ -199,8 +202,14 @@ impl RossresscutApp {
                     self.project_error = Some(fill(template, &[&error.to_string()]));
                 } else {
                     self.project_error = None;
+                    self.project_file = Some(path.clone());
                     if mode == ProjectDialogMode::Open {
                         self.stream_selection = None;
+                        // The probe bumps the revision again; take the baseline
+                        // once the media is ready.
+                        self.awaiting_project_baseline = true;
+                    } else {
+                        self.saved_revision = self.application.timeline_revision();
                     }
                     self.reset_scrub();
                     self.segment_error = None;
@@ -254,6 +263,84 @@ impl RossresscutApp {
             Err(error) => log::warn!("{error}"),
         }
     }
+
+    /// Forgets the project binding after importing a plain media file.
+    pub(super) fn detach_project(&mut self) {
+        self.project_file = None;
+        self.saved_revision = 0;
+        self.awaiting_project_baseline = false;
+    }
+
+    /// Takes the saved-revision baseline once a loaded project is ready.
+    pub(super) fn sync_project_baseline(&mut self) {
+        if !self.awaiting_project_baseline
+            || matches!(
+                self.application.state(),
+                OpenState::Probing { .. } | OpenState::Empty
+            )
+        {
+            return;
+        }
+        self.saved_revision = self.application.timeline_revision();
+        self.awaiting_project_baseline = false;
+    }
+
+    /// Returns whether closing would lose edits to a bound project file.
+    pub(super) fn has_unsaved_project(&self) -> bool {
+        self.project_file.is_some()
+            && !self.awaiting_project_baseline
+            && self.application.timeline_revision() != self.saved_revision
+    }
+
+    /// Closes the media, asking to save a bound project first.
+    pub(super) fn request_close_media(&mut self) {
+        if matches!(self.application.state(), OpenState::Empty) {
+            return;
+        }
+        if self.has_unsaved_project() {
+            self.pending_close = Some(CloseIntent::Media);
+            self.project_error = None;
+        } else {
+            self.close_media_now();
+        }
+    }
+
+    fn close_media_now(&mut self) {
+        self.application.close_media();
+        self.reset_scrub();
+        self.segment_error = None;
+        self.detach_project();
+    }
+
+    /// Saves or discards pending edits, then performs the requested close.
+    pub(super) fn finish_close(
+        &mut self,
+        intent: CloseIntent,
+        save: bool,
+        context: &egui::Context,
+    ) {
+        if save {
+            let Some(path) = self.project_file.clone() else {
+                self.project_error = Some("no project file to save".to_owned());
+                return;
+            };
+            if let Err(error) = self.application.save_project(&path) {
+                self.project_error = Some(error.to_string());
+                return;
+            }
+            self.saved_revision = self.application.timeline_revision();
+        }
+
+        self.pending_close = None;
+        self.project_error = None;
+        match intent {
+            CloseIntent::Media => self.close_media_now(),
+            CloseIntent::Application => {
+                self.allow_close = true;
+                context.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        }
+    }
 }
 
 pub(super) enum DialogError {
@@ -280,6 +367,13 @@ pub(super) enum DirectoryTarget {
 pub(super) enum ProjectDialogMode {
     Open,
     Save,
+}
+
+/// What the user asked to close while a project has unsaved edits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum CloseIntent {
+    Media,
+    Application,
 }
 
 #[cfg(target_os = "linux")]

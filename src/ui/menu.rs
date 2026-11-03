@@ -40,9 +40,7 @@ impl RossresscutApp {
                         .on_hover_text(strings.close_media.as_str())
                         .clicked()
                     {
-                        self.application.close_media();
-                        self.reset_scrub();
-                        self.segment_error = None;
+                        self.request_close_media();
                         ui.close();
                     }
 
@@ -333,7 +331,7 @@ impl RossresscutApp {
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
-                        .add(egui::Button::new("⚙").min_size(egui::vec2(32.0, 28.0)))
+                        .add(egui::Button::new("⚙").min_size(egui::vec2(36.0, 30.0)))
                         .on_hover_text(self.shortcut_tooltip(
                             strings.settings.as_str(),
                             ShortcutAction::OpenSettings,
@@ -343,7 +341,7 @@ impl RossresscutApp {
                         self.open_settings();
                     }
                     if ui
-                        .add(egui::Button::new("≡").min_size(egui::vec2(32.0, 28.0)))
+                        .add(egui::Button::new("≡").min_size(egui::vec2(36.0, 30.0)))
                         .on_hover_text(strings.batch_export.as_str())
                         .clicked()
                     {

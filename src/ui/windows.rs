@@ -416,7 +416,7 @@ impl RossresscutApp {
                                         if ui
                                             .add(
                                                 egui::Button::new(text)
-                                                    .min_size(egui::vec2(140.0, 22.0)),
+                                                    .min_size(egui::vec2(140.0, 26.0)),
                                             )
                                             .on_hover_text(strings.shortcut_press_keys.as_str())
                                             .clicked()
@@ -429,7 +429,7 @@ impl RossresscutApp {
                                             .add_enabled(
                                                 !binding.is_empty(),
                                                 egui::Button::new("×")
-                                                    .min_size(egui::vec2(24.0, 22.0)),
+                                                    .min_size(egui::vec2(28.0, 26.0)),
                                             )
                                             .on_hover_text(strings.shortcut_clear.as_str())
                                             .clicked()
@@ -711,6 +711,42 @@ impl RossresscutApp {
             });
 
         self.about_open = open;
+    }
+
+    /// Asks whether to save a bound project before closing.
+    pub(super) fn close_prompt_window(&mut self, context: &egui::Context) {
+        let Some(intent) = self.pending_close else {
+            return;
+        };
+        let strings = self.strings();
+        let mut cancel = false;
+
+        egui::Window::new(strings.unsaved_changes.as_str())
+            .id(egui::Id::unique("close_prompt_window"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(context, |ui| {
+                ui.label(strings.unsaved_changes_hint.as_str());
+                if let Some(error) = &self.project_error {
+                    ui.colored_label(ui.visuals().error_fg_color, error.as_str());
+                }
+                ui.horizontal(|ui| {
+                    if ui.button(strings.save.as_str()).clicked() {
+                        self.finish_close(intent, true, ui.ctx());
+                    }
+                    if ui.button(strings.discard.as_str()).clicked() {
+                        self.finish_close(intent, false, ui.ctx());
+                    }
+                    if ui.button(strings.cancel.as_str()).clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+
+        if cancel {
+            self.pending_close = None;
+        }
     }
 }
 

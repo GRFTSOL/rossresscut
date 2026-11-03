@@ -34,6 +34,12 @@ impl RossresscutApp {
             }
         };
         context.set_theme(preference);
+        // Keep menus, dialogs and the main window at the same control size.
+        // The default interact height is too small once the window is scaled up.
+        context.all_styles_mut(|style| {
+            style.spacing.button_padding = egui::vec2(10.0, 6.0);
+            style.spacing.interact_size.y = 28.0;
+        });
         // `set_zoom_factor` scales text and widgets relative to the system DPI.
         context.set_zoom_factor(self.settings.font_zoom.clamp(MIN_FONT_ZOOM, MAX_FONT_ZOOM));
         if self.applied_font.as_ref()

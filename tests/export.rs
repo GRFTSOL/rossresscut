@@ -7,6 +7,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -14,12 +15,19 @@ use rossresscut::domain::time::Timestamp;
 use rossresscut::media::export::{ExportEvent, ExportProcess, ExportRequest};
 
 fn fixture_directory() -> PathBuf {
+    // Tests run in parallel and the clock alone can collide on a fast machine,
+    // which used to make one test delete another test's workspace.
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("clock after epoch")
         .as_nanos();
-    let directory =
-        std::env::temp_dir().join(format!("rossresscut-export-{}-{stamp}", std::process::id()));
+    let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let directory = std::env::temp_dir().join(format!(
+        "rossresscut-export-{}-{stamp}-{unique}",
+        std::process::id()
+    ));
     fs::create_dir_all(&directory).expect("create fixture directory");
     directory
 }

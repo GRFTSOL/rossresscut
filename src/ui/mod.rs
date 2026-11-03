@@ -37,7 +37,7 @@ use crate::domain::segment::SegmentId;
 use crate::domain::time::Timestamp;
 use crate::media::preview::HardwareAcceleration;
 
-use dialogs::{DialogError, DirectoryTarget, FileDialogPurpose, ProjectDialogMode};
+use dialogs::{CloseIntent, DialogError, DirectoryTarget, FileDialogPurpose, ProjectDialogMode};
 use fonts::{FontFamilyChoice, scan_fonts};
 use i18n::Strings;
 use preview::RenderDiagnostics;
@@ -93,6 +93,11 @@ pub struct RossresscutApp {
     directory_dialog: Option<(DirectoryTarget, Receiver<Option<PathBuf>>)>,
     project_dialog: Option<(ProjectDialogMode, Receiver<Option<PathBuf>>)>,
     project_error: Option<String>,
+    project_file: Option<PathBuf>,
+    saved_revision: u64,
+    awaiting_project_baseline: bool,
+    pending_close: Option<CloseIntent>,
+    allow_close: bool,
     last_autosave_revision: u64,
     last_autosave_at: Option<Instant>,
     export_error: Option<String>,
@@ -241,6 +246,7 @@ impl RossresscutApp {
             self.reset_scrub();
             self.segment_error = None;
             self.stream_selection = None;
+            self.detach_project();
             self.application.open_media(dropped[0].clone());
         } else {
             self.pending_drop = Some(dropped);
@@ -253,6 +259,17 @@ impl eframe::App for RossresscutApp {
             diagnostics.frame();
         }
         self.apply_theme(ui.ctx());
+        self.sync_project_baseline();
+        if ui.ctx().input(|input| input.viewport().close_requested())
+            && !self.allow_close
+            && self.pending_close.is_none()
+            && self.has_unsaved_project()
+        {
+            ui.ctx()
+                .send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.pending_close = Some(CloseIntent::Application);
+            self.project_error = None;
+        }
         self.poll_file_dialog();
         self.poll_directory_dialog();
         self.poll_project_dialog();
@@ -291,6 +308,9 @@ impl eframe::App for RossresscutApp {
             ui.ctx().request_repaint_after(Duration::from_millis(100));
         } else if self.application.is_waiting_for_preview() {
             ui.ctx().request_repaint_after(Duration::from_millis(50));
+        } else if self.application.waveform_progress().is_some() {
+            // The worker updates an atomic counter; repaint so the bar moves.
+            ui.ctx().request_repaint_after(Duration::from_millis(100));
         } else if matches!(self.application.state(), OpenState::Probing { .. })
             || self.file_dialog.is_some()
         {
@@ -306,6 +326,7 @@ impl eframe::App for RossresscutApp {
         self.info_panel(ui);
         self.preview_panel(ui);
         self.settings_window(ui.ctx());
+        self.close_prompt_window(ui.ctx());
         self.silence_window(ui.ctx());
         self.scene_window(ui.ctx());
         self.drop_window(ui.ctx());
@@ -373,6 +394,106 @@ mod tests {
     use super::timeline::{fraction_of, timestamp_at_x, wheel_direction};
     use super::*;
     use crate::domain::time::Duration as MediaDuration;
+
+    #[test]
+    fn tracks_unsaved_project_edits() {
+        let mut app = RossresscutApp {
+            project_file: Some(PathBuf::from("/tmp/clip.rrc")),
+            ..Default::default()
+        };
+        app.saved_revision = app.application.timeline_revision();
+
+        assert!(!app.has_unsaved_project());
+
+        app.application
+            .set_chapter_title(SegmentId::new(1), "Intro".to_owned());
+        assert!(app.has_unsaved_project());
+
+        app.saved_revision = app.application.timeline_revision();
+        assert!(!app.has_unsaved_project());
+
+        app.detach_project();
+        assert!(
+            !app.has_unsaved_project(),
+            "plain media imports are never prompted about saving"
+        );
+    }
+
+    #[test]
+    fn a_project_being_loaded_is_not_dirty() {
+        let mut app = RossresscutApp {
+            project_file: Some(PathBuf::from("/tmp/clip.rrc")),
+            awaiting_project_baseline: true,
+            saved_revision: 0,
+            ..Default::default()
+        };
+        app.application
+            .set_chapter_title(SegmentId::new(1), "Intro".to_owned());
+
+        assert!(!app.has_unsaved_project());
+    }
+
+    #[test]
+    fn closing_with_save_writes_the_bound_project() {
+        let directory =
+            std::env::temp_dir().join(format!("rossresscut-close-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).expect("temp directory");
+        let project = directory.join("clip.rrc");
+
+        let mut app = RossresscutApp {
+            project_file: Some(project.clone()),
+            ..Default::default()
+        };
+        app.application.open_media(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sample.mkv"),
+        );
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !matches!(app.application.state(), OpenState::Ready) {
+            app.application.update();
+            assert!(Instant::now() < deadline, "media did not become ready");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        let id = app.application.timeline().segments()[0].id();
+        app.project_file = Some(project.clone());
+        app.saved_revision = app.application.timeline_revision();
+        app.application
+            .set_chapter_title(id, "Opening (edited)".to_owned());
+        assert!(app.has_unsaved_project());
+
+        let context = egui::Context::default();
+        app.finish_close(CloseIntent::Media, true, &context);
+
+        assert!(project.is_file(), "the project file should be written");
+        assert!(!app.has_unsaved_project());
+        assert!(
+            matches!(app.application.state(), OpenState::Empty),
+            "the media should be closed after saving"
+        );
+        std::fs::remove_dir_all(&directory).ok();
+    }
+
+    #[test]
+    fn closing_without_saving_keeps_the_project_untouched() {
+        let directory =
+            std::env::temp_dir().join(format!("rossresscut-discard-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).expect("temp directory");
+        let project = directory.join("clip.rrc");
+
+        let mut app = RossresscutApp {
+            project_file: Some(project.clone()),
+            saved_revision: 0,
+            ..Default::default()
+        };
+        app.application
+            .set_chapter_title(SegmentId::new(1), "Intro".to_owned());
+
+        let context = egui::Context::default();
+        app.finish_close(CloseIntent::Media, false, &context);
+
+        assert!(!project.exists(), "discarding must not write a project");
+        std::fs::remove_dir_all(&directory).ok();
+    }
 
     #[test]
     fn converts_timeline_fractions_to_microseconds() {

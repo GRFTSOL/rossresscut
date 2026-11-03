@@ -25,6 +25,9 @@
   "batch_start": "Start batch",
   "cancel": "Cancel",
   "cancel_export": "Cancel export",
+  "chapter_hint": "Titles are written to the exported chapters. Blank titles fall back to Segment N.",
+  "chapters": "Chapters",
+  "chapters_empty": "Enable a segment to create a chapter.",
   "choose_directory": "Choose directory…",
   "choose_project_directory": "Choose project directory…",
   "clear_markers": "Clear cut point",
@@ -38,6 +41,7 @@
   "decoder_software": "software",
   "decrease_font_size": "Decrease font size",
   "default_font": "Default",
+  "discard": "Don't save",
   "drop_batch": "Batch export the current segments",
   "drop_files": "Import {} files",
   "drop_merge": "Merge into one video",
@@ -120,6 +124,7 @@
   "redo": "Redo",
   "remove_cut_point": "Remove cut point",
   "reset_font_size": "Reset font size",
+  "save": "Save",
   "scene_cuts": "Found {} scene changes",
   "scene_detection": "Detect scene changes",
   "scene_no_cuts": "No scene change was detected.",
@@ -159,5 +164,8 @@
   "theme_dark": "Dark",
   "theme_light": "Light",
   "undo": "Undo",
-  "video": "Video"
+  "unsaved_changes": "Unsaved changes",
+  "unsaved_changes_hint": "Save the project before closing?",
+  "video": "Video",
+  "waveform_generating": "Generating audio waveform, progress:"
 }

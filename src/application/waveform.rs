@@ -3,13 +3,14 @@
 //! The waveform is derived data: it is replaced whenever media changes and is
 //! dropped when media closes. Decoding always happens on a worker thread.
 
+use std::sync::Arc;
 use std::sync::mpsc::{self, TryRecvError};
 use std::thread;
 
 use crate::domain::media::{MediaFile, MediaStream};
-use crate::domain::time::Timestamp;
+use crate::domain::time::{Duration, Timestamp};
 use crate::domain::waveform::Waveform;
-use crate::media::waveform;
+use crate::media::waveform::{self, WaveformProgress};
 
 use super::{Application, WaveformJob};
 
@@ -17,6 +18,11 @@ impl Application {
     /// Returns the waveform for the current audio stream, once extracted.
     pub fn waveform(&self) -> Option<&Waveform> {
         self.waveform.as_ref()
+    }
+
+    /// Returns the waveform build progress while extraction is running.
+    pub fn waveform_progress(&self) -> Option<&WaveformProgress> {
+        self.waveform_job.as_ref().map(|job| job.progress.as_ref())
     }
 
     /// Returns whether the current media has an audio stream.
@@ -34,16 +40,22 @@ impl Application {
         self.waveform = None;
         self.waveform_job = None;
 
-        let Some((index, start)) = audio_stream(media) else {
+        let Some((index, start, duration)) = audio_stream(media) else {
             return;
         };
         let path = media.path.clone();
+        let expected = duration
+            .map(waveform::expected_samples)
+            .filter(|samples| *samples > 0);
+        let progress = Arc::new(WaveformProgress::new(expected.is_some()));
+        let worker_progress = Arc::clone(&progress);
         let (sender, receiver) = mpsc::channel();
 
         let spawn_result = thread::Builder::new()
             .name("waveform".to_owned())
             .spawn(move || {
-                let result = waveform::extract(&path, index, start);
+                let result =
+                    waveform::extract(&path, index, start, expected, Some(&worker_progress));
                 if sender.send(result).is_err() {
                     log::debug!(
                         "discarding waveform for {}: the request was superseded",
@@ -53,7 +65,9 @@ impl Application {
             });
 
         match spawn_result {
-            Ok(_handle) => self.waveform_job = Some(WaveformJob { receiver }),
+            Ok(_handle) => {
+                self.waveform_job = Some(WaveformJob { receiver, progress });
+            }
             Err(error) => log::warn!("failed to start the waveform worker: {error}"),
         }
     }
@@ -84,18 +98,20 @@ impl Application {
     }
 }
 
-/// Returns the index and normalized start time of the first audio stream.
+/// Returns the index, normalized start time and duration of the first audio
+/// stream.
 ///
 /// Cover art is skipped: it is carried on an audio stream but has no samples.
 /// The start time is relative to the container start, matching the normalized
 /// keyframe timeline, so a stream that begins late leaves a gap on the left.
-fn audio_stream(media: &MediaFile) -> Option<(usize, Timestamp)> {
+fn audio_stream(media: &MediaFile) -> Option<(usize, Timestamp, Option<Duration>)> {
     let container_start = media.start_time.map_or(0, Timestamp::micros);
     media.streams.iter().find_map(|stream| match stream {
         MediaStream::Audio(audio) if !audio.info.disposition.attached_pic => {
             let stream_start = audio.info.start_time.map_or(0, Timestamp::micros);
             let start = Timestamp::from_micros((stream_start - container_start).max(0));
-            Some((audio.info.index, start))
+            let duration = audio.info.duration.or(media.duration);
+            Some((audio.info.index, start, duration))
         }
         _ => None,
     })

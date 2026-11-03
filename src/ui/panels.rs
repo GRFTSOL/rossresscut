@@ -35,6 +35,20 @@ impl RossresscutApp {
         );
         ui.horizontal(|ui| {
             ui.monospace(format!("{position} / {duration}"));
+            if let Some(progress) = self.application.waveform_progress() {
+                ui.separator();
+                ui.label(strings.waveform_generating.as_str());
+                let bar = if progress.determinate() {
+                    egui::ProgressBar::new(progress.fraction())
+                        .desired_width(140.0)
+                        .show_percentage()
+                } else {
+                    egui::ProgressBar::new(0.0)
+                        .desired_width(140.0)
+                        .animate(true)
+                };
+                ui.add(bar);
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let has_enabled_segment = self
                     .application
@@ -267,6 +281,54 @@ impl RossresscutApp {
         }
     }
 
+    fn chapters_panel(&mut self, ui: &mut egui::Ui, strings: &'static Strings) {
+        let enabled: Vec<Segment> = self
+            .application
+            .timeline()
+            .segments()
+            .iter()
+            .copied()
+            .filter(|segment| segment.enabled())
+            .collect();
+
+        ui.heading(strings.chapters.as_str());
+        if enabled.is_empty() {
+            ui.label(strings.chapters_empty.as_str());
+            return;
+        }
+
+        let mut output_position = Timestamp::ZERO;
+        for (index, segment) in enabled.iter().enumerate() {
+            let start = output_position;
+            let end = start.checked_add(segment.duration()).unwrap_or(start);
+            output_position = end;
+
+            let id = segment.id();
+            let default_title = format!("Segment {}", index + 1);
+            let mut title = self
+                .application
+                .chapter_title(id)
+                .unwrap_or_default()
+                .to_owned();
+
+            ui.horizontal(|ui| {
+                ui.label(format!("#{}", index + 1));
+                ui.monospace(format!("{start} – {end}"));
+            });
+            let changed = ui
+                .add(
+                    egui::TextEdit::singleline(&mut title)
+                        .hint_text(default_title)
+                        .desired_width(f32::INFINITY),
+                )
+                .changed();
+            if changed {
+                self.application.set_chapter_title(id, title);
+            }
+        }
+        ui.label(egui::RichText::new(strings.chapter_hint.as_str()).weak());
+    }
+
     pub(super) fn info_panel(&mut self, ui: &mut egui::Ui) {
         let strings = self.strings();
         egui::Panel::right("media_information")
@@ -285,6 +347,8 @@ impl RossresscutApp {
                     ui.separator();
 
                     self.segments_panel(ui, strings);
+                    ui.separator();
+                    self.chapters_panel(ui, strings);
                 });
             });
     }
