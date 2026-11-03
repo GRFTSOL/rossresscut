@@ -81,6 +81,12 @@ impl RossresscutApp {
             return;
         }
 
+        // Escape closes the topmost floating window before any other binding.
+        // Text fields keep Escape for themselves (checked above).
+        if context.input(|input| input.key_pressed(egui::Key::Escape)) && self.close_top_window() {
+            return;
+        }
+
         let actions: Vec<ShortcutAction> = context.input(|input| {
             ShortcutAction::ALL
                 .iter()
@@ -95,6 +101,47 @@ impl RossresscutApp {
         for action in actions {
             self.run_shortcut(action);
         }
+    }
+
+    /// Closes the topmost floating window, if any.
+    ///
+    /// Order follows the render order in `RossresscutApp::ui`, last window
+    /// first. Returns whether a window was closed.
+    fn close_top_window(&mut self) -> bool {
+        if self.pending_close.is_some() {
+            self.pending_close = None;
+            return true;
+        }
+        if self.about_open {
+            self.about_open = false;
+            return true;
+        }
+        if self.ffmpeg_command_open {
+            self.ffmpeg_command_open = false;
+            return true;
+        }
+        if self.export_panel_open {
+            self.export_panel_open = false;
+            return true;
+        }
+        if self.pending_drop.is_some() {
+            self.pending_drop = None;
+            return true;
+        }
+        if self.scene_dialog_open {
+            self.scene_dialog_open = false;
+            return true;
+        }
+        if self.silence_dialog_open {
+            self.silence_dialog_open = false;
+            return true;
+        }
+        if self.settings_open {
+            self.settings_open = false;
+            super::settings::save_settings(&self.settings);
+            return true;
+        }
+        false
     }
 
     pub(super) fn run_shortcut(&mut self, action: ShortcutAction) {
@@ -250,5 +297,40 @@ impl RossresscutApp {
         } else {
             format!("{label} ({binding})")
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn escape_closes_one_window_at_a_time() {
+        let mut app = RossresscutApp {
+            about_open: true,
+            export_panel_open: true,
+            ..Default::default()
+        };
+
+        assert!(app.close_top_window());
+        assert!(!app.about_open, "the last rendered window closes first");
+        assert!(app.export_panel_open);
+
+        assert!(app.close_top_window());
+        assert!(!app.export_panel_open);
+        assert!(!app.close_top_window(), "nothing left to close");
+    }
+
+    #[test]
+    fn escape_cancels_the_close_prompt_first() {
+        let mut app = RossresscutApp {
+            about_open: true,
+            pending_close: Some(crate::ui::dialogs::CloseIntent::Media),
+            ..Default::default()
+        };
+
+        assert!(app.close_top_window());
+        assert!(app.pending_close.is_none());
+        assert!(app.about_open, "the prompt has priority over other windows");
     }
 }
