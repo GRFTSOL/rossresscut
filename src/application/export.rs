@@ -11,7 +11,7 @@ pub use crate::media::export::ExportStage;
 
 use crate::media::export::{
     ExportError, ExportEvent, ExportProcess, MultiExport, MultiExportError, MultiExportEvent,
-    SmartCutContext, StreamSelection, VideoEncodeSpec, encoder_for, render_command,
+    SmartCutContext, StreamSelection, VideoColorSpec, VideoEncodeSpec, encoder_for, render_command,
 };
 
 use super::Application;
@@ -270,11 +270,20 @@ impl Application {
             .map(|time_base| u64::from(time_base.denominator()));
 
         Ok(SmartCutContext {
+            stream_index: video.info.index,
+            start_time: media.start_time,
             encode: VideoEncodeSpec {
                 encoder: encoder.to_owned(),
                 bit_rate,
                 b_frames: video.has_b_frames,
                 timescale,
+                color: VideoColorSpec {
+                    pixel_format: video.pixel_format.clone(),
+                    range: video.color_range.clone(),
+                    space: video.color_space.clone(),
+                    transfer: video.color_transfer.clone(),
+                    primaries: video.color_primaries.clone(),
+                },
             },
             frame_duration,
             keyframes,

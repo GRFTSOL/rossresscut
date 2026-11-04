@@ -1,8 +1,10 @@
 //! Planning for smart-cut segments.
 //!
-//! A smart cut re-encodes only the part between the requested start and the
-//! next keyframe, then stream-copies the rest. This module decides how one
-//! requested range is split; it does not run FFmpeg.
+//! A smart cut re-encodes the part between the requested start and the next
+//! keyframe, and the last GOP before the requested end, then stream-copies
+//! everything in between. Both boundaries therefore land on the requested
+//! frame. This module decides how one requested range is split; it does not
+//! run FFmpeg.
 //!
 //! See `docs/decisions/0013-smart-cut.md` for the failure semantics.
 
@@ -16,6 +18,7 @@ use crate::domain::time::{Duration, Timestamp};
 pub struct SmartCutPiece {
     start: Timestamp,
     end: Timestamp,
+    seek: Timestamp,
     encode: bool,
 }
 
@@ -28,6 +31,14 @@ impl SmartCutPiece {
     /// Returns the exclusive source end of this piece.
     pub const fn end(self) -> Timestamp {
         self.end
+    }
+
+    /// Returns the `-ss` target that makes the piece start at [`Self::start`].
+    ///
+    /// Encoded pieces seek to their own start. Copy pieces may need a later
+    /// target because a container can only seek to sparse cue points.
+    pub const fn seek(self) -> Timestamp {
+        self.seek
     }
 
     /// Returns whether the video stream must be re-encoded.
@@ -63,6 +74,15 @@ impl fmt::Display for SmartCutUnavailable {
 
 impl std::error::Error for SmartCutUnavailable {}
 
+/// Where a stream-copy piece can start and the seek target that reaches it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CopyBoundary {
+    /// Content start of the copy piece on the source timeline.
+    pub start: Timestamp,
+    /// `-ss` target that makes the demuxer land on `start`.
+    pub seek: Timestamp,
+}
+
 /// The pieces that make up one requested segment.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SmartCutPlan {
@@ -76,15 +96,18 @@ impl SmartCutPlan {
             pieces: vec![SmartCutPiece {
                 start,
                 end,
+                seek: start,
                 encode: false,
             }],
         }
     }
 
-    /// Splits `[start, end)` into a re-encoded head and a copied remainder.
+    /// Splits `[start, end)` into re-encoded head/tail pieces and a copied
+    /// middle.
     ///
-    /// Returns one copied piece when `start` already is a keyframe, and one
-    /// encoded piece when the whole range sits between two keyframes.
+    /// This assumes the first keyframe is a valid seek target. Use
+    /// [`Self::plan_with_seek`] when the container may only seek to an earlier
+    /// point.
     pub fn plan(
         start: Timestamp,
         end: Timestamp,
@@ -92,55 +115,96 @@ impl SmartCutPlan {
         frame_duration: Option<Duration>,
     ) -> Result<Self, SmartCutUnavailable> {
         if start >= end {
-            return Ok(Self {
-                pieces: vec![SmartCutPiece {
-                    start,
-                    end,
-                    encode: false,
-                }],
-            });
+            return Ok(Self::copy_only(start, end));
         }
 
         let next = keyframes
             .at_or_after(start)
             .ok_or(SmartCutUnavailable::NoKeyframeAfterStart)?;
+        let copy = CopyBoundary {
+            start: next,
+            seek: next,
+        };
+        Self::plan_with_seek(start, end, copy, keyframes, frame_duration)
+    }
 
-        if next == start {
-            return Ok(Self {
-                pieces: vec![SmartCutPiece {
-                    start,
-                    end,
-                    encode: false,
-                }],
-            });
+    /// Splits `[start, end)` using a probed copy boundary.
+    ///
+    /// `copy` says where the copy piece really begins and which `-ss` value
+    /// reaches it. Both boundaries of the requested range are made
+    /// frame-exact: the head covers `[start, copy.start)` and the tail covers
+    /// the last GOP before `end`. A range without a copyable section between
+    /// them is encoded whole.
+    pub fn plan_with_seek(
+        start: Timestamp,
+        end: Timestamp,
+        copy: CopyBoundary,
+        keyframes: &KeyframeIndex,
+        frame_duration: Option<Duration>,
+    ) -> Result<Self, SmartCutUnavailable> {
+        if start >= end {
+            return Ok(Self::copy_only(start, end));
         }
-
-        if next >= end {
-            return Ok(Self {
-                pieces: vec![SmartCutPiece {
-                    start,
-                    end,
-                    encode: true,
-                }],
-            });
+        if copy.start < start || copy.start >= end {
+            return Ok(Self::encoded(start, end));
         }
 
         let frame = frame_duration.ok_or(SmartCutUnavailable::UnknownFrameRate)?;
-        let head_end = head_end(start, next, frame);
-        Ok(Self {
-            pieces: vec![
-                SmartCutPiece {
-                    start,
-                    end: head_end,
-                    encode: true,
-                },
-                SmartCutPiece {
-                    start: next,
-                    end,
-                    encode: false,
-                },
-            ],
-        })
+
+        // A stream-copy cut can end on the keyframe itself and keep a fringe
+        // from the next GOP whose out-of-order B-frames are then missing. End
+        // the copy two frames early, then re-encode from the keyframe so the
+        // join and the segment end are both exact.
+        let margin = frame.checked_add(frame).unwrap_or(frame);
+        let anchor = if keyframes.at_or_after(end) == Some(end) {
+            end
+        } else {
+            keyframes.previous(end).unwrap_or(copy.start)
+        };
+        if anchor <= copy.start {
+            return Ok(Self::encoded(start, end));
+        }
+        let copy_end = anchor.checked_sub(margin).unwrap_or(start);
+        if copy_end <= copy.start || copy.seek >= copy_end {
+            return Ok(Self::encoded(start, end));
+        }
+
+        let mut pieces = Vec::with_capacity(3);
+        if copy.start > start {
+            pieces.push(SmartCutPiece {
+                start,
+                end: head_end(start, copy.start, frame),
+                seek: start,
+                encode: true,
+            });
+        }
+        pieces.push(SmartCutPiece {
+            start: copy.start,
+            end: copy_end,
+            seek: copy.seek,
+            encode: false,
+        });
+        if anchor < end {
+            pieces.push(SmartCutPiece {
+                start: anchor,
+                end,
+                seek: anchor,
+                encode: true,
+            });
+        }
+        Ok(Self { pieces })
+    }
+
+    /// Returns a plan that re-encodes the whole range.
+    pub fn encoded(start: Timestamp, end: Timestamp) -> Self {
+        Self {
+            pieces: vec![SmartCutPiece {
+                start,
+                end,
+                seek: start,
+                encode: true,
+            }],
+        }
     }
 
     /// Returns whether every piece can be stream copied.
@@ -216,29 +280,58 @@ mod tests {
     }
 
     #[test]
-    fn start_on_a_keyframe_is_a_plain_copy() {
+    fn start_and_end_on_keyframes_are_a_plain_copy() {
         let keyframes = keyframes(&[0, 2_000_000, 4_000_000]);
-        let plan = plan(2_000_000, 3_000_000, &keyframes).expect("planned");
+        let plan = plan(2_000_000, 4_000_000, &keyframes).expect("planned");
 
         assert!(plan.is_copy_only());
         assert_eq!(plan.pieces().len(), 1);
         assert_eq!(plan.pieces()[0].start(), Timestamp::from_micros(2_000_000));
+        assert_eq!(plan.pieces()[0].end(), Timestamp::from_micros(3_933_334));
         assert!(!plan.pieces()[0].encode());
     }
 
     #[test]
     fn start_before_a_keyframe_encodes_the_head() {
-        let keyframes = keyframes(&[0, 6_000_000]);
-        let plan = plan(5_500_000, 9_000_000, &keyframes).expect("planned");
+        let keyframes = keyframes(&[0, 6_000_000, 9_000_000]);
+        let plan = plan(5_500_000, 10_000_000, &keyframes).expect("planned");
 
         assert!(!plan.is_copy_only());
-        assert_eq!(plan.pieces().len(), 2);
+        assert_eq!(plan.pieces().len(), 3);
         assert_eq!(plan.pieces()[0].start(), Timestamp::from_micros(5_500_000));
         assert_eq!(plan.pieces()[0].end(), Timestamp::from_micros(5_966_667));
         assert!(plan.pieces()[0].encode());
         assert_eq!(plan.pieces()[1].start(), Timestamp::from_micros(6_000_000));
-        assert_eq!(plan.pieces()[1].end(), Timestamp::from_micros(9_000_000));
+        assert_eq!(plan.pieces()[1].end(), Timestamp::from_micros(8_933_334));
         assert!(!plan.pieces()[1].encode());
+        assert_eq!(plan.pieces()[2].start(), Timestamp::from_micros(9_000_000));
+        assert_eq!(plan.pieces()[2].end(), Timestamp::from_micros(10_000_000));
+        assert!(plan.pieces()[2].encode());
+    }
+
+    #[test]
+    fn encodes_the_tail_so_the_end_is_frame_exact() {
+        let keyframes = keyframes(&[0, 6_000_000, 9_000_000]);
+        let plan = plan(6_000_000, 10_000_000, &keyframes).expect("planned");
+
+        assert_eq!(plan.pieces().len(), 2);
+        assert_eq!(plan.pieces()[0].start(), Timestamp::from_micros(6_000_000));
+        assert_eq!(plan.pieces()[0].end(), Timestamp::from_micros(8_933_334));
+        assert!(!plan.pieces()[0].encode());
+        assert_eq!(plan.pieces()[1].start(), Timestamp::from_micros(9_000_000));
+        assert_eq!(plan.pieces()[1].end(), Timestamp::from_micros(10_000_000));
+        assert!(plan.pieces()[1].encode());
+    }
+
+    #[test]
+    fn a_keyframe_end_keeps_the_copy() {
+        let keyframes = keyframes(&[0, 6_000_000, 9_000_000]);
+        let plan = plan(6_000_000, 9_000_000, &keyframes).expect("planned");
+
+        assert!(plan.is_copy_only());
+        assert_eq!(plan.pieces().len(), 1);
+        assert_eq!(plan.pieces()[0].start(), Timestamp::from_micros(6_000_000));
+        assert_eq!(plan.pieces()[0].end(), Timestamp::from_micros(8_933_334));
     }
 
     #[test]
@@ -253,13 +346,28 @@ mod tests {
     }
 
     #[test]
+    fn a_range_without_a_copyable_section_is_encoded_whole() {
+        let keyframes = keyframes(&[0, 6_000_000]);
+        // The encoded head and tail would meet at 6.0s without a copy piece.
+        let plan = plan(5_500_000, 8_000_000, &keyframes).expect("planned");
+
+        assert_eq!(plan.pieces().len(), 1);
+        assert!(plan.pieces()[0].encode());
+        assert_eq!(plan.pieces()[0].start(), Timestamp::from_micros(5_500_000));
+        assert_eq!(plan.pieces()[0].end(), Timestamp::from_micros(8_000_000));
+    }
+
+    #[test]
     fn encodes_one_frame_when_the_keyframe_is_immediately_next() {
         let keyframes = keyframes(&[0, 5_533_333]);
         let plan = plan(5_500_000, 9_000_000, &keyframes).expect("planned");
 
-        assert_eq!(plan.pieces().len(), 2);
-        assert_eq!(plan.pieces()[0].end(), Timestamp::from_micros(5_533_333));
-        assert_eq!(plan.pieces()[1].start(), Timestamp::from_micros(5_533_333));
+        // There is no copyable section after the head, so the range is encoded
+        // whole instead of splitting it at the keyframe.
+        assert_eq!(plan.pieces().len(), 1);
+        assert!(plan.pieces()[0].encode());
+        assert_eq!(plan.pieces()[0].start(), Timestamp::from_micros(5_500_000));
+        assert_eq!(plan.pieces()[0].end(), Timestamp::from_micros(9_000_000));
     }
 
     #[test]

@@ -23,6 +23,7 @@ use crate::media::ffprobe;
 
 use super::chapters::{ChapterSpec, render_ffmetadata};
 use super::command::{StreamSelection, SubtitlePlan, VideoEncodeSpec};
+use super::planning;
 use super::smart_cut::{SmartCutPlan, SmartCutUnavailable};
 use super::{ExportError, ExportEvent, ExportProcess, ExportRequest};
 
@@ -67,6 +68,10 @@ pub struct SmartCutContext {
     pub frame_duration: Duration,
     /// Keyframes of the exported video stream.
     pub keyframes: KeyframeIndex,
+    /// Index of the exported video stream in the source file.
+    pub stream_index: usize,
+    /// Container start time, which the keyframe index has already subtracted.
+    pub start_time: Option<Timestamp>,
 }
 
 /// A validated multi-segment export request.
@@ -189,6 +194,8 @@ struct PartSpec {
     segment: usize,
     start: Timestamp,
     end: Timestamp,
+    /// `-ss` target; encoded parts seek to their own start.
+    seek: Timestamp,
     encode: bool,
     path: PathBuf,
 }
@@ -199,27 +206,24 @@ impl PartSpec {
     }
 }
 
-/// Splits every segment according to the smart-cut settings.
-fn plan_segments(
-    segments: &[ExportSegment],
-    context: Option<&SmartCutContext>,
-) -> Result<Vec<SmartCutPlan>, MultiExportError> {
-    segments
-        .iter()
-        .enumerate()
-        .map(|(index, segment)| {
-            let Some(context) = context else {
-                return Ok(SmartCutPlan::copy_only(segment.start(), segment.end()));
-            };
-            SmartCutPlan::plan(
-                segment.start(),
-                segment.end(),
-                &context.keyframes,
-                Some(context.frame_duration),
-            )
-            .map_err(|reason| MultiExportError::SmartCut { index, reason })
-        })
-        .collect()
+/// First and last video timestamps of one cut part, in its own timeline.
+#[derive(Clone, Copy, Debug, Default)]
+struct PartTiming {
+    /// PTS of the first video packet. Stream copy can leave it above zero.
+    first: Timestamp,
+    /// End of the last video packet (`PTS + duration`).
+    end: Timestamp,
+}
+
+impl PartTiming {
+    fn span(&self) -> Duration {
+        self.end.duration_since(self.first).unwrap_or_default()
+    }
+}
+
+/// Timings probed from the cut parts, one per part.
+struct ProbedTimings {
+    parts: Vec<PartTiming>,
 }
 
 /// Stage reported while a multi-segment export runs.
@@ -229,10 +233,10 @@ pub enum ExportStage {
     Cutting {
         /// Zero-based segment index.
         index: usize,
-        /// Number of segments.
+        /// Number of segments in the export.
         total: usize,
     },
-    /// The parts are being concatenated.
+    /// Parts are being concatenated.
     Concatenating,
 }
 
@@ -274,6 +278,15 @@ pub enum MultiExportError {
         /// Why the segment cannot be smart cut.
         reason: SmartCutUnavailable,
     },
+    /// A stream-copy part started before its planned keyframe.
+    SmartCutSeek {
+        /// Zero-based segment index.
+        index: usize,
+    },
+    /// The export planning thread could not start.
+    Planning(io::Error),
+    /// A probe needed for planning failed.
+    Probe(ffprobe::ProbeError),
     /// An FFmpeg process could not be started.
     Export(ExportError),
 }
@@ -291,6 +304,17 @@ impl fmt::Display for MultiExportError {
             Self::SmartCut { index, reason } => {
                 write!(formatter, "segment {index} cannot be smart cut: {reason}")
             }
+            Self::SmartCutSeek { index } => write!(
+                formatter,
+                "segment {index} could not be stream copied from its planned keyframe; the source may have sparse seek points"
+            ),
+            Self::Planning(error) => {
+                write!(
+                    formatter,
+                    "could not start the export planning thread: {error}"
+                )
+            }
+            Self::Probe(error) => write!(formatter, "{error}"),
             Self::Export(error) => write!(formatter, "{error}"),
         }
     }
@@ -299,9 +323,10 @@ impl fmt::Display for MultiExportError {
 impl std::error::Error for MultiExportError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::WorkDir(error) | Self::TempFile(error) => Some(error),
+            Self::WorkDir(error) | Self::TempFile(error) | Self::Planning(error) => Some(error),
             Self::Export(error) => Some(error),
-            Self::InvalidPart { .. } | Self::SmartCut { .. } => None,
+            Self::Probe(error) => Some(error),
+            Self::InvalidPart { .. } | Self::SmartCut { .. } | Self::SmartCutSeek { .. } => None,
         }
     }
 }
@@ -317,6 +342,8 @@ pub struct MultiExport {
     total_duration: Duration,
     completed_duration: Duration,
     part_durations: Vec<Duration>,
+    /// Actual first and last video timestamps of each cut part.
+    part_timings: Vec<PartTiming>,
     commands: Vec<Vec<OsString>>,
     stage: Option<Stage>,
     title: Option<String>,
@@ -327,12 +354,15 @@ pub struct MultiExport {
 }
 
 enum Stage {
+    Planning {
+        plans: Receiver<Result<Vec<SmartCutPlan>, MultiExportError>>,
+    },
     Cutting {
         index: usize,
         process: ExportProcess,
     },
-    ProbingDurations {
-        durations: Receiver<Vec<Duration>>,
+    ProbingTimings {
+        timings: Receiver<ProbedTimings>,
     },
     Concatenating {
         process: ExportProcess,
@@ -341,41 +371,26 @@ enum Stage {
     Failed,
 }
 
+/// Outcome of polling one export stage.
+enum StagePoll {
+    /// The stage is still running; the caller should return.
+    Pending,
+    /// An event is ready for the caller.
+    Event(MultiExportEvent),
+    /// The stage finished and the next one was started.
+    Advanced,
+}
+
 impl MultiExport {
     /// Starts cutting the first segment.
     pub fn start(request: MultiExportRequest) -> Result<Self, MultiExportError> {
         let work_dir = TempDir::create().map_err(MultiExportError::WorkDir)?;
-        let extension = request
-            .output
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .unwrap_or("mkv");
-        let plans = plan_segments(&request.segments, request.smart_cut.as_ref())?;
-        let total_duration = plans.iter().fold(Duration::ZERO, |total, plan| {
-            total.checked_add(plan.total_duration()).unwrap_or(total)
-        });
-        let mut parts = Vec::new();
-        for (segment, plan) in plans.iter().enumerate() {
-            for (piece, part) in plan.pieces().iter().enumerate() {
-                parts.push(PartSpec {
-                    segment,
-                    start: part.start(),
-                    end: part.end(),
-                    encode: part.encode(),
-                    path: work_dir
-                        .path()
-                        .join(format!("part-{segment:04}-{piece}.{extension}")),
-                });
-            }
-        }
-        let part_durations = vec![Duration::ZERO; request.segments.len()];
-        let command_capacity = parts.len() + 1;
-
+        let segment_count = request.segments.len();
         let mut export = Self {
             source: request.source,
             segments: request.segments,
             output: request.output,
-            parts,
+            parts: Vec::new(),
             work_dir,
             chapters: request.chapters,
             title: request.title,
@@ -383,122 +398,89 @@ impl MultiExport {
             streams: request.streams,
             smart_cut: request.smart_cut,
             chapter_titles: request.chapter_titles,
-            total_duration,
+            total_duration: Duration::ZERO,
             completed_duration: Duration::ZERO,
-            part_durations,
-            commands: Vec::with_capacity(command_capacity),
+            part_durations: vec![Duration::ZERO; segment_count],
+            part_timings: Vec::new(),
+            commands: Vec::new(),
             stage: None,
         };
-        export.start_cut(0)?;
+
+        if export.smart_cut.is_some() {
+            // Smart cut probes seek points, so planning runs off the UI thread.
+            export.start_planning()?;
+        } else {
+            let plans = planning::plan_segments(&export.source, &export.segments, None)?;
+            export.apply_plans(plans);
+            export.start_cut(0)?;
+        }
         Ok(export)
+    }
+
+    /// Builds the temporary parts from the planned pieces.
+    fn apply_plans(&mut self, plans: Vec<SmartCutPlan>) {
+        let extension = self
+            .output
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .unwrap_or("mkv");
+        let mut parts = Vec::new();
+        for (segment, plan) in plans.iter().enumerate() {
+            for (piece, part) in plan.pieces().iter().enumerate() {
+                parts.push(PartSpec {
+                    segment,
+                    start: part.start(),
+                    end: part.end(),
+                    seek: part.seek(),
+                    encode: part.encode(),
+                    path: self
+                        .work_dir
+                        .path()
+                        .join(format!("part-{segment:04}-{piece}.{extension}")),
+                });
+            }
+        }
+        self.total_duration = plans.iter().fold(Duration::ZERO, |total, plan| {
+            total.checked_add(plan.total_duration()).unwrap_or(total)
+        });
+        self.part_durations = vec![Duration::ZERO; self.segments.len()];
+        self.part_timings = vec![PartTiming::default(); parts.len()];
+        // One cut per part plus the concat process.
+        self.commands = Vec::with_capacity(parts.len() + 1);
+        self.parts = parts;
+    }
+
+    /// Plans smart-cut pieces on a worker thread.
+    fn start_planning(&mut self) -> Result<(), MultiExportError> {
+        let source = self.source.clone();
+        let segments = self.segments.clone();
+        let Some(context) = self.smart_cut.clone() else {
+            return Ok(());
+        };
+        let (sender, receiver) = mpsc::channel();
+        let spawned = thread::Builder::new()
+            .name("export-plan".to_owned())
+            .spawn(move || {
+                let result = planning::plan_segments(&source, &segments, Some(&context));
+                // The receiver is dropped when the export is cancelled.
+                let _ = sender.send(result);
+            });
+        if let Err(error) = spawned {
+            return Err(MultiExportError::Planning(error));
+        }
+        self.stage = Some(Stage::Planning { plans: receiver });
+        Ok(())
     }
 
     /// Polls the current stage without blocking.
     pub fn poll(&mut self) -> Option<MultiExportEvent> {
         loop {
             let stage = self.stage.take()?;
-            match stage {
-                Stage::Cutting { index, mut process } => match process.poll() {
-                    None => {
-                        self.stage = Some(Stage::Cutting { index, process });
-                        return None;
-                    }
-                    Some(ExportEvent::Progress { out_time, .. }) => {
-                        let current = u64::try_from(out_time.micros()).unwrap_or(0);
-                        let overall = self
-                            .completed_duration
-                            .checked_add(Duration::from_micros(current))
-                            .unwrap_or(self.completed_duration);
-                        self.stage = Some(Stage::Cutting { index, process });
-                        return Some(MultiExportEvent::Progress {
-                            stage: ExportStage::Cutting {
-                                index: self.parts[index].segment,
-                                total: self.segments.len(),
-                            },
-                            out_time: Timestamp::from_micros(
-                                i64::try_from(overall.micros()).unwrap_or(i64::MAX),
-                            ),
-                            duration: self.total_duration,
-                        });
-                    }
-                    Some(ExportEvent::Finished { stderr, ended }) => {
-                        let exit = process.wait();
-                        if !(ended && exit.map(|status| status.success()).unwrap_or(false)) {
-                            self.stage = Some(Stage::Failed);
-                            return Some(MultiExportEvent::Finished {
-                                error: Some(failure(stderr)),
-                            });
-                        }
-                        self.completed_duration = self
-                            .completed_duration
-                            .checked_add(self.parts[index].duration())
-                            .unwrap_or(self.completed_duration);
-
-                        if index + 1 < self.parts.len() {
-                            if let Err(error) = self.start_cut(index + 1) {
-                                self.stage = Some(Stage::Failed);
-                                return Some(MultiExportEvent::Finished {
-                                    error: Some(error.to_string()),
-                                });
-                            }
-                        } else {
-                            if let Err(error) = self.start_probing_durations() {
-                                self.stage = Some(Stage::Failed);
-                                return Some(MultiExportEvent::Finished {
-                                    error: Some(error.to_string()),
-                                });
-                            }
-                        }
-                    }
-                },
-                Stage::ProbingDurations { durations } => match durations.try_recv() {
-                    Ok(found) => {
-                        self.part_durations = found;
-                        if let Err(error) = self.start_concat() {
-                            self.stage = Some(Stage::Failed);
-                            return Some(MultiExportEvent::Finished {
-                                error: Some(error.to_string()),
-                            });
-                        }
-                    }
-                    Err(TryRecvError::Empty) => {
-                        self.stage = Some(Stage::ProbingDurations { durations });
-                        return None;
-                    }
-                    Err(TryRecvError::Disconnected) => {
-                        // The probe thread panicked or was torn down. Keep the
-                        // requested lengths rather than failing the export.
-                        if let Err(error) = self.start_concat() {
-                            self.stage = Some(Stage::Failed);
-                            return Some(MultiExportEvent::Finished {
-                                error: Some(error.to_string()),
-                            });
-                        }
-                    }
-                },
-                Stage::Concatenating { mut process } => match process.poll() {
-                    None => {
-                        self.stage = Some(Stage::Concatenating { process });
-                        return None;
-                    }
-                    Some(ExportEvent::Progress { out_time, .. }) => {
-                        self.stage = Some(Stage::Concatenating { process });
-                        return Some(MultiExportEvent::Progress {
-                            stage: ExportStage::Concatenating,
-                            out_time,
-                            duration: self.total_duration,
-                        });
-                    }
-                    Some(ExportEvent::Finished { stderr, ended }) => {
-                        let exit = process.wait();
-                        self.stage = Some(Stage::Done);
-                        let succeeded =
-                            ended && exit.map(|status| status.success()).unwrap_or(false);
-                        return Some(MultiExportEvent::Finished {
-                            error: (!succeeded).then(|| failure(stderr)),
-                        });
-                    }
-                },
+            let polled = match stage {
+                Stage::Planning { plans } => self.poll_planning(plans),
+                Stage::Cutting { index, process } => self.poll_cutting(index, process),
+                Stage::ProbingTimings { timings } => self.poll_timings(timings),
+                Stage::Concatenating { process } => self.poll_concatenating(process),
                 Stage::Done => {
                     self.stage = Some(Stage::Done);
                     return None;
@@ -507,6 +489,128 @@ impl MultiExport {
                     self.stage = Some(Stage::Failed);
                     return None;
                 }
+            };
+            match polled {
+                StagePoll::Pending => return None,
+                StagePoll::Event(event) => return Some(event),
+                StagePoll::Advanced => {}
+            }
+        }
+    }
+
+    fn poll_planning(
+        &mut self,
+        plans: Receiver<Result<Vec<SmartCutPlan>, MultiExportError>>,
+    ) -> StagePoll {
+        match plans.try_recv() {
+            Ok(Ok(plans)) => {
+                self.apply_plans(plans);
+                match self.start_cut(0) {
+                    Ok(()) => StagePoll::Advanced,
+                    Err(error) => StagePoll::Event(self.fail(error)),
+                }
+            }
+            Ok(Err(error)) => StagePoll::Event(self.fail(error)),
+            Err(TryRecvError::Empty) => {
+                self.stage = Some(Stage::Planning { plans });
+                StagePoll::Pending
+            }
+            Err(TryRecvError::Disconnected) => {
+                StagePoll::Event(self.fail("the export planning thread stopped unexpectedly"))
+            }
+        }
+    }
+
+    fn poll_cutting(&mut self, index: usize, mut process: ExportProcess) -> StagePoll {
+        match process.poll() {
+            None => {
+                self.stage = Some(Stage::Cutting { index, process });
+                StagePoll::Pending
+            }
+            Some(ExportEvent::Progress { out_time, .. }) => {
+                self.stage = Some(Stage::Cutting { index, process });
+                StagePoll::Event(self.progress(
+                    out_time,
+                    ExportStage::Cutting {
+                        index: self.parts[index].segment,
+                        total: self.segments.len(),
+                    },
+                ))
+            }
+            Some(ExportEvent::Finished { stderr, ended }) => {
+                let exit = process.wait();
+                if !(ended && exit.map(|status| status.success()).unwrap_or(false)) {
+                    return StagePoll::Event(self.fail(failure(stderr)));
+                }
+                self.completed_duration = self
+                    .completed_duration
+                    .checked_add(self.parts[index].duration())
+                    .unwrap_or(self.completed_duration);
+
+                let next = if index + 1 < self.parts.len() {
+                    self.start_cut(index + 1)
+                } else {
+                    self.start_probing_timings()
+                };
+                match next {
+                    Ok(()) => StagePoll::Advanced,
+                    Err(error) => StagePoll::Event(self.fail(error)),
+                }
+            }
+        }
+    }
+
+    fn poll_timings(&mut self, timings: Receiver<ProbedTimings>) -> StagePoll {
+        match timings.try_recv() {
+            Ok(found) => {
+                self.part_timings = found.parts;
+                if let Err(error) = self.refresh_durations() {
+                    return StagePoll::Event(self.fail(error));
+                }
+                match self.start_concat() {
+                    Ok(()) => StagePoll::Advanced,
+                    Err(error) => StagePoll::Event(self.fail(error)),
+                }
+            }
+            Err(TryRecvError::Empty) => {
+                self.stage = Some(Stage::ProbingTimings { timings });
+                StagePoll::Pending
+            }
+            Err(TryRecvError::Disconnected) => {
+                log::warn!("part probe failed; using requested lengths");
+                self.use_requested_timings();
+                if let Err(error) = self.refresh_durations() {
+                    return StagePoll::Event(self.fail(error));
+                }
+                match self.start_concat() {
+                    Ok(()) => StagePoll::Advanced,
+                    Err(error) => StagePoll::Event(self.fail(error)),
+                }
+            }
+        }
+    }
+
+    fn poll_concatenating(&mut self, mut process: ExportProcess) -> StagePoll {
+        match process.poll() {
+            None => {
+                self.stage = Some(Stage::Concatenating { process });
+                StagePoll::Pending
+            }
+            Some(ExportEvent::Progress { out_time, .. }) => {
+                self.stage = Some(Stage::Concatenating { process });
+                StagePoll::Event(MultiExportEvent::Progress {
+                    stage: ExportStage::Concatenating,
+                    out_time,
+                    duration: self.total_duration,
+                })
+            }
+            Some(ExportEvent::Finished { stderr, ended }) => {
+                let exit = process.wait();
+                self.stage = Some(Stage::Done);
+                let succeeded = ended && exit.map(|status| status.success()).unwrap_or(false);
+                StagePoll::Event(MultiExportEvent::Finished {
+                    error: (!succeeded).then(|| failure(stderr)),
+                })
             }
         }
     }
@@ -530,17 +634,41 @@ impl MultiExport {
         &self.commands
     }
 
+    /// Builds an overall progress event for the running stage.
+    fn progress(&self, out_time: Timestamp, stage: ExportStage) -> MultiExportEvent {
+        let elapsed = u64::try_from(out_time.micros()).unwrap_or(0);
+        let overall = self
+            .completed_duration
+            .checked_add(Duration::from_micros(elapsed))
+            .unwrap_or(self.completed_duration);
+        MultiExportEvent::Progress {
+            stage,
+            out_time: Timestamp::from_micros(i64::try_from(overall.micros()).unwrap_or(i64::MAX)),
+            duration: self.total_duration,
+        }
+    }
+
+    /// Marks the export as failed and reports `error`.
+    fn fail(&mut self, error: impl ToString) -> MultiExportEvent {
+        self.stage = Some(Stage::Failed);
+        MultiExportEvent::Finished {
+            error: Some(error.to_string()),
+        }
+    }
+
     fn start_cut(&mut self, index: usize) -> Result<(), MultiExportError> {
         let part = &self.parts[index];
-        let (start, end, path, encode, segment) = (
+        let (start, end, seek, path, encode, segment) = (
             part.start,
             part.end,
+            part.seek,
             part.path.clone(),
             part.encode,
             part.segment,
         );
         let mut request = ExportRequest::new(&self.source, start, end, &path)
             .ok_or(MultiExportError::InvalidPart { index: segment })?
+            .with_seek(seek)
             .with_streams(self.streams.clone())
             // Concatenated parts keep their timestamps; rebasing would open a
             // hole at the join.
@@ -570,58 +698,131 @@ impl MultiExport {
         Ok(())
     }
 
-    /// Probes the produced parts on a worker thread.
+    /// Probes the cut parts for their first and last video timestamps.
     ///
-    /// Chapters must use the real part lengths: `-ss` falls back to the
-    /// previous keyframe, so a part is usually longer than its request.
-    fn start_probing_durations(&mut self) -> Result<(), MultiExportError> {
-        let parts: Vec<(usize, PathBuf, Duration)> = self
+    /// Stream copy lands on packet boundaries, so a part's span is usually
+    /// longer than its request. The concat offsets use these real timestamps.
+    fn start_probing_timings(&mut self) -> Result<(), MultiExportError> {
+        let parts: Vec<(PathBuf, Duration)> = self
             .parts
             .iter()
-            .map(|part| (part.segment, part.path.clone(), part.duration()))
+            .map(|part| (part.path.clone(), part.duration()))
             .collect();
-        let segment_count = self.segments.len();
         let (sender, receiver) = mpsc::channel();
         let spawned = thread::Builder::new()
-            .name("export-chapter-probe".to_owned())
+            .name("export-timing-probe".to_owned())
             .spawn(move || {
-                let mut durations = vec![Duration::ZERO; segment_count];
-                for (segment, path, requested) in parts {
-                    let duration = match ffprobe::probe(&path) {
-                        Ok(media) => media.duration.unwrap_or(requested),
-                        Err(error) => {
-                            log::warn!(
-                                "could not probe {} for chapter timing: {error}",
-                                path.display()
-                            );
-                            requested
-                        }
-                    };
-                    durations[segment] = durations[segment]
-                        .checked_add(duration)
-                        .unwrap_or(durations[segment]);
-                }
+                let parts = parts
+                    .into_iter()
+                    .map(|(path, requested)| MultiExport::probe_timing(&path, requested))
+                    .collect();
                 // The receiver is dropped when the export is cancelled.
-                let _ = sender.send(durations);
+                let _ = sender.send(ProbedTimings { parts });
             });
         if let Err(error) = spawned {
-            log::warn!(
-                "could not start the chapter probe thread: {error}; using requested lengths"
-            );
+            log::warn!("could not start the timing probe thread: {error}; using requested lengths");
+            self.use_requested_timings();
+            self.refresh_durations()?;
             return self.start_concat();
         }
-        self.stage = Some(Stage::ProbingDurations {
-            durations: receiver,
-        });
+        self.stage = Some(Stage::ProbingTimings { timings: receiver });
+        Ok(())
+    }
+
+    fn probe_timing(path: &Path, fallback: Duration) -> PartTiming {
+        let bounds = ffprobe::probe_packet_bounds(path, "v:0")
+            .ok()
+            .flatten()
+            .or_else(|| ffprobe::probe_packet_bounds(path, "a:0").ok().flatten());
+        match bounds {
+            Some(bounds) if bounds.end > bounds.first => PartTiming {
+                first: bounds.first,
+                end: bounds.end,
+            },
+            _ => PartTiming {
+                first: Timestamp::ZERO,
+                end: Timestamp::from_micros(i64::try_from(fallback.micros()).unwrap_or(0)),
+            },
+        }
+    }
+
+    fn use_requested_timings(&mut self) {
+        for (timing, part) in self.part_timings.iter_mut().zip(&self.parts) {
+            *timing = PartTiming {
+                first: Timestamp::ZERO,
+                end: Timestamp::from_micros(i64::try_from(part.duration().micros()).unwrap_or(0)),
+            };
+        }
+    }
+
+    /// Concat offset for one part: the distance from the next part's first
+    /// video packet to this part's end, so the next frame follows immediately.
+    fn concat_duration(&self, index: usize) -> Duration {
+        let timing = self.part_timings[index];
+        let Some(next) = self.part_timings.get(index + 1) else {
+            return timing.span();
+        };
+        timing
+            .end
+            .duration_since(next.first)
+            .filter(|duration| duration.micros() > 0)
+            .unwrap_or_else(|| timing.span())
+    }
+
+    /// Recomputes per-segment and total durations from the cut parts.
+    ///
+    /// Smart cut plans rely on a copy piece starting at its planned keyframe.
+    /// Sparse Matroska cue points make FFmpeg seek to an earlier keyframe, which
+    /// silently duplicates content, so fail instead of exporting a wrong cut.
+    fn refresh_durations(&mut self) -> Result<(), MultiExportError> {
+        if let Some(context) = self.smart_cut.as_ref() {
+            // Copy cuts can end a few frames past the request because the
+            // packet that crosses the boundary is kept. A sparse seek point
+            // lands seconds earlier, so a generous tolerance still separates
+            // the two cases.
+            let tolerance =
+                Duration::from_micros(context.frame_duration.micros().saturating_mul(4));
+            for (index, part) in self.parts.iter().enumerate() {
+                if part.encode {
+                    continue;
+                }
+                let span = self.part_timings[index].span();
+                if span.micros() > part.duration().micros().saturating_add(tolerance.micros()) {
+                    return Err(MultiExportError::SmartCutSeek {
+                        index: part.segment,
+                    });
+                }
+            }
+        }
+
+        self.part_durations = vec![Duration::ZERO; self.segments.len()];
+        for index in 0..self.parts.len() {
+            let segment = self.parts[index].segment;
+            let duration = self.concat_duration(index);
+            self.part_durations[segment] = self.part_durations[segment]
+                .checked_add(duration)
+                .unwrap_or(self.part_durations[segment]);
+        }
+        self.total_duration = self
+            .part_durations
+            .iter()
+            .fold(Duration::ZERO, |total, duration| {
+                total.checked_add(*duration).unwrap_or(total)
+            });
+        self.completed_duration = Duration::ZERO;
         Ok(())
     }
 
     fn start_concat(&mut self) -> Result<(), MultiExportError> {
         let list_path = self.work_dir.path().join("concat.txt");
         let mut list = String::new();
-        for part in &self.parts {
+        for (index, part) in self.parts.iter().enumerate() {
             list.push_str(&concat_line(&part.path));
             list.push('\n');
+            list.push_str(&format!(
+                "duration {}\n",
+                format_seconds(self.concat_duration(index))
+            ));
         }
         fs::write(&list_path, list).map_err(MultiExportError::TempFile)?;
 
@@ -679,7 +880,10 @@ impl Drop for MultiExport {
                         log::warn!("could not reap the ffmpeg part process: {error}");
                     }
                 }
-                Stage::Done | Stage::Failed | Stage::ProbingDurations { .. } => {}
+                Stage::Done
+                | Stage::Failed
+                | Stage::Planning { .. }
+                | Stage::ProbingTimings { .. } => {}
             }
         }
     }
@@ -746,6 +950,13 @@ fn failure(stderr: String) -> String {
     } else {
         details.to_owned()
     }
+}
+
+fn format_seconds(duration: Duration) -> String {
+    let micros = duration.micros();
+    let seconds = micros / 1_000_000;
+    let fraction = micros % 1_000_000;
+    format!("{seconds}.{fraction:06}")
 }
 
 pub(super) struct TempDir {

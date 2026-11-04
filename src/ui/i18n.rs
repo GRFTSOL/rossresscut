@@ -135,6 +135,7 @@ pub struct Strings {
     pub export_directory: String,
     pub export_failed: String,
     pub export_invalid_output: String,
+    pub export_join_hint: String,
     pub export_no_segment: String,
     pub export_output_path: String,
     pub export_project: String,

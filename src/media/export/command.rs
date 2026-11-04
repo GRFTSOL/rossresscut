@@ -46,6 +46,24 @@ impl StreamSelection {
     }
 }
 
+/// Source color properties copied to a smart-cut re-encode.
+///
+/// FFmpeg usually propagates these from the decoded frames, but passing them
+/// explicitly keeps 10-bit/HDR output stable across encoder and muxer versions.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct VideoColorSpec {
+    /// Source pixel format, for example `yuv420p10le`.
+    pub pixel_format: Option<String>,
+    /// Color range, for example `tv` or `pc`.
+    pub range: Option<String>,
+    /// Color space, for example `bt2020nc`.
+    pub space: Option<String>,
+    /// Transfer characteristics, for example `smpte2084`.
+    pub transfer: Option<String>,
+    /// Color primaries, for example `bt2020`.
+    pub primaries: Option<String>,
+}
+
 /// Video re-encode settings for a smart-cut head.
 ///
 /// The encoder is a software encoder: exporting must not depend on the local
@@ -60,6 +78,8 @@ pub struct VideoEncodeSpec {
     pub b_frames: Option<u32>,
     /// Source video timescale, when it can be expressed as an integer.
     pub timescale: Option<u64>,
+    /// Source pixel format and color tags, copied to avoid HDR loss.
+    pub color: VideoColorSpec,
 }
 
 /// A validated request for one lossless segment export.
@@ -68,6 +88,7 @@ pub struct ExportRequest {
     source: PathBuf,
     start: Timestamp,
     end: Timestamp,
+    seek: Timestamp,
     output: PathBuf,
     chapters: Vec<ChapterSpec>,
     title: Option<String>,
@@ -97,6 +118,7 @@ impl ExportRequest {
             source,
             start,
             end,
+            seek: start,
             output,
             chapters: Vec::new(),
             title: None,
@@ -191,6 +213,21 @@ impl ExportRequest {
         self.end
     }
 
+    /// Sets the input seek target while keeping `start` as the content start.
+    ///
+    /// Stream copy can only start at a seekable point, which is often earlier
+    /// than `start`. Seeking to a later target can make the demuxer land on
+    /// `start` exactly, so the copy piece does not take other content with it.
+    pub fn with_seek(mut self, seek: Timestamp) -> Self {
+        self.seek = seek;
+        self
+    }
+
+    /// Returns the input seek target used for `-ss`.
+    pub const fn seek(&self) -> Timestamp {
+        self.seek
+    }
+
     /// Returns the requested output path.
     pub fn output(&self) -> &Path {
         &self.output
@@ -223,10 +260,10 @@ pub fn build_args(
         "-nostats".into(),
     ];
 
-    let cuts_start = request.start.micros() > 0;
+    let cuts_start = request.seek().micros() > 0;
     if cuts_start {
         args.push("-ss".into());
-        args.push(format_timestamp(request.start).into());
+        args.push(format_timestamp(request.seek()).into());
     }
 
     args.push("-i".into());
@@ -250,7 +287,15 @@ pub fn build_args(
     }
 
     args.push("-t".into());
-    args.push(format_duration(request.duration()).into());
+    args.push(
+        format_duration(
+            request
+                .end()
+                .duration_since(request.seek())
+                .unwrap_or_else(|| request.duration()),
+        )
+        .into(),
+    );
 
     let subtitle_replaced = request.subtitle().is_some();
     let subtitle_included = subtitle.is_some()
@@ -314,6 +359,7 @@ pub fn build_args(
             args.push("-video_track_timescale".into());
             args.push(timescale.to_string().into());
         }
+        append_color_args(&mut args, &encode.color);
     }
 
     if subtitle_included {
@@ -342,6 +388,22 @@ pub fn build_args(
     args.push(request.output.as_os_str().to_owned());
 
     args
+}
+
+/// Appends the source pixel format and color tags used when re-encoding.
+fn append_color_args(args: &mut Vec<OsString>, color: &VideoColorSpec) {
+    for (option, value) in [
+        ("-pix_fmt", &color.pixel_format),
+        ("-color_range", &color.range),
+        ("-colorspace", &color.space),
+        ("-color_trc", &color.transfer),
+        ("-color_primaries", &color.primaries),
+    ] {
+        if let Some(value) = value {
+            args.push(option.into());
+            args.push(value.clone().into());
+        }
+    }
 }
 
 /// Picks a subtitle codec the output container can store.
@@ -399,6 +461,17 @@ mod tests {
             .iter()
             .position(|value| value == needle)
             .expect("argument present")
+    }
+
+    #[test]
+    fn seeks_to_a_later_target_to_reach_the_content_start() {
+        let request = request(1_000_000, 5_000_000).with_seek(Timestamp::from_micros(2_000_000));
+        let values = args(&request);
+
+        assert_eq!(values[position(&values, "-ss") + 1], "2.000000");
+        assert_eq!(values[position(&values, "-t") + 1], "3.000000");
+        assert_eq!(request.start(), Timestamp::from_micros(1_000_000));
+        assert_eq!(request.duration(), Duration::from_micros(4_000_000));
     }
 
     #[test]
@@ -500,6 +573,7 @@ mod tests {
                 bit_rate: 1_000_000,
                 b_frames: Some(3),
                 timescale: Some(15_360),
+                color: VideoColorSpec::default(),
             }))
             .with_rebase_negative(false);
         let values = args(&request);
@@ -516,12 +590,37 @@ mod tests {
     }
 
     #[test]
+    fn copies_colour_tags_when_reencoding() {
+        let request = request(5_500_000, 6_000_000).with_encode(Some(VideoEncodeSpec {
+            encoder: "libx265".to_owned(),
+            bit_rate: 1_000_000,
+            b_frames: None,
+            timescale: None,
+            color: VideoColorSpec {
+                pixel_format: Some("yuv420p10le".to_owned()),
+                range: Some("tv".to_owned()),
+                space: Some("bt2020nc".to_owned()),
+                transfer: Some("smpte2084".to_owned()),
+                primaries: Some("bt2020".to_owned()),
+            },
+        }));
+        let values = args(&request);
+
+        assert_eq!(values[position(&values, "-pix_fmt") + 1], "yuv420p10le");
+        assert_eq!(values[position(&values, "-color_range") + 1], "tv");
+        assert_eq!(values[position(&values, "-colorspace") + 1], "bt2020nc");
+        assert_eq!(values[position(&values, "-color_trc") + 1], "smpte2084");
+        assert_eq!(values[position(&values, "-color_primaries") + 1], "bt2020");
+    }
+
+    #[test]
     fn resets_the_output_timestamps_after_the_input_seek() {
         let request = request(5_500_000, 6_000_000).with_encode(Some(VideoEncodeSpec {
             encoder: "libx264".to_owned(),
             bit_rate: 1_000_000,
             b_frames: None,
             timescale: None,
+            color: VideoColorSpec::default(),
         }));
         let values = args(&request);
         let seeks: Vec<usize> = values

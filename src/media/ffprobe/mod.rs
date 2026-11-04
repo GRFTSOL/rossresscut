@@ -4,10 +4,14 @@
 //! converted into the domain model before it leaves this module.
 
 mod keyframes;
+mod packets;
 mod parse;
 mod raw;
+mod seek;
 
 pub use keyframes::probe_keyframes;
+pub use packets::{PacketBounds, probe_packet_bounds};
+pub use seek::probe_seek_start;
 
 use std::fmt;
 use std::path::{Path, PathBuf};

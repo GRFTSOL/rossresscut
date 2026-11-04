@@ -39,20 +39,27 @@ smart cut：  5.5s(重编码头) │ 6.0s(关键帧) ─────── 9.0s
 
 ```text
 desiredCutFrom = 用户请求的起点
+desiredCutTo = 用户请求的终点
 losslessCutFrom = 起点之后的下一个关键帧
+lastKeyframeBeforeEnd = 终点之前（或正好在终点）的关键帧
 
-若起点已是关键帧：
+若起点已是关键帧且终点也是关键帧：
     整段普通 copy
-否则若 losslessCutFrom >= 片段终点：
+否则若 losslessCutFrom >= 终点：
     整段重编码（片段完全位于两个关键帧之间）
 否则：
-    编码段 [desiredCutFrom, losslessCutFrom - 一帧)
-    无损段 [losslessCutFrom, 片段终点)
-    两段 concat
+    编码段 [desiredCutFrom, losslessCutFrom - 一帧)      # 起点精确
+    无损段 [losslessCutFrom, lastKeyframeBeforeEnd - 两帧)
+    编码段 [lastKeyframeBeforeEnd, desiredCutTo)          # 终点精确
 ```
 
 编码段结束点取 `max(desiredCutFrom + 一帧, losslessCutFrom - 一帧)`，
 用于避免拼接处出现重复帧，同时避免产生零长度片段。
+
+末端的两帧余量用于避开 `-t` 按 DTS 截断的问题：如果无损段直接截在
+关键帧上，FFmpeg 会保留关键帧并从下一个 GOP 多取一两个包，中间的 B 帧
+却被丢掉，形成一段画面停留。让无损段提前两帧结束，再由编码段从关键帧
+重新编码到终点，末端就没有空洞。
 
 ### 3. 编码段的 FFmpeg 参数（行为层面）
 
@@ -177,14 +184,22 @@ Matroska 输出接受该参数，不报错。是否真的生效不影响可行�
 
 1. 编码段可以精确从请求起点开始，前提是输入 seek + 解码丢弃（`-ss` 前置 + `-ss 0`）。
 2. 编码段与无损段可以直接 concat，接缝无间隙。
-3. smart cut 不改善片段末端精度：无损段仍可能比请求多 1–2 帧。
-4. 拼接 smart cut 片段时不能加 `avoid_negative_ts make_zero`。
-5. 当前项目已经拥有全片关键帧索引，不需要像 LosslessCut 那样按窗口现查。
-6. `has_b_frames` 未建模，但可以从 FFprobe JSON 补上。
+3. 末端同样可以精确：用编码段覆盖最后一个关键帧到请求终点的区间。
+4. 无损段不能直接截在关键帧上；`-t` 按 DTS 截断会保留关键帧却丢掉中间的
+   B 帧，留下 2–4 帧的画面停留。提前两帧结束再由编码段接管可以避免。
+5. 拼接 smart cut 片段时不能加 `avoid_negative_ts make_zero`。
+6. Matroska 的 cue 点可能比关键帧稀疏。`-ss <关键帧>` 在 copy 模式下可能
+   落到更早的 cue，把关键帧之前的内容一起复制。实测 Inception HEVC MKV：
+   `-ss 60.56` 落到 `53.22`，`-ss 61.06` 才落到 `60.56`。
+   规划阶段用 `ffmpeg -ss <target> -copyts ... -frames:v 1` + ffprobe
+   探测实际落点；找到 `落点 >= 请求起点` 的目标后，编码头延长到落点，
+   copy 段使用该目标。找不到时整段编码。
+7. 当前项目已经拥有全片关键帧索引，不需要像 LosslessCut 那样按窗口现查。
+8. `has_b_frames` 未建模，但可以从 FFprobe JSON 补上。
 
 ### 推论
 
-1. 多段导出时，每段都可能产生「编码头 + 无损尾」两个子片段；
+1. 多段导出时，每段可能产生「编码头 + 无损中段 + 编码尾」三个子片段；
    可以把所有子片段按 Timeline 顺序放进同一个 concat list。
 2. 编码段和无损段的流布局、codec、时间基必须一致，否则 concat 失败。
 3. 源 codec 没有对应软件编码器时，smart cut 无法完成。
@@ -194,6 +209,29 @@ Matroska 输出接受该参数，不报错。是否真的生效不影响可行�
 ### 需要项目负责人决定
 
 见下方「待决策」。
+
+## LosslessCut 对照（2026-11-04）
+
+对照 `mifi/lossless-cut` master 的 `smartcut.ts`、`useFfmpegOperations.ts`、
+`util/streams.ts`（只读参考，未复制代码）：
+
+- 它的 smart cut 只处理**起点**：`needsSmartCut()` 找起点之后的关键帧，
+  `cutEncodeSmartPart()` 编码 `[请求起点, 该关键帧)`，剩余区间继续 copy。
+  片段终点仍由 `-t` copy 截断，没有尾部编码。
+- Matroska + B 帧的提前 seek（issue #1216）用固定补偿：
+  `getKeyframeCutSeekCompensation()` 在 `-ss` 上加 `3/23 + 0.001` 秒，
+  再用 `-itsoffset` 把输出零点移回原切点。
+- 导出参数与我们的编码头一致：`-ss` 在 `-i` 之前、编码段再加 `-ss 0`、
+  `-t` 在输入之后、concat demuxer 合并、码率 ×1.2。
+
+与本项目的差异：
+
+- OQ-25：本项目额外编码**尾部最后一个 GOP**；LosslessCut 不做，其段尾仍
+  依赖 `-t` copy 截断。两者属于同一思路（局部重编码 + copy 中间段 +
+  concat），本项目把范围扩展到终点。
+- OQ-26：本项目用实际 seek 落点探测替代固定补偿。固定补偿只覆盖约 0.13s
+  的 Matroska 偏移；实测稀疏 cue 可提前 7s 以上，因此必须按落点规划。
+  `-itsoffset` 的方案也会平移音频时间戳，探测 + 延长编码头不改变音画时间轴。
 
 ## 待决策
 

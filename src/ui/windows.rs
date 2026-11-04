@@ -390,6 +390,12 @@ impl RossresscutApp {
                         });
                         ui.checkbox(&mut self.settings.smart_cut, strings.smart_cut.as_str())
                             .on_hover_text(strings.smart_cut_hint.as_str());
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(strings.export_join_hint.as_str()).small(),
+                            )
+                            .wrap(),
+                        );
                     });
 
                 egui::CollapsingHeader::new(strings.shortcuts.as_str())

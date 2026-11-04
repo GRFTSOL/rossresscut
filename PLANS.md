@@ -14,7 +14,8 @@
 - Phase 5 调查：`docs/investigations/multi-segment-concat.md`。
 - 多 Segment 实现：临时片段 + concat demuxer；临时目录在成功、失败、取消后自动清理。
 - 顺序严格使用 `Timeline.segments()`；非关键帧起点回退到此前关键帧。
-- 拼接处存在 ≤1 帧视频间隙，已在文档中记录。
+- 拼接偏移按各段真实时间戳计算，不再插入 1 帧间隙；详见调查文档。
+  纯 stream copy 的段尾 B 帧空洞由 smart cut 的编码尾解决（ADR-0013）。
 - 导出章节按每个临时片段的实际容器时长累计，测试见
   `tests/multi_export.rs::chapters_follow_actual_part_lengths`。
 - 切片不再使用 `-shortest`：源带附加图片/字幕流时它会提前结束，产物可能近乎为空。
@@ -61,7 +62,8 @@
 - 打开带容器章节的媒体时自动按章节创建片段；章节标题可编辑并随项目保存。
 - 从 `.rrc` 打开或手动保存过的项目，在关闭媒体 / 窗口 / 应用时提示保存。
 - 菜单栏、设置按钮、导出按钮加大；导出按钮固定在右下角。
-- 已知未解决：mpv 精确 seek 后的短暂旧帧（OQ-21）。
+- 精确 seek 在目标纹理到达前显示加载状态，不绘制旧位置纹理；门控与超时见
+  `docs/investigations/mpv-engine-spike.md`。
 
 除非用户明确要求，不提前实现后续阶段功能。
 
@@ -226,7 +228,7 @@ cargo fmt --check
 - 4K HEVC 精确 seek 仍可能耗时数百毫秒；测试机 CPU 受限，不能代表一般硬件。快速 seek 调研见下节。
 - 快速 scrub 可能显示目标时间之前的关键帧；只能用于视觉反馈，不能用于 Segment 或导出。
 - 预览尺寸按预览窗格与源宽高比等比适配，不放大；预览不保证帧精确，不作为编辑或导出依据。
-- 暂无音量、音频设备选择、音轨选择。
+- 暂无音量、音频设备选择、音轨选择（mpv 已支持运行时 `aid` / `audio-device`，UI 未接入）。
 - UI 字符串已本地化；应用层 warning 与媒体层错误仍为英文。
 - 文件门户仅在 Linux 实现；其他平台暂时禁用 Open。
 - 文件对话框未做自动化选择测试；已确认 XDG portal 服务与 `FileChooser` 接口存在。
@@ -397,7 +399,7 @@ Phase 4 不再直接进入导出。当前实际播放性能与音画同步不可
 - `ROSS_RESCUT_DIAG_AUTOPLAY`：诊断时自动 seek 到 60s 并播放。
 - `ROSS_RESCUT_PREVIEW_HW`：覆盖本次运行的解码后端。
 
-未完成：Windows D3D11VA / macOS VideoToolbox 的下载开销；VAAPI 下载慢的具体原因（未 profiling）；分钟级长时漂移。
+未完成：Windows D3D11VA / macOS VideoToolbox 的下载开销；VAAPI 下载慢的具体原因（未 profiling）。分钟级长时漂移已在 mpv 主路径复测通过（10 分钟，见 `docs/investigations/playback-pipeline.md`）。
 
 约束：
 
@@ -443,16 +445,22 @@ UI 渲染适配层之间按帧传递。详见 `docs/decisions/0010-preview-via-m
   音频路径，`PreviewAudio` / `cpal` 只在外部 FFmpeg 回退路径启动。
 - [x] 步骤 5：`hr-seek=no` 拖动 / `hr-seek=yes` 松手；松手使用指针最终位置，
   精确 seek 在 `PlaybackRestart` 缺失时以落点 ≤100 ms 兜底。
-  `tests/mpv_preview.rs` 覆盖落点与暂停恢复。
+  帧步进使用 mpv 原生 `frame-step` / `frame-back-step`，外部 FFmpeg 回退
+  按名义帧时长跳转。`tests/mpv_preview.rs` 覆盖落点、暂停恢复、连续 scrub
+  与前后逐帧。
 - [x] 步骤 6：按预览窗格物理像素等比适配源尺寸（横竖屏均覆盖、不放大）；
   尺寸连续变化时等连续两帧一致后再下发，避免窗口拖动时每帧重配置 export。
+  去抖与物理像素换算有单测，mpv 导出尺寸变化有 `tests/mpv_gpu_regression.rs`
+  的 resize 回归；实机窗口缩放验证见 `docs/investigations/mpv-engine-spike.md`。
 - [x] 步骤 7：播放信息区分 `mpv (libmpv)` 与外部 `ffmpeg (...)` 后端；
   无 wgpu render state 时记录回退日志，mpv 失败通过 warning 显示。
 - [x] 步骤 8：测试与文档修订。新增 `tests/mpv_gpu_regression.rs`（BGRA 通道、
-  不偏色、drop 后纹理可用、连续实例不串帧）与 `tests/mpv_preview.rs`
-  （seek / 暂停恢复 / 音频时钟），均默认 `ignored`。AGENTS、architecture、
-  ADR 0010 已同步。旧预览路径**保留**：它同时承担无 feature / 无 wgpu /
-  mpv 失败三条回退，删除条件见 ADR 0010「旧预览路径的退出条件」。
+  不偏色、drop 后纹理可用、连续实例不串帧、resize 后尺寸/内容、精确 seek
+  旧帧门控）与 `tests/mpv_preview.rs`（seek / 暂停恢复 / 音频时钟 / 连续
+  scrub / frame-step），均默认 `ignored`，列入 `RELEASING.md` 发布前检查。
+  HDR/10-bit 预览对比与 smart cut 色彩元数据回归见 `tests/smart_cut_export.rs`。
+  AGENTS、architecture、ADR 0010 已同步。旧预览路径**保留**：它同时承担无
+  feature / 无 wgpu / mpv 失败三条回退，删除条件见 ADR 0010「旧预览路径的退出条件」。
 
 完成标准：
 
@@ -533,7 +541,9 @@ re-encode
 - 采用“临时片段 + concat demuxer”；concat filter 会重编码，不用。
 - concat demuxer 的 `inpoint/outpoint` 在非关键帧起点会破坏时间戳，不用。
 - 每个 Segment 的起点会回退到此前关键帧；输出时长不等于 `sum(end - start)`。
-- 拼接处存在 ≤1 帧的视频间隙（约 16–33ms），音频连续；stream copy 无法消除。
+- 拼接偏移按真实时间戳计算，不再插入帧间隙；纯 copy 的段尾空洞可由
+  smart cut 的编码尾消除（ADR-0013）。
+  实现见 `src/media/export/concat.rs` 的 `concat_duration`。
 - 输出容器应与源一致；同一 source 的片段流布局一致。
 - Timeline 顺序是唯一输出顺序，不得按 `start` 重排。
 
@@ -546,7 +556,7 @@ re-encode
 - [x] 临时目录生命周期（成功 / 失败 / 取消都清理）
 - [x] 多段进度（按各段请求时长加权）
 - [x] stream selection（`StreamSelection` 逐段传递到每个切片；`None` 保持 `-map 0`）
-- [ ] timestamp 处理（切片已用 `-avoid_negative_ts make_zero`；更细控制未做）
+- [x] timestamp 处理（切片 `-avoid_negative_ts make_zero`；切片后探测首/末时间戳并修正 list `duration`）
 - [ ] metadata / chapter 显式处理
 - [x] 不兼容情况处理（FFmpeg 错误向上传递并显示）
 - [x] 顺序护栏测试（导出必须读取 Timeline 既有顺序，不得按 start 重排）
@@ -565,7 +575,7 @@ re-encode
 - [x] 研究 LosslessCut 的 concat / timestamp 处理与容器兼容性边界。
 - [ ] 研究 audio-only 裁剪、leading non-keyframe audio packets 等历史边界修复。
 - [ ] 对采用的媒体语义增加本项目自己的测试。
-- [ ] 验证 60fps / 4K / VFR 素材的拼接间隙是否仍为一帧。
+- [ ] 验证 60fps / 4K / VFR 素材的拼接偏移与段尾空洞。
 - [ ] 验证字幕、章节、attached_pic 与不同输出容器。
 
 ## 顺序语义
@@ -744,10 +754,13 @@ ADR：`docs/decisions/0012-project-and-settings-format.md`。
   - 多段导出时各段必须得到相同的流布局，否则 concat 失败（与字幕裁剪的限制相同）。
   - 勾选集合为空（用户取消全部勾选）等价于“不映射任何流”，FFmpeg 会报错；
     当前不阻止该操作，只把错误显示给用户。
-- [x] 智能裁切（裁切点为非关键帧时，从该帧到关键帧按该段平均码率重新编码）
+- [x] 智能裁切（起点与终点都可精确到帧；边界不在关键帧时按该段平均码率重编码）
   - 决策见 `docs/decisions/0013-smart-cut.md`；调查与实验见 `docs/investigations/smart-cut.md`
-  - 起点在关键帧 → 纯 copy；起点不在关键帧 → 编码头 + 无损尾；片段完全位于两个关键帧之间 → 整段编码
+  - 起点在关键帧 → 纯 copy；起点不在关键帧 → 编码头 + 无损中段；
+    终点不在关键帧 → 无损中段 + 编码尾；片段完全位于两个关键帧之间 → 整段编码
   - 码率 = 源视频码率 × 1.2；源码率缺失时用容器大小 × 8 / 时长估算
+  - 重编码显式传递源 `pix_fmt` 与 color range / space / transfer / primaries，
+    保留 10-bit/HDR；`tests/smart_cut_export.rs` 有 HDR10 回归
   - 视频编码器按源 codec 选择：`h264`→`libx264`、`hevc`→`libx265`、`av1`→`libsvtav1`、
     `vp9`→`libvpx-vp9`、`prores`→`prores_ks` 等；不使用硬件编码
   - 实现：`media::export::smart_cut`（分段计划与 encoder 映射）、
@@ -759,9 +772,11 @@ ADR：`docs/decisions/0012-project-and-settings-format.md`。
 
   ### 已知限制
 
-  - 输出头部不是无损的；必须通过设置项 tooltip 告知用户。
-  - 片段末端仍可能比请求多 1–2 帧（无损段本身的溢出），smart cut 只解决起点。
+  - 输出头部与尾部不是无损的；必须通过设置项 tooltip 告知用户。
+  - 无损段末端提前两帧，由编码尾补齐，以保证段尾无 B 帧空洞。
+  - 无损段与编码尾交界可能重复或跳过不超过一帧的内容。
   - 起点与下一关键帧之间会丢弃约一帧，用于避免拼接处重复帧。
+  - cue 点稀疏的容器会在规划阶段探测实际 seek 落点；必要时延长编码头或整段编码。
   - 只支持恰好一个视频流，且必须是预览使用的那个流；否则直接失败。
   - 关键帧索引未加载完成时失败，不自动等待。
   - 不支持 VFR 的精确帧时长；使用平均帧率计算。

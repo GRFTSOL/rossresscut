@@ -186,28 +186,82 @@ p1 的第一帧等于源 2.0s 的关键帧，而不是请求的 3.3s。
 
 1. **起点回退到关键帧**：Segment 起点不是关键帧时，输出会包含从该关键帧到请求起点之间的内容。
 2. **输出时长不是 `sum(end - start)`**：等于各段实际片段时长之和。
-3. **拼接处有 ≤1 帧的视频间隙**：约 16–33ms，音频连续。stream copy 无法消除。
+3. **拼接偏移按真实时间戳计算**：不再插入额外间隙；30fps 实测帧间隔 33.3ms。
+   非关键帧结束点在纯 stream copy 下仍可能留下 B 帧重排空洞；启用
+   smart cut 后由编码尾补齐（ADR-0013）。
 4. **视频首帧 PTS 可能非零**：MP4 下约 16ms；这是 B 帧 DTS 归零的副产物。
 5. **MP4 与 MKV 行为不同**：MKV 的音频起点偏移 26ms，拼接间隙更大；输出容器应与源一致。
 6. **流必须一致**：同一 source 的片段满足；不同容器/流布局不支持。
 7. **DTS 非单调警告**：concat demuxer 可能改写时间戳，需要记录而不是忽略。
 
+### 2026-11-04 拼接偏移修正（已实现）
+
+用 640x360@30、H.264 + AAC、关键帧每 2 秒的素材复测，请求两段
+`[3.3,7.3)` 与 `[10.7,13.7)`，基线视频拼接处是
+`5.282682 → 5.349349`，间隔 66.7ms；正常帧间隔 33.3ms，即额外约 1 帧。
+
+失败过的方案：
+
+- 切片加 `-shortest`：间隔降到 49.3ms；但源带附加图片/字幕流时会提前结束，
+  不能作为默认行为。
+- 只给 concat list 加 `duration`：视频间隔压到 24–33ms，但音频包重叠，
+  出现 `Non-monotonic DTS`。
+- 逐流 `setts` 重定基：B 帧会让视频首 DTS 为负，`make_zero` 又把整段平移
+  回去；且不同流首 PTS 不同时，逐流重定基会破坏音画同步。
+
+最终方案：**不改写任何包时间戳，只修正 concat list 的 `duration`**。
+
+1. 切片保持 `-ss` before `-i`、`-t`、`-map 0`、`-c copy`、`-avoid_negative_ts make_zero`。
+2. 切片全部完成后，在工作线程逐段探测视频首包 PTS 与最大 `PTS + duration`。
+3. concat list 中每段的 `duration` =
+   `本段视频最大结束时间 - 下一段视频首包 PTS`；最后一段用本段跨度。
+4. concat 仍用 `-avoid_negative_ts make_zero`；它只做一次全局平移，
+   所有段一起移动，不改变相对拼接。
+
+实测（320x240@30、H.264 + AAC、关键帧每 1 秒，请求 `[3.3,7.3)`、
+`[10.7,13.7)`）：
+
+- 视频：`4.267 → 4.300 → 4.333`，间隔 33.3ms，无停顿。
+- 音频：`4.296 → 4.300 → 4.323`，单调递增。
+- 输出时长 8.038s（音频尾部比视频长约 19ms，属于 AAC 包边界差）。
+
+真实 HDR 素材（HEVC 23.976fps + AAC，带 B 帧）实测：
+
+- 第二段首帧正好接在第一段视频末包之后（`4.796 → 4.837`，41ms），
+  拼接处没有额外插入的间隙。
+- 但第一段自身的末尾有 `4.671 → 4.796`（125ms）的画面停留。这是切片
+  `-t` 按 DTS 截断、丢掉引用链中间 B 帧造成的，与 concat 偏移无关，
+  已记录在 ADR-0013；smart cut 的编码尾可以消除段尾空洞。
+
+跨度末端取所有包中最大的 `PTS + duration`，不能取 mux 顺序最后一行：
+B 帧重排会让最后一个 mux 包的 PTS 不是最大 PTS。
+Matroska 的 stream duration 是 `N/A`，不能用 `probe().duration`。
+
+拼接偏移不能简单地用每一段自己的跨度：`-ss` 切出的段首 PTS 不一定是 0，
+相邻段可能不同。用 `结束时间 - 下一段首 PTS` 才能让下一帧紧接着上一帧。
+
+结论：**实现“切片后探测 + concat 偏移修正”**，拼接处不再插入帧间隙。
+实现见 `src/media/export/concat.rs` 的 `start_probing_timings` /
+`concat_duration`，回归测试见
+`tests/multi_export.rs::joins_parts_without_a_frame_gap`。
+
 ### Phase 5 实现建议
 
 1. `ExportRequest` 从单段扩展为按 Timeline 顺序的 Segment 列表。
 2. 每个 Segment 先写到输出同目录或系统临时目录的临时文件，扩展名与输出一致。
-3. 切片使用 `-ss` before `-i`、`-t`、`-map 0`、`-c copy`、`-avoid_negative_ts make_zero`、`-shortest`。
-4. 用 concat demuxer 合并，list 通过 stdin 或临时文件传入。
+3. 切片使用 `-ss` before `-i`、`-t`、`-map 0`、`-c copy`、`-avoid_negative_ts make_zero`。
+4. 切片完成后逐段探测首包 PTS 与末包结束时间，再用 concat demuxer 合并；
+   list 中每段的 `duration` 用“本段结束 - 下一段首 PTS”计算。
 5. 临时目录使用 RAII guard，成功、失败、取消都删除。
 6. 进度按各段实际输出时长加权；总时长需要从切片结果读取，不能只用 `sum(end-start)`。
 7. 顺序严格使用 `Timeline.segments()`，不得按 `start` 重新排序。
 8. 重叠 Segment 按顺序重复输出，不自动合并或裁剪。
 9. 流一致性在开始前检查；不一致时明确失败，不静默重编码。
-10. UI 必须显示起点回退与拼接间隙的语义，不能把结果描述成帧精确。
+10. UI 必须显示起点回退的语义，不能把结果描述成帧精确。
 
 ### 未验证
 
-- 60fps / 4K 素材的拼接间隙是否仍为一帧。
+- 60fps / 4K 素材的拼接偏移。
 - VFR 素材。
 - 含字幕、章节、attached_pic 的容器。
 - 不同容器之间的 concat（例如 MP4 片段 → MKV 输出）。
