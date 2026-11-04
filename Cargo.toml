@@ -9,6 +9,10 @@ description = "Native lossless media cutting tool built with Rust and egui."
 default = ["mpv-preview"]
 mpv-preview = ["dep:mpv-engine", "dep:wgpu"]
 
+[[example]]
+name = "mpv_long_playback"
+required-features = ["mpv-preview"]
+
 [dependencies]
 cpal = "0.18"
 eframe = { version = "0.37", features = ["persistence"] }

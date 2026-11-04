@@ -131,32 +131,13 @@ impl RossresscutApp {
     /// reconfiguring mpv on every frame while a window edge is dragged.
     #[cfg(feature = "mpv-preview")]
     fn request_preview_bounds(&mut self, size: egui::Vec2, context: &egui::Context) {
-        if size.x <= 0.0 || size.y <= 0.0 {
+        let Some(bounds) = physical_bounds(size, context.pixels_per_point()) else {
             return;
-        }
-        let pixels_per_point = context.pixels_per_point();
-        let width = (size.x * pixels_per_point).round().max(1.0) as u32;
-        let height = (size.y * pixels_per_point).round().max(1.0) as u32;
-        let bounds = (width, height);
-        // Apply the first known pane size immediately so mpv does not allocate
-        // a full-resolution render target before the first resize settles.
-        if self.preview_bounds.is_none() {
-            self.preview_bounds = Some(bounds);
-            self.pending_preview_bounds = None;
-            self.application.set_preview_bounds(width, height);
-            return;
-        }
-        if self.preview_bounds == Some(bounds) {
-            self.pending_preview_bounds = None;
-            return;
-        }
-        if self.pending_preview_bounds == Some(bounds) {
-            self.preview_bounds = Some(bounds);
-            self.pending_preview_bounds = None;
-            self.application.set_preview_bounds(width, height);
-        } else {
-            self.pending_preview_bounds = Some(bounds);
-            context.request_repaint();
+        };
+        match self.preview_bounds.observe(bounds) {
+            Some((width, height)) => self.application.set_preview_bounds(width, height),
+            None if self.preview_bounds.is_pending() => context.request_repaint(),
+            None => {}
         }
     }
 
@@ -207,10 +188,15 @@ impl RossresscutApp {
                     }
                 }
                 OpenState::Ready => {
+                    let preview_stale = self.application.is_preview_stale();
                     let mpv_texture: Option<(egui::TextureId, egui::Vec2)> = {
                         #[cfg(feature = "mpv-preview")]
                         {
-                            self.preview_mpv_id.zip(self.preview_mpv_size)
+                            if preview_stale {
+                                None
+                            } else {
+                                self.preview_mpv_id.zip(self.preview_mpv_size)
+                            }
                         }
                         #[cfg(not(feature = "mpv-preview"))]
                         {
@@ -218,6 +204,9 @@ impl RossresscutApp {
                         }
                     };
                     let texture = mpv_texture.or_else(|| {
+                        if preview_stale {
+                            return None;
+                        }
                         self.preview_texture
                             .as_ref()
                             .map(|texture| (texture.id(), texture.size_vec2()))
@@ -246,7 +235,7 @@ impl RossresscutApp {
                         if response.hovered() {
                             self.handle_wheel(ui);
                         }
-                    } else if self.application.is_waiting_for_preview() {
+                    } else if preview_stale || self.application.is_waiting_for_preview() {
                         self.centered_spinner(ui, strings.loading_preview.clone());
                     } else {
                         centered_message(ui, strings.no_video_frame.as_str());
@@ -345,6 +334,58 @@ impl RenderDiagnostics {
         self.uploads = 0;
         self.upload_total = Duration::ZERO;
         self.upload_max = Duration::ZERO;
+    }
+}
+
+/// Converts a logical pane size to physical pixels.
+///
+/// Returns `None` for non-positive sizes or a non-positive scale factor.
+#[cfg(feature = "mpv-preview")]
+pub(super) fn physical_bounds(size: egui::Vec2, pixels_per_point: f32) -> Option<(u32, u32)> {
+    if size.x <= 0.0 || size.y <= 0.0 || !pixels_per_point.is_finite() || pixels_per_point <= 0.0 {
+        return None;
+    }
+    let width = (size.x * pixels_per_point).round().max(1.0) as u32;
+    let height = (size.y * pixels_per_point).round().max(1.0) as u32;
+    Some((width, height))
+}
+
+/// Applies preview pane sizes only after the same size repeats for two frames.
+///
+/// The first known size is applied immediately; while a window edge is dragged,
+/// transient sizes never reach mpv.
+#[cfg(feature = "mpv-preview")]
+#[derive(Default)]
+pub(super) struct PreviewBounds {
+    applied: Option<(u32, u32)>,
+    pending: Option<(u32, u32)>,
+}
+
+#[cfg(feature = "mpv-preview")]
+impl PreviewBounds {
+    /// Records `bounds` and returns the size to forward when it changes.
+    pub(super) fn observe(&mut self, bounds: (u32, u32)) -> Option<(u32, u32)> {
+        if self.applied.is_none() {
+            self.applied = Some(bounds);
+            self.pending = None;
+            return Some(bounds);
+        }
+        if self.applied == Some(bounds) {
+            self.pending = None;
+            return None;
+        }
+        if self.pending == Some(bounds) {
+            self.applied = Some(bounds);
+            self.pending = None;
+            return Some(bounds);
+        }
+        self.pending = Some(bounds);
+        None
+    }
+
+    /// Returns whether a size is waiting for a second observation.
+    pub(super) fn is_pending(&self) -> bool {
+        self.pending.is_some()
     }
 }
 

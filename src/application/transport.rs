@@ -123,9 +123,22 @@ impl Application {
     }
 
     /// Pauses playback and moves by one source frame.
+    ///
+    /// The mpv backend uses mpv's native `frame-step` / `frame-back-step`, so
+    /// the step follows decoded frame boundaries. The external FFmpeg fallback
+    /// uses the nominal frame duration, which is approximate for VFR sources.
     pub fn step_frame(&mut self, forward: bool) {
         if self.playback.playing {
             self.pause();
+        }
+        #[cfg(feature = "mpv-preview")]
+        if let Some(mpv) = self.playback.mpv.as_ref() {
+            match mpv.frame_step(forward) {
+                Ok(()) => return,
+                Err(error) => {
+                    log::warn!("mpv frame step failed: {error}; using a time-based step");
+                }
+            }
         }
         let micros = i64::try_from(self.frame_duration().micros()).unwrap_or(33_333);
         self.skip(if forward { micros } else { -micros });

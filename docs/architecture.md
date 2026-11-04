@@ -200,6 +200,11 @@ media::preview 导入为 wgpu::Texture
 
 `cpal` 只在外部 FFmpeg 回退路径负责音频 PCM 输出；主路径音频由 libmpv `ao` 输出。
 
+预览解码设备选择委托给 libmpv：主路径使用 `hwdec=auto-safe`，Linux 上 mpv 提供
+`--vaapi-device`（默认 `/dev/dri/renderD128`）。项目不枚举 GPU，也不在 UI 中
+暴露设备选择；需要指定设备时属于后续功能，不在当前范围内。Windows D3D11
+适配器选择未验证，当前不承诺。
+
 ---
 
 # 六、任务系统

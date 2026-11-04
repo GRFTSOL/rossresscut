@@ -111,6 +111,7 @@ render diag: ui_fps=.. uploads=.. upload_avg_ms=.. upload_max_ms=..
 | --- | --- |
 | `ROSS_RESCUT_DIAG` | 启用每 2 秒的渲染统计 |
 | `ROSS_RESCUT_DIAG_AUTOPLAY` | 打开媒体后自动 seek 到 60s 并播放，用于无输入注入的重复测量 |
+| `ROSS_RESCUT_DIAG_SCRUB` | 打开媒体后自动播放并模拟 40 步时间轴拖动，记录 scrub 与最终位置 |
 | `ROSS_RESCUT_PREVIEW_HW` | `software` / `vaapi` / `d3d11va` / `videotoolbox`，覆盖本次运行的解码后端 |
 
 三者都不设置时默认行为不变。
@@ -279,7 +280,66 @@ mpv 在同样 4K HEVC + VAAPI 下能到 33 fps 且 CPU 占用很低。差异来�
 - 源 PTS 的正确性。预览时间戳是合成的 CFR，不是源 PTS。
 - 音频时钟相对真实扬声器输出的提前量。`cpal` 写入缓冲与 audible 时刻之间没有测量。
 - 长时段（分钟级）delta 是否仍有缓慢漂移。只测了 40 秒。
+  （mpv 主路径已在 2026-11-04 复测，见下方「长时漂移复测」）
 - Slint 或独立 video surface 是否能改善。未实现任何替代渲染路径。
+
+## 2026-11-04 复测：mpv 主路径 10 分钟 A/V 漂移
+
+Phase 4A 的漂移发生在外部 FFmpeg + cpal 路径。切换到 mpv 主路径后，
+使用 `examples/mpv_long_playback.rs` 复核长时行为。
+
+环境：
+
+| 项 | 值 |
+| --- | --- |
+| OS / GPU | Arch Linux（Wayland），AMD Radeon Vega 8 / RADV |
+| mpv | `v0.41.0`，FFmpeg `n9.0.2` |
+| 解码 | `hwdec=auto-safe`，实际 `vaapi` |
+| 音频 | PipeWire，48000 Hz，单声道 `floatp` |
+| 同步 | `video-sync=audio` |
+| 素材 | `testsrc2` 1280x720@30 + 440 Hz 正弦，H.264/AAC，660 s |
+
+命令：
+
+```bash
+cargo build --release --features mpv-preview --example mpv_long_playback
+./target/release/examples/mpv_long_playback /tmp/rossresscut-oq9-660s.mp4 600 1280 720
+```
+
+探针使用与预览相同的 exported-frame 后端，每秒采样 `time-pos`、`audio-pts`、
+`frame-drop-count`、`mistimed-frame-count`、`decoder-frame-drop-count` 与 RSS，
+每 5 ms 取走并丢弃一帧，模拟 UI 的纹理消费节奏。
+
+结果（600 s 连续播放，599 个采样）：
+
+| 指标 | 值 |
+| --- | --- |
+| `delta = time-pos - audio-pts` 均值 | +22.0 ms |
+| delta min / max | +2.1 / +49.0 ms |
+| delta stddev | 10.4 ms |
+| delta 首三分 / 末三分 | +22.6 / +25.0 ms |
+| 首尾三分漂移 | **+2.3 ms / 10 分钟** |
+| frame drops / mistimed / decoder drops | 0 / 0 / 0 |
+| RSS 起始 / 峰值 / 结束 | 151 / 151 / 151 MiB |
+
+判定：
+
+- delta 在 10 分钟内围绕 +22 ms 波动，没有持续增长；首尾三分差异 2.3 ms，
+  远小于一帧（33 ms），不构成累积漂移。
+- 固定 +22 ms 是 `time-pos` 与 `audio-pts` 的语义差（播放时钟相对正在播放的
+  音频帧），不是音画不同步。
+- 未出现丢帧、误时帧或解码器丢帧。
+- RSS 全程持平，没有随播放时长增长。
+- 短跑复核（20 s）确认 `current-ao=pipewire`、`audio-out-params` 为
+  48000 Hz 单声道 `floatp`，不是 null 输出。
+
+限制：
+
+- 探针不做 wgpu 导入与 egui 呈现；它验证的是 mpv 内部 A/V 同步与导出帧消费，
+  不覆盖 UI 纹理池，后者由 `tests/mpv_gpu_regression.rs` 覆盖。
+- 只测了一台机器、一种分辨率与编码（720p30 H.264/AAC）。4K/VFR 的长时间行为
+  仍未覆盖。
+- 10 分钟不是小时级；内存与漂移趋势只能说明该时长内稳定。
 
 ## 对 Phase 4B 的输入
 

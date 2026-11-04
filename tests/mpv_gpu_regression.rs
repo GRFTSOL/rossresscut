@@ -27,6 +27,8 @@ use std::task::{Context, Poll, Waker};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use rossresscut::application::{Application, OpenState};
+use rossresscut::domain::time::Timestamp;
 use rossresscut::media::preview::{MpvPreview, MpvPreviewConfig};
 
 const SIZE: u32 = 64;
@@ -101,6 +103,55 @@ fn generate_color_video(color: &str) -> PathBuf {
     path
 }
 
+/// Generates one second each of red, green and blue, with a keyframe at every
+/// second boundary.
+fn generate_color_strip_video() -> PathBuf {
+    let path = std::env::temp_dir().join(format!(
+        "rossresscut-color-strip-{}.mp4",
+        std::process::id()
+    ));
+    let status = Command::new("ffmpeg")
+        .args([
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=red:s=64x64:r=10:d=1",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=green:s=64x64:r=10:d=1",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=blue:s=64x64:r=10:d=1",
+            "-filter_complex",
+            "[0:v][1:v][2:v]concat=n=3:v=1:a=0[v]",
+            "-map",
+            "[v]",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-g",
+            "10",
+            "-keyint_min",
+            "10",
+            "-sc_threshold",
+            "0",
+            "-pix_fmt",
+            "yuv420p",
+        ])
+        .arg(&path)
+        .status()
+        .unwrap_or_else(|error| panic!("failed to run ffmpeg: {error}"));
+    assert!(status.success(), "ffmpeg failed for the colour strip");
+    path
+}
+
 fn start_preview(path: &Path) -> MpvPreview {
     MpvPreview::start(
         MpvPreviewConfig {
@@ -116,15 +167,45 @@ fn start_preview(path: &Path) -> MpvPreview {
 }
 
 fn wait_for_texture(mpv: &MpvPreview, device: &wgpu::Device) -> wgpu::Texture {
+    wait_for_texture_matching(mpv, device, None)
+}
+
+/// Waits for an exported frame with exactly `width` x `height`, discarding
+/// frames that were rendered before the resize took effect.
+fn wait_for_texture_size(
+    mpv: &MpvPreview,
+    device: &wgpu::Device,
+    width: u32,
+    height: u32,
+) -> wgpu::Texture {
+    wait_for_texture_matching(mpv, device, Some((width, height)))
+}
+
+fn wait_for_texture_matching(
+    mpv: &MpvPreview,
+    device: &wgpu::Device,
+    expected: Option<(u32, u32)>,
+) -> wgpu::Texture {
     let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline {
         match mpv.acquire_texture(device) {
-            Ok(Some(texture)) => return texture,
-            Ok(None) => thread::sleep(Duration::from_millis(10)),
+            Ok(Some(texture))
+                if expected.is_none_or(|(width, height)| {
+                    (texture.width(), texture.height()) == (width, height)
+                }) =>
+            {
+                return texture;
+            }
+            Ok(Some(_)) | Ok(None) => {}
             Err(error) => panic!("failed to acquire an mpv frame: {error}"),
         }
+        thread::sleep(Duration::from_millis(10));
     }
-    panic!("mpv did not export a frame before the deadline");
+    let expected = expected.map_or_else(
+        || "a frame".to_owned(),
+        |(width, height)| format!("a {width}x{height} frame"),
+    );
+    panic!("mpv did not export {expected} before the deadline");
 }
 
 /// Copies the texture back to the CPU and returns tightly packed BGRA rows.
@@ -202,6 +283,141 @@ fn center_pixel(width: u32, height: u32, pixels: &[u8]) -> [u8; 4] {
     pixels[index..index + 4]
         .try_into()
         .unwrap_or_else(|_| panic!("readback buffer is too short"))
+}
+
+fn color_name([blue, green, red, _]: [u8; 4]) -> &'static str {
+    if red > 180 && green < 80 && blue < 80 {
+        "red"
+    } else if green > 180 && red < 80 && blue < 80 {
+        "green"
+    } else if blue > 180 && red < 80 && green < 80 {
+        "blue"
+    } else {
+        "other"
+    }
+}
+
+fn wait_for_application_ready(application: &mut Application) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        application.update();
+        if matches!(application.state(), OpenState::Ready) {
+            return;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    panic!("media did not become ready: {:?}", application.state());
+}
+
+fn wait_for_application_texture(
+    application: &mut Application,
+    device: &wgpu::Device,
+) -> wgpu::Texture {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        application.update();
+        match application.acquire_mpv_texture(device) {
+            Ok(Some(texture)) => return texture,
+            Ok(None) => {}
+            Err(error) => panic!("failed to acquire an mpv frame: {error}"),
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    panic!("application did not publish an mpv frame before the deadline");
+}
+
+#[test]
+#[ignore = "requires libmpv, a Vulkan device with DMA-BUF import and FFmpeg"]
+fn precise_seek_hides_the_previous_texture_until_the_target_frame() {
+    let _guard = lock_engine();
+    let path = generate_color_strip_video();
+    let (device, queue) = create_device();
+    let mut application = Application::new();
+    application.enable_mpv_preview();
+    application.open_media(path.clone());
+    wait_for_application_ready(&mut application);
+    assert!(application.uses_mpv_preview());
+    application.pause();
+    // Let mpv finish loading and publish its first frame before seeking, as the
+    // UI does once the preview is visible.
+    let initial = wait_for_application_texture(&mut application, &device);
+    drop(initial);
+
+    application.seek(Timestamp::from_micros(2_500_000));
+    assert!(
+        application.is_preview_stale(),
+        "the seek gate was not armed"
+    );
+    let blue = wait_for_application_texture(&mut application, &device);
+    let (width, height, pixels) = read_pixels(&device, &queue, &blue);
+    assert_eq!(color_name(center_pixel(width, height, &pixels)), "blue");
+    assert!(!application.is_preview_stale());
+    drop(blue);
+
+    application.seek(Timestamp::from_micros(500_000));
+    assert!(
+        application.is_preview_stale(),
+        "the seek gate was not armed for the second seek"
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut first = None;
+    while Instant::now() < deadline {
+        application.update();
+        match application.acquire_mpv_texture(&device) {
+            Ok(Some(texture)) => {
+                let (width, height, pixels) = read_pixels(&device, &queue, &texture);
+                first = Some(color_name(center_pixel(width, height, &pixels)));
+                assert!(!application.is_preview_stale());
+                break;
+            }
+            Ok(None) => {}
+            Err(error) => panic!("failed to acquire an mpv frame: {error}"),
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+
+    assert_eq!(
+        first,
+        Some("red"),
+        "the first frame after seeking to red was not red"
+    );
+    drop(application);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+#[ignore = "requires libmpv, a Vulkan device with DMA-BUF import and FFmpeg"]
+fn resizing_the_export_updates_the_texture() {
+    let _guard = lock_engine();
+    let path = generate_color_video("red");
+    let (device, queue) = create_device();
+    let mpv = start_preview(&path);
+    let initial = wait_for_texture(&mpv, &device);
+    assert_eq!((initial.width(), initial.height()), (SIZE, SIZE));
+    drop(initial);
+
+    mpv.set_export_size(96, 54)
+        .unwrap_or_else(|error| panic!("failed to resize the export: {error}"));
+    let resized = wait_for_texture_size(&mpv, &device, 96, 54);
+    assert_eq!((resized.width(), resized.height()), (96, 54));
+
+    let (width, height, pixels) = read_pixels(&device, &queue, &resized);
+    let [blue, green, red, _alpha] = center_pixel(width, height, &pixels);
+    assert!(
+        red > 240 && green < 16 && blue < 16,
+        "resizing changed the frame content: B={blue} G={green} R={red}"
+    );
+    drop(resized);
+
+    mpv.set_export_size(32, 32)
+        .unwrap_or_else(|error| panic!("failed to resize the export again: {error}"));
+    let small = wait_for_texture_size(&mpv, &device, 32, 32);
+    assert_eq!((small.width(), small.height()), (32, 32));
+
+    drop(small);
+    drop(mpv);
+    let _ = std::fs::remove_file(path);
 }
 
 #[test]

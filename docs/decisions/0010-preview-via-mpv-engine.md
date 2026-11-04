@@ -147,7 +147,9 @@ ADR 0004 §1 的 cpal 主时钟与 §3 的 FFmpeg scrub 设计由本节取代。
 - 稳定播放时 `position()` 与 `audio-pts` 相差约 11–16 ms；
   启动阶段约 79 ms 的瞬态。
 - 暂停、暂停中 seek、恢复、音量、静音均已在 spike 中验证。
-- 多音轨、设备切换、真实扬声器延迟与 10 分钟以上漂移仍是 OQ-11 / OQ-9。
+- 多音轨、设备切换语义与输出延迟已核查（2026-11-04），见
+  `docs/investigations/mpv-engine-spike.md`；10 分钟以上的漂移已于
+  2026-11-04 复测通过，见 `docs/investigations/playback-pipeline.md`。
 
 ## 硬件解码
 
@@ -260,10 +262,10 @@ tone map 到 SDR。
 
 - 当前产品以 8-bit stream copy 裁切为主，8-bit 预览满足需求。
 - stream copy 导出不受预览位深影响。
-- smart cut 重编码必须从源流读取 `pix_fmt`、primaries、transfer、matrix，
-  保持 10-bit/HDR 元数据；不得把预览的 8-bit 帧作为重编码输入。
-- HDR 原样预览、10-bit 输出仍是 OQ-13；如果产品需要，再评估更高位深导出
-  或回到 libav* 路径。
+- smart cut 重编码读取源 `pix_fmt`、primaries、transfer、matrix，并显式传给
+  编码器，保持 10-bit/HDR 元数据；不得把预览的 8-bit 帧作为重编码输入。
+- 2026-11-04 已验证：预览保持 SDR tone map；stream copy 与 smart cut 均保留
+  10-bit/HDR，不需要更高位深导出。见 `docs/investigations/mpv-engine-spike.md`。
 
 ## 窗口尺寸
 
@@ -271,7 +273,8 @@ tone map 到 SDR。
 - eframe 0.37 在 Wayland scale 下逻辑 1280x720 对应物理 1707x960；
   实现需要从 `egui::Context` / `ViewportInfo` 获取像素尺寸。
 - resize 时要节流，避免每个事件都重配置 export；原始帧尺寸变化后再更新。
-- resize 目前未在 spike 中验证，是 OQ-10 的剩余项。
+- resize 当时未在 spike 中验证，是 OQ-10 的剩余项；2026-11-04 已实现并验证，
+  见 `docs/investigations/mpv-engine-spike.md`。
 
 ## 测试与验收
 
@@ -324,7 +327,8 @@ tone map 到 SDR。
 - wgpu 大版本与 mpv-engine 强耦合，升级需要同步。
 - 隐藏 GL context 增加平台依赖与调试复杂度。
 - 预览不暴露源 PTS；不能用于帧精确编辑。
-- 导出固定 8-bit BGRA；HDR 预览受限。
+- 预览固定 8-bit BGRA；HDR 预览为 SDR tone map。导出仍保留源位深与 HDR
+  元数据，需要 HDR 色彩审片时使用外部播放器。
 - Windows / macOS 路径尚未实测。
 - mpv-engine 0.2.1 很新，维护与升级风险由项目承担。
 - 现有 `PreviewAudio`、`PreviewVideo` 与相关测试需要替换或保留为回退。
@@ -351,7 +355,7 @@ tone map 到 SDR。
 - `docs/media-model.md`：预览时间与编辑时间的边界（如需要）。
 - `PLANS.md`：Phase 4C 任务改为方案 F。
 - `docs/open-questions.md`：OQ-3/4/5/6/7 标记为方案 D 历史项；
-  OQ-10..13 作为方案 F 的待办。
+  OQ-10..13 作为方案 F 的待办（OQ-10 已于 2026-11-04 关闭）。
 
 ## 旧预览路径的退出条件
 
@@ -367,21 +371,24 @@ tone map 到 SDR。
 2. Windows 与 macOS 的 mpv 导入路径完成实机验证（目前只有 Linux）。
 3. `tests/mpv_gpu_regression.rs` 与 `tests/mpv_preview.rs` 成为发布检查的一部分，
    覆盖颜色、生命周期、seek 与音频时钟。
-4. OQ-9（长时漂移）、OQ-11（多音轨 / 设备切换）、OQ-13（HDR / 10-bit）
-   已有可接受结论，或明确记录为不阻塞发布。
+4. OQ-9（长时漂移）已有可接受结论，见
+   `docs/investigations/playback-pipeline.md`。
 
 删除时同步移除 `cpal` 依赖、`PreviewAudio`、`PreviewVideo` 及对应测试，
 并更新 `AGENTS.md`、`PLANS.md` 与 `docs/architecture.md`。
 
 ## 未解决问题
 
-- OQ-9：10 分钟以上 A/V 漂移。
-- OQ-10：resize / Wayland scale 的物理像素处理。
-- OQ-11：多音轨、音频设备切换、真实扬声器延迟。
-- OQ-12：拖动期间快速 scrub 在真实 eframe + 音频下的复测。
-- OQ-13：HDR / 10-bit 预览。
+> 2026-11-04：OQ-9、OQ-10、OQ-11、OQ-12、OQ-13、OQ-21 均已关闭。OQ-9 为 10 分钟
+> 漂移复测，OQ-10 为窗口缩放与 GPU 回归，OQ-11 为音轨/设备切换语义与输出延迟，
+> OQ-12 为连续 scrub 与 frame-step，OQ-13 为 HDR/10-bit 预览与导出，
+> OQ-21 为精确 seek 旧帧门控；详见
+> `docs/investigations/playback-pipeline.md` 与 `docs/investigations/mpv-engine-spike.md`。
+
 - Windows D3D11VA / macOS VideoToolbox 的实机验证。
-- 多 GPU / 多 render node 时 mpv 的设备选择策略。
+- ~~多 GPU / 多 render node 时 mpv 的设备选择策略。~~ 已委托给 mpv：
+  Linux 使用 `--vaapi-device`（默认 `/dev/dri/renderD128`），项目不枚举设备；
+  Windows D3D11 适配器选择未验证。见 `docs/architecture.md`。
 - libmpv 分发许可证的最终审查与 `LICENSES` 清单。
 
 ## 参考

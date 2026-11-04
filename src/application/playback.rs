@@ -8,6 +8,8 @@ use crate::media::preview::{
     PreviewAudio, PreviewAudioStatus, PreviewVideo, PreviewVideoConfig, PreviewVideoResult,
 };
 
+#[cfg(feature = "mpv-preview")]
+use super::MpvSeekGate;
 use super::Playback;
 
 #[cfg(feature = "mpv-preview")]
@@ -19,6 +21,17 @@ const PREVIEW_FRAME_RATE: u32 = 30;
 /// the `PlaybackRestart` event was dropped.
 #[cfg(feature = "mpv-preview")]
 const SEEK_ARRIVAL_TOLERANCE_MICROS: u64 = 100_000;
+
+/// Maximum time the preview may hide the previous frame while waiting for a
+/// precise seek target.
+#[cfg(feature = "mpv-preview")]
+const SEEK_GATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// How long the position must stay at the seek target before the gate opens
+/// without a `PlaybackRestart` event. `time-pos` can reach the target before
+/// the target texture has been published.
+#[cfg(feature = "mpv-preview")]
+const SEEK_POSITION_SETTLE: std::time::Duration = std::time::Duration::from_millis(100);
 
 impl Playback {
     #[cfg(feature = "mpv-preview")]
@@ -120,6 +133,7 @@ impl Playback {
             self.mpv_has_audio = false;
             self.mpv_size = None;
             self.mpv_pending_seek = None;
+            self.mpv_seek_gate = None;
             self.mpv_frame_ready = false;
             self.mpv_decoder = None;
             self.mpv_decoder_checked_at = None;
@@ -141,14 +155,19 @@ impl Playback {
             self.position = position;
             changed = true;
         }
+        let mut applied_deferred = false;
         if events.loaded || events.restarted {
             changed = true;
             if let Some((target, precise)) = self.mpv_pending_seek.take() {
                 log::info!("applying deferred mpv seek to {target}");
                 self.mpv_frame_ready = false;
+                if let Err(error) = mpv.discard_published_frame() {
+                    log::warn!("could not discard the frame before the deferred seek: {error}");
+                }
                 let _ = mpv
                     .set_precise_seek(precise)
                     .and_then(|()| mpv.seek(target));
+                applied_deferred = true;
             }
         }
         // `PlaybackRestart` can be dropped by the event queue; a precise seek
@@ -159,6 +178,33 @@ impl Playback {
             })
         {
             self.mpv_pending_seek = None;
+        }
+        if let Some(gate) = &mut self.mpv_seek_gate
+            && !events.loaded
+            && !applied_deferred
+        {
+            let near = position.is_some_and(|position| {
+                position.micros().abs_diff(gate.target.micros()) <= SEEK_ARRIVAL_TOLERANCE_MICROS
+            });
+            if near {
+                let since = *gate.position_matched_at.get_or_insert_with(Instant::now);
+                if events.restarted || since.elapsed() >= SEEK_POSITION_SETTLE {
+                    if !gate.target_reached {
+                        gate.target_reached_at = Some(Instant::now());
+                    }
+                    gate.target_reached = true;
+                }
+            } else {
+                gate.position_matched_at = None;
+            }
+        }
+        if self
+            .mpv_seek_gate
+            .as_ref()
+            .is_some_and(|gate| gate.started.elapsed() >= SEEK_GATE_TIMEOUT)
+        {
+            log::warn!("mpv seek gate timed out; showing the last available frame");
+            self.mpv_seek_gate = None;
         }
         let failed = events.failed.clone();
         // `hwdec-current` is stable for the lifetime of a decoder, so a slow
@@ -215,6 +261,13 @@ impl Playback {
             self.frame = None;
             #[cfg(feature = "mpv-preview")]
             if let Some(mpv) = &self.mpv {
+                self.mpv_seek_gate = Some(MpvSeekGate {
+                    target: Timestamp::ZERO,
+                    started: Instant::now(),
+                    target_reached: false,
+                    target_reached_at: None,
+                    position_matched_at: None,
+                });
                 let _ = mpv.set_precise_seek(true);
                 let _ = mpv.seek(Timestamp::ZERO);
             }
@@ -281,6 +334,10 @@ impl Playback {
         self.position = target;
         self.pending_frame = None;
         self.warning = None;
+        #[cfg(feature = "mpv-preview")]
+        {
+            self.mpv_seek_gate = None;
+        }
 
         if duration_end(media.duration).is_some_and(|end| target.micros() >= end) {
             self.playing = false;
@@ -304,6 +361,23 @@ impl Playback {
         #[cfg(feature = "mpv-preview")]
         if let Some(mpv) = &self.mpv {
             self.mpv_frame_ready = false;
+            // Discard load/restart events queued before this seek so the gate
+            // cannot open on an event that predates it.
+            let pending_events = mpv.poll_events();
+            if let Some(message) = pending_events.failed {
+                log::warn!("mpv preview failed before seek: {message}");
+                self.warning = Some(format!("mpv preview failed: {message}"));
+            }
+            if let Err(error) = mpv.discard_published_frame() {
+                log::warn!("could not discard the pre-seek frame: {error}");
+            }
+            self.mpv_seek_gate = Some(MpvSeekGate {
+                target,
+                started: Instant::now(),
+                target_reached: false,
+                target_reached_at: None,
+                position_matched_at: None,
+            });
             if let Err(error) = mpv.set_precise_seek(true).and_then(|()| mpv.seek(target)) {
                 log::warn!("{error}; deferring seek until mpv is ready");
                 self.mpv_pending_seek = Some((target, true));
@@ -328,6 +402,10 @@ impl Playback {
         self.playing = false;
         self.pending_frame = None;
         self.warning = None;
+        #[cfg(feature = "mpv-preview")]
+        {
+            self.mpv_seek_gate = None;
+        }
 
         if duration_end(media.duration).is_some_and(|end| target.micros() >= end) {
             // Same as `seek`: scrub previews must not destroy the mpv backend.

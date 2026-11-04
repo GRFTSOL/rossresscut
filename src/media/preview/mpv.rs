@@ -273,6 +273,33 @@ impl MpvPreview {
         self.engine.get_property::<String>("hwdec-current").ok()
     }
 
+    /// Discards the currently published frame without importing it.
+    ///
+    /// Used before a precise seek so a frame rendered at the old position
+    /// cannot be mistaken for the seek target.
+    pub fn discard_published_frame(&self) -> Result<(), MpvPreviewError> {
+        self.engine
+            .acquire_frame()
+            .map(|_| ())
+            .map_err(|error| command_error("discard frame", error))
+    }
+
+    /// Steps one decoded frame forward or backward, then pauses.
+    ///
+    /// mpv uses the source frame boundaries, so this stays exact for VFR and
+    /// non-integer frame rates. `frame-back-step` is unsupported by some
+    /// decoders; callers should fall back to a time-based step on error.
+    pub fn frame_step(&self, forward: bool) -> Result<(), MpvPreviewError> {
+        let command = if forward {
+            "frame-step"
+        } else {
+            "frame-back-step"
+        };
+        self.engine
+            .command(command, &[])
+            .map_err(|error| command_error("frame step", error))
+    }
+
     /// Drains pending mpv events into project-owned flags.
     pub fn poll_events(&self) -> MpvPreviewEvents {
         let mut events = MpvPreviewEvents::default();

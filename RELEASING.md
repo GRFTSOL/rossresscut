@@ -13,6 +13,18 @@ git status --short
 - 确认 `Cargo.toml` 的版本与 `packaging/PKGBUILD` 的 `pkgver` 一致；
   `scripts/package-linux.sh` 会检查并在不一致时退出。
 - 更新 `PLANS.md` 中当前 Phase 的完成项，记录已知限制。
+- 在带 Vulkan + DMA-BUF 的 Linux 实机上运行 GPU 回归
+  （CI runner 没有 DRM render node，不能覆盖）：
+
+  ```bash
+  cargo test --release --features mpv-preview --test mpv_gpu_regression -- --ignored
+  cargo test --release --features mpv-preview --test mpv_preview -- --ignored
+  ```
+
+  其中 `resizing_the_export_updates_the_texture` 覆盖 mpv 导出尺寸变化后的
+  纹理尺寸与颜色。
+- 打开一个大于窗口的媒体，拖动窗口边改变大小：确认预览比例不变、没有被放大，
+  日志出现新的 `mpv preview size WxH`，且连续拖动时不会每帧重配 export。
 
 ## 2. 构建
 

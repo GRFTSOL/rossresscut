@@ -12,6 +12,7 @@
 //! `actions` maps input back to application commands.
 
 mod actions;
+mod diagnostics;
 mod dialogs;
 mod fonts;
 mod i18n;
@@ -41,6 +42,8 @@ use crate::media::preview::HardwareAcceleration;
 use dialogs::{CloseIntent, DialogError, DirectoryTarget, FileDialogPurpose, ProjectDialogMode};
 use fonts::{FontFamilyChoice, scan_fonts};
 use i18n::Strings;
+#[cfg(feature = "mpv-preview")]
+use preview::PreviewBounds;
 use preview::RenderDiagnostics;
 use settings::{ThemeChoice, UiSettings, detect_system_theme, load_settings, save_settings};
 use shortcuts::{Shortcut, ShortcutAction};
@@ -81,9 +84,7 @@ pub struct RossresscutApp {
     #[cfg(feature = "mpv-preview")]
     preview_mpv_size: Option<egui::Vec2>,
     #[cfg(feature = "mpv-preview")]
-    preview_bounds: Option<(u32, u32)>,
-    #[cfg(feature = "mpv-preview")]
-    pending_preview_bounds: Option<(u32, u32)>,
+    preview_bounds: PreviewBounds,
     preview_source: Option<PathBuf>,
     scrub_target: Option<Timestamp>,
     scrub_was_playing: bool,
@@ -135,6 +136,9 @@ pub struct RossresscutApp {
     diagnostics: Option<RenderDiagnostics>,
     diagnostic_autoplay: bool,
     diagnostic_autoplay_started: bool,
+    diagnostic_scrub: bool,
+    diagnostic_scrub_step: u32,
+    diagnostic_scrub_start: Option<Instant>,
 }
 
 impl RossresscutApp {
@@ -162,6 +166,7 @@ impl RossresscutApp {
             detected_theme: detect_system_theme(),
             diagnostics: RenderDiagnostics::from_environment(),
             diagnostic_autoplay: std::env::var_os("ROSS_RESCUT_DIAG_AUTOPLAY").is_some(),
+            diagnostic_scrub: std::env::var_os("ROSS_RESCUT_DIAG_SCRUB").is_some(),
             // A quarter of a frame-to-frame change is the FFmpeg default for
             // scene detection and works well as a starting point.
             scene_threshold: 0.4,
@@ -301,6 +306,9 @@ impl eframe::App for RossresscutApp {
             self.application.play();
             self.diagnostic_autoplay_started = true;
         }
+        if self.diagnostic_scrub && matches!(self.application.state(), OpenState::Ready) {
+            self.run_diagnostic_scrub(ui.ctx());
+        }
 
         let has_video = self.application.media().is_some_and(|media| {
             media
@@ -398,6 +406,8 @@ mod tests {
     use super::i18n::Language;
     use super::panels::file_title;
     use super::preview::fit_size;
+    #[cfg(feature = "mpv-preview")]
+    use super::preview::{PreviewBounds, physical_bounds};
     use super::settings::{gtk_theme_from_ini, ini_value, qt_theme_from_ini, theme_from_label};
     use super::shortcuts::default_shortcuts;
     use super::timeline::{fraction_of, timestamp_at_x, wheel_direction};
@@ -533,6 +543,38 @@ mod tests {
         let large = fit_size(egui::vec2(1920.0, 1080.0), egui::vec2(640.0, 480.0));
         assert!((large.x - 640.0).abs() < 0.01);
         assert!((large.y - 360.0).abs() < 0.01);
+    }
+
+    #[cfg(feature = "mpv-preview")]
+    #[test]
+    fn preview_resize_waits_for_a_repeated_size() {
+        let mut bounds = PreviewBounds::default();
+        assert_eq!(bounds.observe((800, 600)), Some((800, 600)));
+        assert!(!bounds.is_pending());
+
+        assert_eq!(bounds.observe((810, 600)), None);
+        assert!(bounds.is_pending());
+        assert_eq!(bounds.observe((820, 600)), None);
+        assert_eq!(bounds.observe((820, 600)), Some((820, 600)));
+        assert!(!bounds.is_pending());
+
+        assert_eq!(bounds.observe((820, 600)), None);
+        assert!(!bounds.is_pending());
+    }
+
+    #[cfg(feature = "mpv-preview")]
+    #[test]
+    fn preview_bounds_use_physical_pixels() {
+        assert_eq!(
+            physical_bounds(egui::vec2(640.0, 360.0), 1.0),
+            Some((640, 360))
+        );
+        assert_eq!(
+            physical_bounds(egui::vec2(640.0, 360.0), 1.5),
+            Some((960, 540))
+        );
+        assert_eq!(physical_bounds(egui::vec2(0.0, 360.0), 1.0), None);
+        assert_eq!(physical_bounds(egui::vec2(640.0, 360.0), 0.0), None);
     }
 
     #[test]

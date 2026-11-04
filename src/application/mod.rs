@@ -258,14 +258,41 @@ impl Application {
         &mut self,
         device: &wgpu::Device,
     ) -> Result<Option<wgpu::Texture>, MpvPreviewError> {
+        if self.playback.mpv.is_none() {
+            self.playback.mpv_seek_gate = None;
+        } else if self.playback.mpv_seek_gate.as_ref().is_some_and(|gate| {
+            !gate.target_reached
+                || gate
+                    .target_reached_at
+                    .is_none_or(|at| at.elapsed() < SEEK_TARGET_SETTLE)
+        }) {
+            // Drop nothing and publish nothing: the UI keeps its previous
+            // texture until mpv confirms the seek target and has settled.
+            return Ok(None);
+        }
+
         let texture = match self.playback.mpv.as_ref() {
             Some(mpv) => mpv.acquire_texture(device)?,
             None => None,
         };
         if texture.is_some() {
             self.playback.mpv_frame_ready = true;
+            self.playback.mpv_seek_gate = None;
         }
         Ok(texture)
+    }
+
+    /// Returns whether the preview is waiting for the first frame after a
+    /// precise seek. The UI must not paint the previous texture while true.
+    pub fn is_preview_stale(&self) -> bool {
+        #[cfg(feature = "mpv-preview")]
+        {
+            self.playback.mpv_seek_gate.is_some()
+        }
+        #[cfg(not(feature = "mpv-preview"))]
+        {
+            false
+        }
     }
 
     /// Sets the preview pane size in physical pixels.
@@ -641,6 +668,27 @@ impl Application {
     }
 }
 
+/// Tracks a precise mpv seek that has not delivered its target frame yet.
+///
+/// While the gate is closed, the UI keeps showing the previous texture instead
+/// of frames mpv publishes mid-seek. The gate opens once mpv reports the target
+/// position or `PlaybackRestart`, and the first texture acquired after that is
+/// accepted; the timeout is a safety net so a failed seek cannot freeze the
+/// preview indefinitely.
+#[cfg(feature = "mpv-preview")]
+struct MpvSeekGate {
+    target: Timestamp,
+    started: Instant,
+    target_reached: bool,
+    target_reached_at: Option<Instant>,
+    position_matched_at: Option<Instant>,
+}
+
+/// Delay between confirming the seek target and accepting a texture. mpv can
+/// publish a pre-seek frame between `PlaybackRestart` and the target frame.
+#[cfg(feature = "mpv-preview")]
+const SEEK_TARGET_SETTLE: std::time::Duration = std::time::Duration::from_millis(50);
+
 struct Playback {
     position: Timestamp,
     playing: bool,
@@ -665,6 +713,8 @@ struct Playback {
     preview_bounds: Option<(u32, u32)>,
     #[cfg(feature = "mpv-preview")]
     mpv_pending_seek: Option<(Timestamp, bool)>,
+    #[cfg(feature = "mpv-preview")]
+    mpv_seek_gate: Option<MpvSeekGate>,
     #[cfg(feature = "mpv-preview")]
     mpv_frame_ready: bool,
     #[cfg(feature = "mpv-preview")]
@@ -699,6 +749,8 @@ impl Default for Playback {
             preview_bounds: None,
             #[cfg(feature = "mpv-preview")]
             mpv_pending_seek: None,
+            #[cfg(feature = "mpv-preview")]
+            mpv_seek_gate: None,
             #[cfg(feature = "mpv-preview")]
             mpv_frame_ready: false,
             #[cfg(feature = "mpv-preview")]
