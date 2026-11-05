@@ -438,7 +438,7 @@ impl RossresscutApp {
                 visuals,
             );
             painter.rect_filled(segment_rect, 2.0, color);
-            draw_segment_number(&painter, rect, segment_rect, index + 1, color);
+            draw_segment_number(&painter, segment_rect, index + 1);
             if self.application.is_selected(segment.id()) {
                 painter.rect_stroke(
                     segment_rect,
@@ -669,33 +669,36 @@ fn draw_waveform(
     }
 }
 
+/// Draws the segment's 1-based position as a white badge with black text.
+///
+/// Segments that cannot fit the badge keep their colour but show no number;
+/// drawing it outside the block made it hard to tell which segment it
+/// belonged to.
 pub(super) fn draw_segment_number(
     painter: &egui::Painter,
-    timeline: egui::Rect,
     segment_rect: egui::Rect,
     number: usize,
-    background: egui::Color32,
 ) {
-    let luminance = 0.2126 * f32::from(background.r())
-        + 0.7152 * f32::from(background.g())
-        + 0.0722 * f32::from(background.b());
-    let color = if luminance > 140.0 {
-        egui::Color32::from_rgb(24, 24, 24)
-    } else {
-        egui::Color32::from_rgb(236, 236, 236)
-    };
-    let galley =
-        painter.layout_no_wrap(number.to_string(), egui::FontId::proportional(11.0), color);
+    let galley = painter.layout_no_wrap(
+        number.to_string(),
+        egui::FontId::proportional(12.0),
+        egui::Color32::BLACK,
+    );
     let size = galley.size();
-    let center = segment_rect.center();
-    // Short segments cannot fit their number, so it moves to the left of the
-    // block while staying inside the timeline.
-    let x = if segment_rect.width() >= size.x + 8.0 {
-        center.x - size.x / 2.0
-    } else {
-        (segment_rect.left() - size.x - 2.0).max(timeline.left() + 1.0)
-    };
-    painter.galley(egui::pos2(x, center.y - size.y / 2.0), galley, color);
+    let padding = egui::vec2(4.0, 1.0);
+    let badge = size + padding * 2.0;
+    // Leave a little breathing room on both sides of the badge.
+    if segment_rect.width() < badge.x + 4.0 || segment_rect.height() < badge.y {
+        return;
+    }
+
+    let badge_rect = egui::Rect::from_center_size(segment_rect.center(), badge);
+    painter.rect_filled(badge_rect, 2.0, egui::Color32::WHITE);
+    painter.galley(
+        badge_rect.center() - size / 2.0,
+        galley,
+        egui::Color32::BLACK,
+    );
 }
 
 pub(super) fn draw_marker(painter: &egui::Painter, rect: egui::Rect, x: f32, color: egui::Color32) {
