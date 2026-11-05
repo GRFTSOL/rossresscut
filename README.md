@@ -69,4 +69,7 @@ cargo build --release
 
 ## 许可证
 
-项目自身的最终许可证尚未确定。预览依赖的 `libmpv` 采用 GPL-2.0-or-later；对外分发时必须满足其许可证要求。详见 `ATTRIBUTION.md` 与 ADR 0010。
+项目以 **GPL-3.0-or-later** 发布，见 `LICENSE`。
+
+预览主路径动态链接的 `libmpv` 是 `GPL-2.0-or-later`，与 GPLv3 兼容；
+外部回退路径的 `cpal` 是 Apache-2.0，同样与 GPLv3 兼容。详见 `ATTRIBUTION.md`。

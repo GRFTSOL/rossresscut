@@ -391,6 +391,7 @@ docs/decisions/
 0012-project-and-settings-format.md
 0013-smart-cut.md
 0014-smart-cut-encoding-defaults.md
+0015-project-license.md
 ```
 
 ---

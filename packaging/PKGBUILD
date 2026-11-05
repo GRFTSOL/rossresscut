@@ -5,16 +5,16 @@
 # build.rs and the version in Cargo.toml always agree.  Release from a clean
 # tree only; `scripts/package-linux.sh` enforces that.
 #
-# The project has not picked a license yet, so `license=('custom')` and
-# ATTRIBUTION.md is installed as the notice file.  See RELEASING.md before
-# publishing this package outside this machine.
+# The project is GPL-3.0-or-later; `libmpv` (GPL-2.0-or-later) and `cpal`
+# (Apache-2.0) are compatible with GPLv3.  See RELEASING.md before publishing
+# this package outside this machine.
 
 pkgname=rossresscut
 pkgver=0.3.0
 pkgrel=1
 pkgdesc='Native lossless media cutting tool built with Rust and egui'
 arch=('x86_64')
-license=('custom')
+license=('GPL-3.0-or-later')
 depends=(
   'alsa-lib'
   'ffmpeg'
@@ -58,4 +58,5 @@ package() {
   install -Dm644 packaging/rossresscut.svg \
     "$pkgdir/usr/share/icons/hicolor/scalable/apps/rossresscut.svg"
   install -Dm644 ATTRIBUTION.md "$pkgdir/usr/share/licenses/$pkgname/ATTRIBUTION.md"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

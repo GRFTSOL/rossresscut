@@ -50,18 +50,21 @@ LosslessCut 是产品行为、媒体语义和 FFmpeg 工作流的参考实现，
 - [x] 已在 Arch / Wayland 上实际验证：`./scripts/package-linux.sh` 产出
   `rossresscut-0.3.0-1-x86_64.pkg.tar.zst`，包内二进制可启动，
   Wayland app_id 为 `rossresscut`，与 desktop entry 一致
-- [ ] 许可证：项目尚无 LICENSE，动链 `libmpv`（GPL-2.0-or-later）的合规方式未定；
-  公开分发前必须解决，见 `RELEASING.md` 第 5 节
-- [ ] 公开仓库 / AUR 版本需要 tagged tarball 源、`url` 与校验和；
-  当前 PKGBUILD 直接在当前工作树上构建
+- [x] 许可证：项目以 GPL-3.0-or-later 发布（ADR 0015）；`libmpv`（GPL-2.0-or-later）
+  与 `cpal`（Apache-2.0）均与 GPLv3 兼容
+- [ ] 公开仓库 / AUR：暂不考虑（个人自用）；将来需要时补 tagged tarball 源、
+  `url` 与校验和
 
 ## Windows
 
-- [ ] Windows 文件打开 / 保存对话框；当前 `rfd` 仅作为 Linux 依赖，
-  `FILE_DIALOG_SUPPORTED` 仅 Linux，导致「打开」与「导出」不可用
-- [ ] Windows 版 libmpv：`libmpv-2.dll` 与 import library（GNU `.dll.a` 或 MSVC `mpv.lib`），DLL 随包分发
-- [ ] Windows 版 FFmpeg / FFprobe 分发
-- [ ] 构建方式：`x86_64-pc-windows-gnu` 交叉编译（`mingw-w64-gcc`）或 Windows 原生 MSVC；尚未实测
+- [ ] Windows 文件打开 / 保存对话框：`rfd` 的 Windows 后端已提供
+  `IFileOpenDialog` / `IFileSaveDialog` COM 接口；需把 `rfd` 依赖扩展到 Windows
+  并扩展 `FILE_DIALOG_SUPPORTED`（详见 `RELEASING.md` 第 6 节）
+- [ ] Windows 版 libmpv：需要 import library（mingw `libmpv.dll.a` / MSVC `mpv.lib`）
+  用于链接；运行期 `libmpv-2.dll` 放 exe 同目录或 `PATH`
+- [ ] Windows 版 FFmpeg / FFprobe：`ffmpeg.exe` / `ffprobe.exe` 放 exe 同目录或 `PATH`
+- [ ] 交叉编译：`sudo pacman -S --needed mingw-w64-gcc` 与
+  `rustup target add x86_64-pc-windows-gnu`；尚未实测
 - [ ] D3D11VA 硬件解码与 wgpu 预览链路验证
 - [ ] 导出路径选择、章节写入与多段 concat 验证
 
@@ -73,7 +76,6 @@ LosslessCut 是产品行为、媒体语义和 FFmpeg 工作流的参考实现，
 
 ## 通用
 
-- [ ] License
 - [ ] 自动发布
 - [ ] 安装包
 

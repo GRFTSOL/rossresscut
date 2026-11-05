@@ -65,6 +65,7 @@ sudo pacman -R rossresscut
 /usr/bin/rossresscut
 /usr/share/applications/rossresscut.desktop
 /usr/share/icons/hicolor/scalable/apps/rossresscut.svg
+/usr/share/licenses/rossresscut/LICENSE
 /usr/share/licenses/rossresscut/ATTRIBUTION.md
 ```
 
@@ -95,24 +96,62 @@ sudo pacman -R rossresscut
 
 ## 5. 许可证与再分发
 
-- 项目目前没有 LICENSE，`ATTRIBUTION.md` 明确记录「尚未确定最终许可证」。
-  包的 `license=('custom')` 只是占位，不代表许可证已确定。
+- 项目以 **GPL-3.0-or-later** 发布，`LICENSE` 为 GPLv3 全文；
+  `Cargo.toml` 与 `packaging/PKGBUILD` 的 license 字段必须与之一致。
 - 二进制动态链接 `libmpv.so.2`（`mpv` 包为 GPL-2.0-or-later）。
-  公开分发前必须先确定本项目许可证，并确认 GPL 合规方式
-  （提供对应源码 / 链接声明等）。
-- 在以上问题解决前，只做本机或私有分发。
+  GPL-3.0-or-later 与它兼容；`cpal` 的 Apache-2.0 也与 GPLv3 兼容。
+- 分发二进制时必须同时提供对应源码（或书面提供方式），并保留
+  `LICENSE` 与 `ATTRIBUTION.md`。
+- 不再使用 `license=('custom')`；决策见 `docs/decisions/0015-project-license.md`。
 
 ## 6. Windows / macOS
 
 尚未发布，阻塞项记录在 `PLANS.md` 的 Phase 8。
 
-Windows 至少需要：
+### Windows
 
-- Windows 文件打开 / 保存对话框（当前 `rfd` 仅作为 Linux 依赖）
-- `libmpv-2.dll` 与 import library，随包分发
-- Windows 版 FFmpeg / FFprobe
-- `x86_64-pc-windows-gnu` 交叉编译或 Windows 原生 MSVC 构建
-- D3D11VA 预览验证
+文件对话框：
+
+- `rfd` 0.17 的 Windows 后端已经使用 Shell COM 的 `IFileOpenDialog` /
+  `IFileSaveDialog`（`IFileDialog` 派生接口），通过 `windows-sys` 调用，
+  不需要自建对话框，也不需要额外 feature。
+- 当前 `rfd` 只声明在 Linux target 下，`FILE_DIALOG_SUPPORTED` 也仅 Linux。
+  启用 Windows 时需要：
+  - 在 `Cargo.toml` 增加 `[target.'cfg(target_os = "windows")'.dependencies]`
+    的 `rfd = { version = "0.17", default-features = false }`；
+  - 把 `FILE_DIALOG_SUPPORTED` 扩展到
+    `cfg!(any(target_os = "linux", target_os = "windows"))`。
+
+libmpv：
+
+- `rsmpv-sys` 在编译期用 `-lmpv` 链接，Windows 需要 import library：
+  mingw 用 `libmpv.dll.a`，MSVC 用 `mpv.lib`。
+- 通过 `MPV_LIBRARY_DIR=<import lib 目录>` 让 `rsmpv-sys` 找到它。
+- 运行期需要 `libmpv-2.dll`。Windows 默认 DLL 搜索顺序会先找可执行文件
+  所在目录，再找系统目录与 `PATH`；因此放在 exe 同目录或 `PATH` 任一位置都可以。
+- mpv 官方 Windows 构建同时提供 `libmpv-2.dll` 与对应的 `.dll.a`。
+
+FFmpeg：
+
+- `ffmpeg.exe` / `ffprobe.exe` 需要 Windows 构建，放在 exe 同目录或 `PATH`。
+
+交叉编译（Arch Linux，GNU target）：
+
+```bash
+sudo pacman -S --needed mingw-w64-gcc
+rustup target add x86_64-pc-windows-gnu
+MPV_LIBRARY_DIR=/path/to/libmpv-import-lib \
+  cargo build --release --target x86_64-pc-windows-gnu
+```
+
+- `mingw-w64-gcc` 会带入 `mingw-w64-binutils` / `mingw-w64-crt` /
+  `mingw-w64-headers` / `mingw-w64-winpthreads`。
+- Rust 依赖（eframe / wgpu / cpal / rfd）在 GNU target 下都是纯 Rust
+  或通过 `windows-sys` 调用系统 API，不需要额外 C 库。
+- 尚未实测 wgpu 的 D3D12 / Vulkan 后端在交叉构建产物中的运行情况。
+- `MPV_LIBRARY_DIR` 只影响链接期；运行期 DLL 仍需随包分发。
+
+D3D11VA 预览与导出路径、章节、多段 concat 仍需在真实 Windows 环境验证。
 
 macOS 至少需要 libmpv dylib、VideoToolbox 验证、签名与公证。
 

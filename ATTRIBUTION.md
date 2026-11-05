@@ -1,6 +1,12 @@
 # 第三方组件与参考项目
 
-本项目自身尚未确定最终许可证。以下组件与参考项目的许可证需要在分发前复核。
+本项目以 GPL-3.0-or-later 发布，见 `LICENSE`。以下组件与参考项目的许可证需要在分发前复核。
+
+## 项目自身
+
+| 组件 | 许可证 |
+| --- | --- |
+| `rossresscut` 项目代码 | GPL-3.0-or-later（`LICENSE`） |
 
 ## 直接依赖
 
@@ -17,7 +23,8 @@
 | `toml` | 配置文件 | MIT OR Apache-2.0 |
 | `log` / `env_logger` | 日志 | MIT OR Apache-2.0 |
 
-`libmpv` 是运行时动态链接的系统库，不随源码仓库分发。对外分发二进制时必须遵守 GPL-2.0-or-later；相关决策见 `docs/decisions/0010-preview-via-mpv-engine.md`。
+`libmpv` 是运行时动态链接的系统库，不随源码仓库分发。GPL-3.0-or-later 与
+`libmpv` 的 GPL-2.0-or-later 兼容；相关决策见 `docs/decisions/0015-project-license.md`。
 
 ## 参考项目
 

@@ -4,6 +4,7 @@ version = "0.3.0"
 edition = "2024"
 rust-version = "1.99"
 description = "Native lossless media cutting tool built with Rust and egui."
+license = "GPL-3.0-or-later"
 
 [features]
 default = ["mpv-preview"]
