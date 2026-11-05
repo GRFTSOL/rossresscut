@@ -49,7 +49,7 @@ use settings::{ThemeChoice, UiSettings, detect_system_theme, load_settings, save
 use shortcuts::{Shortcut, ShortcutAction};
 use timeline::WaveformCache;
 
-const FILE_DIALOG_SUPPORTED: bool = cfg!(target_os = "linux");
+const FILE_DIALOG_SUPPORTED: bool = cfg!(any(target_os = "linux", target_os = "windows"));
 const WHEEL_STEP_POINTS: f32 = 50.0;
 const WHEEL_LINE_POINTS: f32 = 50.0;
 const WHEEL_PAGE_LINES: f32 = 10.0;

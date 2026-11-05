@@ -57,9 +57,9 @@ LosslessCut 是产品行为、媒体语义和 FFmpeg 工作流的参考实现，
 
 ## Windows
 
-- [ ] Windows 文件打开 / 保存对话框：`rfd` 的 Windows 后端已提供
-  `IFileOpenDialog` / `IFileSaveDialog` COM 接口；需把 `rfd` 依赖扩展到 Windows
-  并扩展 `FILE_DIALOG_SUPPORTED`（详见 `RELEASING.md` 第 6 节）
+- [x] Windows 文件打开 / 保存对话框：`rfd` 的 Windows 后端已接入
+  （`IFileOpenDialog` / `IFileSaveDialog` COM 接口），`FILE_DIALOG_SUPPORTED`
+  已覆盖 Windows；尚未在真实 Windows 上验证
 - [ ] Windows 版 libmpv：需要 import library（mingw `libmpv.dll.a` / MSVC `mpv.lib`）
   用于链接；运行期 `libmpv-2.dll` 放 exe 同目录或 `PATH`
 - [ ] Windows 版 FFmpeg / FFprobe：`ffmpeg.exe` / `ffprobe.exe` 放 exe 同目录或 `PATH`

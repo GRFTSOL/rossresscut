@@ -29,5 +29,8 @@ wgpu = { version = "30", default-features = false, optional = true }
 [target.'cfg(target_os = "linux")'.dependencies]
 rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
 
+[target.'cfg(target_os = "windows")'.dependencies]
+rfd = { version = "0.17", default-features = false }
+
 [lints.rust]
 unsafe_code = "forbid"

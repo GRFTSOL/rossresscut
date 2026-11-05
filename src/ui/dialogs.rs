@@ -431,49 +431,49 @@ pub(super) enum CloseIntent {
     Application,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 const MEDIA_EXTENSIONS: &[&str] = &[
     "mp4", "mkv", "mov", "avi", "wmv", "ts", "m2ts", "webm", "flv", "mpg", "mpeg", "m4v", "mp3",
     "aac", "flac", "wav", "ogg", "opus", "mka", "srt", "ass",
 ];
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 pub(super) fn pick_media_file() -> Option<PathBuf> {
     rfd::FileDialog::new()
         .add_filter("Media files", MEDIA_EXTENSIONS)
         .pick_file()
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 pub(super) fn pick_media_file() -> Option<PathBuf> {
     None
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 pub(super) fn pick_media_files() -> Option<Vec<PathBuf>> {
     rfd::FileDialog::new()
         .add_filter("Media files", MEDIA_EXTENSIONS)
         .pick_files()
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 pub(super) fn pick_media_files() -> Option<Vec<PathBuf>> {
     None
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 pub(super) fn pick_project_file() -> Option<PathBuf> {
     rfd::FileDialog::new()
         .add_filter("Project files", &[crate::application::PROJECT_EXTENSION])
         .pick_file()
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 pub(super) fn pick_project_file() -> Option<PathBuf> {
     None
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 pub(super) fn pick_project_save_path(default: &std::path::Path) -> Option<PathBuf> {
     rfd::FileDialog::new()
         .add_filter("Project files", &[crate::application::PROJECT_EXTENSION])
@@ -487,18 +487,18 @@ pub(super) fn pick_project_save_path(default: &std::path::Path) -> Option<PathBu
         .save_file()
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 pub(super) fn pick_project_save_path(default: &std::path::Path) -> Option<PathBuf> {
     let _ = default;
     None
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 pub(super) fn pick_directory() -> Option<PathBuf> {
     rfd::FileDialog::new().pick_folder()
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 pub(super) fn pick_directory() -> Option<PathBuf> {
     None
 }

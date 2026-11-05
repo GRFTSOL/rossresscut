@@ -981,7 +981,13 @@ fn concat_args(
 }
 
 pub(super) fn concat_line(path: &Path) -> String {
-    let text = path.to_string_lossy().replace('\'', "'\\''");
+    let mut text = path.to_string_lossy().into_owned();
+    // FFmpeg's concat demuxer treats `\` as an escape character, so Windows
+    // paths must use forward slashes inside the list.
+    if cfg!(target_os = "windows") {
+        text = text.replace('\\', "/");
+    }
+    let text = text.replace('\'', "'\\''");
     format!("file '{text}'")
 }
 

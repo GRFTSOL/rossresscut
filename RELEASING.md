@@ -115,12 +115,11 @@ sudo pacman -R rossresscut
 - `rfd` 0.17 的 Windows 后端已经使用 Shell COM 的 `IFileOpenDialog` /
   `IFileSaveDialog`（`IFileDialog` 派生接口），通过 `windows-sys` 调用，
   不需要自建对话框，也不需要额外 feature。
-- 当前 `rfd` 只声明在 Linux target 下，`FILE_DIALOG_SUPPORTED` 也仅 Linux。
-  启用 Windows 时需要：
-  - 在 `Cargo.toml` 增加 `[target.'cfg(target_os = "windows")'.dependencies]`
-    的 `rfd = { version = "0.17", default-features = false }`；
-  - 把 `FILE_DIALOG_SUPPORTED` 扩展到
-    `cfg!(any(target_os = "linux", target_os = "windows"))`。
+- 已在 Windows target 下启用：`Cargo.toml` 增加
+  `[target.'cfg(target_os = "windows")'.dependencies]` 的
+  `rfd = { version = "0.17", default-features = false }`，
+  `FILE_DIALOG_SUPPORTED` 覆盖 Linux 与 Windows。
+- 尚未在真实 Windows 环境中验证对话框行为。
 
 libmpv：
 
@@ -146,6 +145,11 @@ MPV_LIBRARY_DIR=/path/to/libmpv-import-lib \
 
 - `mingw-w64-gcc` 会带入 `mingw-w64-binutils` / `mingw-w64-crt` /
   `mingw-w64-headers` / `mingw-w64-winpthreads`。
+- `cargo check --target x86_64-pc-windows-gnu` 已在 Linux 上通过；
+  链接阶段只缺 Windows 版 libmpv import library。
+- 获取 import library：mpv 官方 Windows 构建（如 `mpv-dev-x86_64-*.7z`）
+  包含 `libmpv.dll.a` 与 `libmpv-2.dll`；解压后把 `libmpv.dll.a` 所在目录
+  传给 `MPV_LIBRARY_DIR`。
 - Rust 依赖（eframe / wgpu / cpal / rfd）在 GNU target 下都是纯 Rust
   或通过 `windows-sys` 调用系统 API，不需要额外 C 库。
 - 尚未实测 wgpu 的 D3D12 / Vulkan 后端在交叉构建产物中的运行情况。

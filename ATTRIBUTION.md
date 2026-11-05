@@ -17,7 +17,7 @@
 | `mpv-engine` | libmpv safe wrapper 与 exported frame | MIT OR Apache-2.0 |
 | `libmpv` / `mpv` | 预览解码、音频输出、硬件解码 | GPL-2.0-or-later |
 | `fontdb` | 系统字体枚举 | MIT |
-| `rfd` | Linux XDG portal 文件对话框 | MIT |
+| `rfd` | Linux XDG portal / Windows Shell COM 文件对话框 | MIT |
 | `cpal` | 外部 FFmpeg 回退路径的音频输出 | Apache-2.0 |
 | `serde` / `serde_json` | 数据序列化 | MIT OR Apache-2.0 |
 | `toml` | 配置文件 | MIT OR Apache-2.0 |

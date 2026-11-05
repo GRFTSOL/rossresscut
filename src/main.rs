@@ -1,5 +1,7 @@
 //! Binary entry point for the desktop application.
 
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 use std::path::PathBuf;
 use std::process::ExitCode;
 

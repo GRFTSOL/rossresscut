@@ -206,6 +206,11 @@ pub(super) fn ini_value<'a>(text: &'a str, key: &str) -> Option<&'a str> {
 }
 
 pub(super) fn config_directory() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    if let Some(appdata) = std::env::var_os("APPDATA") {
+        return Some(PathBuf::from(appdata));
+    }
+
     std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))

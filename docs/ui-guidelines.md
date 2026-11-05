@@ -92,6 +92,8 @@ UI 不允许直接修改领域状态。
 ## 5. 桌面集成
 
 - Linux 文件打开必须使用 XDG desktop portal（`rfd` 的 `xdg-portal` 后端），不自建文件选择器。
+- Windows 文件打开 / 保存使用 `rfd` 的 Windows 后端（Shell COM 的
+  `IFileOpenDialog` / `IFileSaveDialog`），同样不自建文件选择器。
 - 顶部显示当前媒体标题标签，只显示文件名主体，不含扩展名；不提供可编辑路径输入框。
 - 主题默认跟随系统，并允许在设置页手动选择 Dark / Light；设置页同时提供字体选择与字体缩放。
 - 系统不报告主题时，自动主题读取 GTK / Qt 配置（含 nwg-look、qt6ct）；仍无法判断时使用手动主题。
