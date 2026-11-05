@@ -27,6 +27,12 @@ use super::planning;
 use super::smart_cut::{SmartCutPlan, SmartCutUnavailable};
 use super::{ExportError, ExportEvent, ExportProcess, ExportRequest};
 
+/// Placeholder cue used when a part has no subtitle cues.
+///
+/// It has empty text and lasts one millisecond, so FFmpeg keeps the subtitle
+/// stream without rendering anything.
+const EMPTY_SUBTITLE: &str = "1\n00:00:00,000 --> 00:00:00,001\n\n";
+
 /// One source-time range in a multi-segment export.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ExportSegment {
@@ -264,7 +270,7 @@ pub enum MultiExportEvent {
 pub enum MultiExportError {
     /// The temporary directory could not be created.
     WorkDir(io::Error),
-    /// The concat list could not be written.
+    /// The concat list or another temporary file could not be written.
     TempFile(io::Error),
     /// A segment range was invalid.
     InvalidPart {
@@ -297,7 +303,12 @@ impl fmt::Display for MultiExportError {
             Self::WorkDir(error) => {
                 write!(formatter, "could not create an export temp dir: {error}")
             }
-            Self::TempFile(error) => write!(formatter, "could not write the concat list: {error}"),
+            Self::TempFile(error) => {
+                write!(
+                    formatter,
+                    "could not write a temporary export file: {error}"
+                )
+            }
             Self::InvalidPart { index } => {
                 write!(formatter, "segment {index} has an invalid range")
             }
@@ -680,16 +691,31 @@ impl MultiExport {
                 .ok_or(MultiExportError::InvalidPart { index: segment })?;
             request = request.with_encode(Some(context.encode.clone()));
         }
-        let subtitle_path = self
-            .subtitle
-            .as_ref()
-            .map(|plan| plan.crop_for(start, end))
-            .filter(|text| !text.trim().is_empty())
-            .map(|text| {
+        let subtitle_text = self.subtitle.as_ref().map(|plan| {
+            let text = plan.crop_for(start, end);
+            if text.trim().is_empty() {
+                // An empty SRT is not a valid input. A single empty cue keeps
+                // the subtitle stream present so every part maps the same
+                // streams during concat.
+                EMPTY_SUBTITLE.to_owned()
+            } else {
+                text
+            }
+        });
+        let subtitle_path = match subtitle_text {
+            Some(text) => {
                 let path = self.work_dir.path().join(format!("part-{index:04}.srt"));
-                (path, text)
-            })
-            .and_then(|(path, text)| std::fs::write(&path, text).ok().map(|_| path));
+                fs::write(&path, text).map_err(MultiExportError::TempFile)?;
+                Some(path)
+            }
+            None => None,
+        };
+        if self.subtitle.is_some() {
+            // The SRT input is only mapped when the request says subtitles are
+            // replaced. Without this the cut part keeps the source subtitle
+            // packets, whose timestamps are still absolute.
+            request = request.with_subtitle(self.subtitle.clone());
+        }
         let args = super::build_args(&request, None, subtitle_path.as_deref());
         let process = ExportProcess::start_with_args(args.clone(), &path)
             .map_err(MultiExportError::Export)?;

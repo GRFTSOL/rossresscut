@@ -245,6 +245,47 @@ Matroska 的 stream duration 是 `N/A`，不能用 `probe().duration`。
 `concat_duration`，回归测试见
 `tests/multi_export.rs::joins_parts_without_a_frame_gap`。
 
+### 2026-11-05 4K / 60fps / VFR / 字幕章节验证
+
+环境：FFmpeg 9.0.2，素材来自 `/home/chasel/videos`。
+
+验证走项目真实代码路径：多段导出使用 `MultiExport`；smart cut 使用
+`Application::open_media` + `start_export`。拼接间隙按“上一段末包结束时间”
+与“下一段首包 PTS”计算，不把段尾空洞算进拼接间隙。
+
+| 素材 | 区间 | 拼接处视频间隔 | 纯 copy 额外停顿（视频段尾 / 音频接缝） | 输出时长 |
+| --- | --- | --- | --- | --- |
+| 4K60 HEVC（3840x1920, 59.94） | `[10.010,15.015)` + `[30.030,35.035)` | 16.0ms | 67ms 视频 / 110ms 音频 | 10.278s |
+| 1080p60 HEVC（1920x886, 59.94） | 同上 | 16.0ms | 67ms 视频 / 110ms 音频 | 10.278s |
+| 4K60 AV1 / WebM（3840x1934） | `[4.033,8.333)` + `[13.300,14.967)` | 16.0ms | 无 | 5.988s |
+| VFR（合成 120/60/40fps 三区段） | `[1.0,4.0)` + `[7.0,10.0)` | 8.0ms | 无 | 6.026s |
+| 奥本海默 1080p HEVC 23.976 + 2 条文本字幕 + 20 章节 | `[57.391,67.818)` + `[72.531,82.958)` | 41.0ms（一帧） | 250ms 视频 / 231ms 音频 | 27.567s |
+
+观察：
+
+1. 所有格式的**拼接处**都只隔一个正常帧（60fps 约 16ms、23.976fps 约 41ms），
+   没有额外插入的 1 帧间隙。
+2. 60fps / HEVC 素材在纯 copy 下仍有段尾 B 帧空洞，表现为视频 67ms、
+   音频接缝 110ms；这是 ADR-0013 已记录的段尾语义，不属于拼接间隙。
+   开启 smart cut 后消失：1080p60 与 4K60 实测最大视频间隔 17ms、
+   最大音频间隔 21.33ms，输出 10.113s。
+3. AV1/WebM 与 VFR 素材的纯 copy 路径没有段尾空洞，拼接处同样正常。
+4. VFR 素材用合成文件验证：源帧间隔为 8.33 / 16.67 / 25.00ms，
+   导出后平均间隔 11.97ms、最大 25ms、无时间戳回退。
+   `bilibili` 目录下没有找到真正的 VFR 文件（全部为 CFR）。
+5. 含字幕与章节素材：输出生成 2 个章节、替换为 1 条裁剪后的字幕轨、
+   6 个字幕包；源字幕流未残留。
+
+发现并修复的问题：`MultiExport` 把裁剪后的 SRT 作为输入传给 FFmpeg，
+但没有在 `ExportRequest` 上设置 `with_subtitle`，导致 `build_args` 仍然
+`-map 0` 并复制源字幕流，SRT 输入没有被映射。修复后每个切片都映射
+替换后的字幕轨；没有 cue 的片段写入一个 1ms 的空占位 cue，避免
+concat 时流布局不一致。回归测试：
+`tests/multi_export.rs::multipart_export_replaces_source_subtitles`。
+
+结论：4K60、60fps、VFR、文本字幕与章节容器的端到端拼接均已覆盖，
+OQ-17 解除。
+
 ### Phase 5 实现建议
 
 1. `ExportRequest` 从单段扩展为按 Timeline 顺序的 Segment 列表。
@@ -261,8 +302,8 @@ Matroska 的 stream duration 是 `N/A`，不能用 `probe().duration`。
 
 ### 未验证
 
-- 60fps / 4K 素材的拼接偏移。
-- VFR 素材。
-- 含字幕、章节、attached_pic 的容器。
-- 不同容器之间的 concat（例如 MP4 片段 → MKV 输出）。
+- 不同容器之间的 concat（例如 MP4 片段 → MKV 输出）；本次只测了输入输出同容器。
 - 音频 priming 在多次 concat 后的累积偏移。
+- attached_pic 的单独复测（当前保持 stream copy）。
+- 图形字幕（PGS / DVD / DVB）；见 `docs/open-questions.md` 的 OQ-24。
+- smart cut 下的 VFR 帧时长与音频接缝；见 OQ-23。

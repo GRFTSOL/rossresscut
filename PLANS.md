@@ -19,7 +19,8 @@
 - 导出章节按每个临时片段的实际容器时长累计，测试见
   `tests/multi_export.rs::chapters_follow_actual_part_lengths`。
 - 切片不再使用 `-shortest`：源带附加图片/字幕流时它会提前结束，产物可能近乎为空。
-- 未完成：显式 metadata 处理、容器预检查、4K/VFR 验证。
+- 未完成：容器预检查。4K/60fps/VFR/字幕/章节端到端验证已完成，见
+  `docs/investigations/multi-segment-concat.md`。
 
 ## 已完成的 UI 批次
 
@@ -569,14 +570,18 @@ re-encode
 - `tests/export.rs`：单段 stream copy 不变，codec / 分辨率 / 采样率 / 声道数一致。
 - `cargo test`、`cargo clippy --all-targets --all-features -- -D warnings`、`cargo fmt --check` 全部通过。
 - 未做 4K / 60fps / VFR / 字幕 / 章节验证；见 `docs/open-questions.md`。
+- 2026-11-05 完成 4K60（HEVC / AV1-WebM）、1080p60、真实 VFR、含文本字幕与
+  章节素材的多段导出验证；拼接处无额外帧间隙。详见
+  `docs/investigations/multi-segment-concat.md` 的「2026-11-05」一节。
 
 ## 研究任务（不复制代码）
 
 - [x] 研究 LosslessCut 的 concat / timestamp 处理与容器兼容性边界。
 - [ ] 研究 audio-only 裁剪、leading non-keyframe audio packets 等历史边界修复。
 - [ ] 对采用的媒体语义增加本项目自己的测试。
-- [ ] 验证 60fps / 4K / VFR 素材的拼接偏移与段尾空洞。
-- [ ] 验证字幕、章节、attached_pic 与不同输出容器。
+- [x] 验证 60fps / 4K / VFR 素材的拼接偏移与段尾空洞。
+- [x] 验证字幕、章节、attached_pic 与不同输出容器。
+  - 字幕与章节已验证；attached_pic 仍保持 stream copy，未单独复测。
 
 ## 顺序语义
 
@@ -727,7 +732,9 @@ ADR：`docs/decisions/0012-project-and-settings-format.md`。
   - 常规设置「保留被片段边界截断的字幕」：关闭时整句丢弃，开启时裁剪到片段范围内（默认关闭）
   - 单段与多段导出都接入；多段时每段各自裁剪后参与 concat
   - 实现：`media::subtitle`（提取 / 解析 / 裁剪 / 生成）、`media::export::SubtitlePlan`
-  - 已验证：`tests/subtitle_export.rs` 覆盖保留与舍弃两种策略
+  - 已验证：`tests/subtitle_export.rs` 覆盖保留与舍弃两种策略；
+    `tests/multi_export.rs::multipart_export_replaces_source_subtitles`
+    覆盖多段导出替换源字幕轨
 
   ### 已知限制
 
@@ -735,8 +742,8 @@ ADR：`docs/decisions/0012-project-and-settings-format.md`。
     替换后数据流与附件（字体等）不再复制。
   - 图形字幕（`hdmv_pgs_subtitle` / `dvd_subtitle` / `dvb_subtitle`）不处理，
     保持 FFmpeg 原来的 stream copy 行为。
-  - 多段导出时，如果某些片段裁剪后没有字幕而其他片段有，
-    concat 可能因流布局不一致失败。
+  - 多段导出时，没有 cue 的片段会写入占位空字幕轨，保证各段流布局一致；
+    回归测试见 `tests/multi_export.rs::multipart_export_replaces_source_subtitles`。
   - 字幕提取在导出启动时同步执行，超长素材会有短暂停顿。
   - 只使用第一个文本字幕轨，多字幕轨场景未覆盖。
 - [x] Stream selection（导出时选择保留哪些流）
@@ -769,6 +776,8 @@ ADR：`docs/decisions/0012-project-and-settings-format.md`。
   - 已验证：`tests/smart_cut_export.rs` 覆盖起点精确、普通 copy 回退对照、
     多段 Timeline 顺序、无可用编码器时报错
   - 真实素材验证：1080p30 HEVC 请求 5s → 输出约 5.04s，首帧对源切点 PSNR 36.9 dB
+  - 2026-11-05 复测：1080p60 与 4K60 HEVC 各两段，最大视频间隔 17ms、
+    最大音频间隔 21.3ms；纯 copy 对照分别为 67ms / 110ms 的段尾空洞
 
   ### 已知限制
 

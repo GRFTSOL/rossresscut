@@ -13,8 +13,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rossresscut::domain::time::Timestamp;
 use rossresscut::media::export::{
-    ExportSegment, MultiExport, MultiExportEvent, MultiExportRequest,
+    ExportSegment, MultiExport, MultiExportEvent, MultiExportRequest, SubtitlePlan,
 };
+use rossresscut::media::subtitle;
 
 const WIDTH: usize = 320;
 const HEIGHT: usize = 240;
@@ -78,6 +79,50 @@ fn generate_fixture(path: &Path) {
         .status()
         .expect("run ffmpeg to generate the fixture");
     assert!(status.success(), "ffmpeg could not generate the fixture");
+}
+
+fn generate_vfr_fixture(path: &Path) {
+    // 120 fps source reduced to 120/60/40 fps sections without resampling
+    // timestamps, so the result has genuinely variable frame durations.
+    let status = Command::new("ffmpeg")
+        .args([
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=640x360:rate=120:duration=12",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:sample_rate=48000:duration=12",
+            "-vf",
+            "select='lt(t,4)+between(t,4,8)*not(mod(n,2))+gt(t,8)*not(mod(n,3))'",
+            "-fps_mode",
+            "vfr",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-g",
+            "30",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
+        ])
+        .arg(path)
+        .status()
+        .expect("run ffmpeg to generate the VFR fixture");
+    assert!(
+        status.success(),
+        "ffmpeg could not generate the VFR fixture"
+    );
 }
 
 fn generate_fixture_with_audio(path: &Path) {
@@ -485,6 +530,158 @@ fn joins_parts_without_a_frame_gap() {
     assert!(
         (7.5..=8.5).contains(&duration),
         "expected about 8 seconds, got {duration}"
+    );
+
+    if let Err(error) = fs::remove_dir_all(&directory) {
+        eprintln!("could not remove {}: {error}", directory.display());
+    }
+}
+
+#[test]
+fn multipart_export_replaces_source_subtitles() {
+    let source = PathBuf::from("tests/fixtures/sample.mkv");
+    let directory = fixture_directory();
+    let output = directory.join("subtitles.mkv");
+    // Duplicate the subtitle stream so a plain `-map 0` (the bug) leaves two
+    // subtitle tracks in the output, while the cropped replacement leaves one.
+    let doubled = directory.join("doubled-subtitles.mkv");
+    let status = Command::new("ffmpeg")
+        .args(["-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-i"])
+        .arg(&source)
+        .args(["-i"])
+        .arg(&source)
+        .args([
+            "-map", "0:v", "-map", "0:a", "-map", "0:s", "-map", "1:s", "-c", "copy",
+        ])
+        .arg(&doubled)
+        .status()
+        .expect("run ffmpeg to duplicate the subtitle stream");
+    assert!(status.success(), "could not build the subtitle fixture");
+    let srt = subtitle::extract(&doubled, 3).expect("extract the fixture subtitle track");
+    let request = MultiExportRequest::new(
+        &doubled,
+        vec![
+            segment_micros(100_000, 900_000),
+            segment_micros(1_000_000, 1_800_000),
+        ],
+        &output,
+    )
+    .expect("valid request")
+    .with_subtitle(Some(SubtitlePlan {
+        srt,
+        keep_partial: true,
+    }));
+    let mut export = MultiExport::start(request).expect("start multi export");
+    let error = run_export(&mut export);
+    assert!(error.is_none(), "multi export failed: {error:?}");
+    drop(export);
+
+    // The source subtitle stream must be replaced, not copied with absolute
+    // timestamps. Each part contributes one cue.
+    let streams = Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-show_entries",
+            "stream=codec_type",
+            "-of",
+            "csv=p=0",
+        ])
+        .arg(&output)
+        .output()
+        .expect("run ffprobe for stream types");
+    let subtitle_streams = String::from_utf8_lossy(&streams.stdout)
+        .lines()
+        .filter(|line| line.trim() == "subtitle")
+        .count();
+    assert_eq!(
+        subtitle_streams, 1,
+        "the cropped track must replace the source subtitle stream"
+    );
+
+    let cues = packet_pts(&output, "s:0");
+    assert_eq!(cues.len(), 2, "one cue per part, got {cues:?}");
+    assert!(
+        cues.iter().all(|cue| *cue >= 0.0),
+        "cues must be rebased: {cues:?}"
+    );
+
+    if let Err(error) = fs::remove_dir_all(&directory) {
+        eprintln!("could not remove {}: {error}", directory.display());
+    }
+}
+
+#[test]
+fn joins_vfr_parts_without_a_gap() {
+    let directory = fixture_directory();
+    let source = directory.join("vfr.mp4");
+    let output = directory.join("vfr.mkv");
+    generate_vfr_fixture(&source);
+
+    let source_pts = packet_pts(&source, "v:0");
+    let distinct: std::collections::BTreeSet<i64> = source_pts
+        .windows(2)
+        .map(|window| ((window[1] - window[0]) * 1_000_000.0).round() as i64)
+        .collect();
+    assert!(
+        distinct.len() >= 2,
+        "the fixture must have variable frame durations: {distinct:?}"
+    );
+
+    let request = MultiExportRequest::new(
+        &source,
+        vec![
+            segment_micros(1_000_000, 4_000_000),
+            segment_micros(7_000_000, 10_000_000),
+        ],
+        &output,
+    )
+    .expect("valid request");
+    let mut export = MultiExport::start(request).expect("start multi export");
+    let error = run_export(&mut export);
+    assert!(error.is_none(), "multi export failed: {error:?}");
+    drop(export);
+
+    let video = packet_pts(&output, "v:0");
+    assert!(video.len() > 100, "unexpected video packet count");
+    for window in video.windows(2) {
+        let delta = window[1] - window[0];
+        assert!(
+            delta > 0.0,
+            "video timestamps must increase: {} → {}",
+            window[0],
+            window[1]
+        );
+        // The slowest source section is 40 fps (25 ms).
+        assert!(
+            delta < 0.027,
+            "video gap of {:.1}ms after {:.3}s is a stall",
+            delta * 1000.0,
+            window[0]
+        );
+    }
+
+    let audio = packet_pts(&output, "a:0");
+    assert!(!audio.is_empty(), "the output must keep audio");
+    for window in audio.windows(2) {
+        assert!(
+            window[1] > window[0],
+            "audio timestamps must increase: {} → {}",
+            window[0],
+            window[1]
+        );
+        assert!(
+            window[1] - window[0] < 0.06,
+            "audio gap of {:.1}ms after {:.3}s",
+            (window[1] - window[0]) * 1000.0,
+            window[0]
+        );
+    }
+
+    let duration = duration_seconds(&output);
+    assert!(
+        (5.5..=6.7).contains(&duration),
+        "expected about 6 seconds, got {duration}"
     );
 
     if let Err(error) = fs::remove_dir_all(&directory) {

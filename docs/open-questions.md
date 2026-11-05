@@ -18,7 +18,10 @@
   `docs/investigations/mpv-engine-spike.md`）、OQ-15、20（已解决）、
   OQ-19（已实现）、OQ-25（尾部 smart cut 已实现，见
   `docs/decisions/0013-smart-cut.md`；纯 copy 仍保留段尾 B 帧空洞）、
-  OQ-26（规划阶段探测 seek 落点，稀疏 cue 容器可用 smart cut）。历史见
+  OQ-26（规划阶段探测 seek 落点，稀疏 cue 容器可用 smart cut）、OQ-16（用户
+  决定不做复杂 metadata 与源章节编辑，现有功能足够）、OQ-17（4K60、1080p60、
+  VFR、字幕与章节端到端拼接验证通过，见
+  `docs/investigations/multi-segment-concat.md`）。历史见
   `docs/decisions/0009-preview-decode-zero-copy.md`、
   `docs/decisions/0010-preview-via-mpv-engine.md`、`docs/decisions/0013-smart-cut.md`
   与 git 历史。
@@ -26,31 +29,6 @@
 ---
 
 ## 多段导出（来源：Phase 5 / `docs/investigations/multi-segment-concat.md`）
-
-### OQ-16 逐项 metadata 与源章节编辑
-
-**问题**：除输出标题外，没有逐项 metadata 编辑；容器自带章节只读。
-
-**当前状态**：Stream selection、章节标题编辑与项目持久化已实现；导出章节自动生成；
-metadata 只写输出 `title`。
-
-**影响**：不能编辑语言、默认轨、注释等 metadata；不能编辑或导入源容器章节。
-
-**计划时机**：metadata 需求出现时。
-
-**解除条件**：按独立设计实现需要的 metadata 字段，以及源章节的导入/覆盖语义。
-
-### OQ-17 4K / 60fps / VFR 验证
-
-**问题**：多段合并目前只在 1080p30 H.264/AAC 上验证。
-
-**当前状态**：字幕与章节已有导出测试；4K / 60fps / VFR 素材未测。
-
-**影响**：高帧率或 VFR 素材的拼接间隙、时间戳行为可能不同。
-
-**计划时机**：Phase 5 回归扩展或发布前回归。
-
-**解除条件**：至少覆盖 4K60、VFR，以及含字幕/章节容器的端到端拼接。
 
 ### OQ-18 多段导出的 UI 交互自动化
 
