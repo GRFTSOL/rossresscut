@@ -32,6 +32,12 @@ pub(super) const SEGMENT_END: &str = "\u{f105}";
 pub(super) const NEXT_SEGMENT: &str = "\u{f063}";
 /// Jump to the end of the timeline.
 pub(super) const GO_TO_END: &str = "\u{f101}";
+/// Playback volume above 50%.
+pub(super) const VOLUME_HIGH: &str = "\u{f028}";
+/// Playback volume below 50%.
+pub(super) const VOLUME_LOW: &str = "\u{f027}";
+/// Playback volume is muted.
+pub(super) const VOLUME_MUTED: &str = "\u{f026}";
 /// Open the settings window.
 pub(super) const SETTINGS: &str = "\u{f013}";
 /// Toggle the batch panel.

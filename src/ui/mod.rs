@@ -53,6 +53,13 @@ const FILE_DIALOG_SUPPORTED: bool = cfg!(target_os = "linux");
 const WHEEL_STEP_POINTS: f32 = 50.0;
 const WHEEL_LINE_POINTS: f32 = 50.0;
 const WHEEL_PAGE_LINES: f32 = 10.0;
+/// Volume change per wheel step or slider step, in percent.
+const VOLUME_STEP: i32 = 5;
+
+/// Steps `volume` by whole [`VOLUME_STEP`] increments, clamped to `0..=100`.
+pub(super) fn stepped_volume(volume: u8, steps: i32) -> u8 {
+    (i32::from(volume) + steps * VOLUME_STEP).clamp(0, 100) as u8
+}
 /// Timeline height without an audio stream.
 const TIMELINE_HEIGHT: f32 = 42.0;
 /// Timeline height with a waveform behind the segments.
@@ -128,6 +135,8 @@ pub struct RossresscutApp {
     /// `None` exports every stream; `Some` holds the chosen stream indices.
     stream_selection: Option<std::collections::BTreeSet<usize>>,
     wheel_accumulator: f32,
+    volume_popup_open: bool,
+    volume_popup_wheel: f32,
     waveform_cache: Option<WaveformCache>,
     segment_error: Option<String>,
     segment_start_input: String,
@@ -144,7 +153,7 @@ pub struct RossresscutApp {
 impl RossresscutApp {
     /// Creates the window state and optionally opens `initial_path`.
     pub fn new(context: &eframe::CreationContext<'_>, initial_paths: Vec<PathBuf>) -> Self {
-        // The preview uses the command modifier with the wheel for seeking, so
+        // The timeline uses the command modifier with the wheel to seek, so
         // egui must not also treat that gesture as a UI zoom.
         context
             .egui_ctx
@@ -197,6 +206,8 @@ impl RossresscutApp {
             };
             app.application.set_preview_hardware(hardware);
         }
+        let volume = app.settings.volume;
+        app.application.set_volume(volume);
         match initial_paths.as_slice() {
             [] => {}
             [path] => app.application.open_media(path.clone()),
@@ -774,6 +785,15 @@ mod tests {
         assert_eq!(wheel_direction(1.0), 1);
         assert_eq!(wheel_direction(-1.0), -1);
         assert_eq!(wheel_direction(0.0), -1);
+    }
+
+    #[test]
+    fn stepped_volume_moves_by_five_and_clamps() {
+        assert_eq!(super::stepped_volume(100, 1), 100);
+        assert_eq!(super::stepped_volume(100, -4), 80);
+        assert_eq!(super::stepped_volume(80, 1), 85);
+        assert_eq!(super::stepped_volume(0, -1), 0);
+        assert_eq!(super::stepped_volume(0, 1), 5);
     }
 
     #[test]

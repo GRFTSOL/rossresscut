@@ -225,6 +225,7 @@ pub(super) struct UiSettings {
     pub(super) font_path: String,
     pub(super) font_index: u32,
     pub(super) shortcuts: BTreeMap<String, String>,
+    pub(super) volume: u8,
     pub(super) autosave_projects: bool,
     pub(super) subtitle_keep_partial: bool,
     pub(super) project_to_source_dir: bool,
@@ -255,6 +256,7 @@ pub(super) struct GeneralSettings {
     font_path: String,
     font_index: u32,
     autosave_projects: bool,
+    volume: u8,
     subtitle_keep_partial: bool,
     project_to_source_dir: bool,
     project_directory: String,
@@ -272,6 +274,7 @@ impl Default for GeneralSettings {
             font_path: defaults.font_path,
             font_index: defaults.font_index,
             autosave_projects: defaults.autosave_projects,
+            volume: defaults.volume,
             subtitle_keep_partial: defaults.subtitle_keep_partial,
             project_to_source_dir: defaults.project_to_source_dir,
             project_directory: defaults.project_directory,
@@ -321,6 +324,7 @@ impl From<SettingsFile> for UiSettings {
             font_path: general.font_path,
             font_index: general.font_index,
             shortcuts,
+            volume: general.volume,
             autosave_projects: general.autosave_projects,
             subtitle_keep_partial: general.subtitle_keep_partial,
             project_to_source_dir: general.project_to_source_dir,
@@ -350,6 +354,7 @@ impl From<&UiSettings> for SettingsFile {
                 project_to_source_dir: settings.project_to_source_dir,
                 project_directory: settings.project_directory.clone(),
                 shortcuts: settings.shortcuts.clone(),
+                volume: settings.volume,
             },
             export: ExportSettings {
                 chapters: settings.export_chapters,
@@ -409,6 +414,7 @@ impl From<LegacySettings> for UiSettings {
             font_path: legacy.font_path,
             font_index: legacy.font_index,
             shortcuts,
+            volume: 100,
             autosave_projects: true,
             subtitle_keep_partial: false,
             project_to_source_dir: true,
@@ -502,6 +508,7 @@ impl Default for UiSettings {
             font_path: String::new(),
             font_index: 0,
             shortcuts: default_shortcuts(),
+            volume: 100,
             autosave_projects: true,
             subtitle_keep_partial: false,
             project_to_source_dir: true,
@@ -628,6 +635,24 @@ mod tests {
                 .expect("parse")
                 .smart_cut_bit_rate_kbps,
             0
+        );
+    }
+
+    #[test]
+    fn round_trips_the_playback_volume() {
+        let settings = UiSettings {
+            volume: 45,
+            ..Default::default()
+        };
+        let text = toml::to_string_pretty(&SettingsFile::from(&settings)).expect("serialize");
+        assert_eq!(parse_settings(&text).expect("parse").volume, 45);
+
+        // Config files written before the key existed fall back to 100%.
+        assert_eq!(
+            parse_settings("[general]\n[export]\n")
+                .expect("parse")
+                .volume,
+            100
         );
     }
 }

@@ -438,6 +438,19 @@ impl Application {
         self.playback.hardware = hardware;
     }
 
+    /// Playback volume in percent.
+    pub fn volume(&self) -> u8 {
+        self.playback.volume
+    }
+
+    /// Sets the playback volume in percent, clamped to `0..=100`.
+    ///
+    /// The value is stored even when no mpv backend is running yet; the next
+    /// mpv preview start applies it.
+    pub fn set_volume(&mut self, volume: u8) {
+        self.playback.set_volume(volume);
+    }
+
     /// Returns the current editing timeline.
     pub fn timeline(&self) -> &Timeline {
         &self.timeline
@@ -701,6 +714,7 @@ struct Playback {
     audio: Option<PreviewAudio>,
     warning: Option<String>,
     hardware: HardwareAcceleration,
+    volume: u8,
     #[cfg(feature = "mpv-preview")]
     mpv: Option<MpvPreview>,
     #[cfg(feature = "mpv-preview")]
@@ -737,6 +751,7 @@ impl Default for Playback {
             audio: None,
             warning: None,
             hardware: HardwareAcceleration::default_for_platform(),
+            volume: 100,
             #[cfg(feature = "mpv-preview")]
             mpv: None,
             #[cfg(feature = "mpv-preview")]
@@ -889,6 +904,18 @@ mod tests {
 
         application.set_preview_hardware(HardwareAcceleration::Vaapi);
         assert_eq!(application.hardware_decoder(), Some("vaapi"));
+    }
+
+    #[test]
+    fn volume_is_clamped_between_zero_and_one_hundred() {
+        let mut application = Application::new();
+        assert_eq!(application.volume(), 100);
+
+        application.set_volume(42);
+        assert_eq!(application.volume(), 42);
+
+        application.set_volume(250);
+        assert_eq!(application.volume(), 100);
     }
 
     #[test]

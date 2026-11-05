@@ -124,6 +124,11 @@ impl RossresscutApp {
             self.export_panel_open = false;
             return true;
         }
+        if self.volume_popup_open {
+            self.volume_popup_open = false;
+            super::settings::save_settings(&self.settings);
+            return true;
+        }
         if self.random_dialog_open {
             self.random_dialog_open = false;
             return true;

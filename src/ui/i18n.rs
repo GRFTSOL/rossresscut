@@ -249,6 +249,7 @@ pub struct Strings {
     pub undo: String,
     pub unsaved_changes: String,
     pub unsaved_changes_hint: String,
+    pub volume: String,
     pub video: String,
     pub waveform_generating: String,
 }

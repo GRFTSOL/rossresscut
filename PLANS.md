@@ -2,10 +2,11 @@
 
 ## 当前阶段
 
-**Phase 7C：媒体流与智能裁切（已完成）**
+**Phase 8：Linux 发布（进行中）**
 
-- Phase 5 多片段合并、Phase 7A 项目持久化、Phase 7B 场景/静音/批处理/合并均已完成。
-- Phase 7C 已完成：文本字幕裁剪、stream selection、smart cut 调查与实现、章节标题编辑。
+- Linux：release 构建、`packaging/PKGBUILD` 与 pacman 包已完成（见 Phase 8）。
+- Windows / macOS 未开始。
+- Phase 5、Phase 7A–7C 均已完成。
 - 未解决问题记录在 `docs/open-questions.md`。
 
 ## Phase 5 已完成要点
@@ -38,6 +39,11 @@
 - 字体滑块松开鼠标后生效，步进 0.05，并提供复位按钮。
 - 时间轴与右侧片段列表使用同一配色；未选中片段为半强度颜色；支持 Ctrl 多选。
 - 侧栏播放信息仅保留解码器（`mpv (vaapi)` 等实际 hwdec）、帧、视频、音频。
+- 音量控制：控制行最右侧（导出按钮上方）的音量按钮打开窄纵向音量条，
+  滚轮与滑块按 5% 步进调节并显示百分比；弹条外点击或 `Esc` 关闭。
+  预览区与时间轴的滚轮仍用于关键帧 seek（`Ctrl`+滚轮跳 10 秒）。
+  音量写入 `config.toml` 的 `[general] volume`，只在 mpv 预览后端生效；
+  外部 FFmpeg 回退预览没有增益级。
 - 未打开媒体时点击预览区任意位置打开文件；提示文字不可选择。
 - 拖动到时间轴末尾后 mpv 保持加载，拖回中间不再回退到慢速外部 FFmpeg 预览。
 - 上下文裁切快捷键：`Alt+I` 有 pending 切点时继续切点流程，否则选中片段内改片段头，

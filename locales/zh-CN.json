@@ -181,5 +181,6 @@
   "unsaved_changes": "有未保存的修改",
   "unsaved_changes_hint": "关闭前是否保存项目文件？",
   "video": "视频",
+  "volume": "音量",
   "waveform_generating": "正在生成音频波形, 进度: "
 }

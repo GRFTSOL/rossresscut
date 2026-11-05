@@ -241,6 +241,14 @@ impl MpvPreview {
             .map_err(|error| command_error("pause", error))
     }
 
+    /// Sets the playback volume in percent (0-100).
+    pub fn set_volume(&self, volume: u8) -> Result<(), MpvPreviewError> {
+        let volume = volume.min(100).to_string();
+        self.engine
+            .set_property("volume", volume.as_str())
+            .map_err(|error| command_error("set volume", error))
+    }
+
     /// Seeks to an absolute position.
     pub fn seek(&self, position: Timestamp) -> Result<(), MpvPreviewError> {
         let seconds = timestamp_seconds(position);

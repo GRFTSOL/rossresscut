@@ -245,6 +245,16 @@ impl RossresscutApp {
         });
     }
 
+    /// Applies `volume` in percent, clamped to 0-100.
+    pub(super) fn set_volume(&mut self, volume: u8) {
+        let volume = volume.min(100);
+        if self.settings.volume == volume {
+            return;
+        }
+        self.settings.volume = volume;
+        self.application.set_volume(volume);
+    }
+
     fn centered_spinner(&self, ui: &mut egui::Ui, message: String) {
         ui.with_layout(
             egui::Layout::centered_and_justified(egui::Direction::LeftToRight),

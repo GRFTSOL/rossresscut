@@ -34,6 +34,33 @@ const SEEK_GATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5)
 const SEEK_POSITION_SETTLE: std::time::Duration = std::time::Duration::from_millis(100);
 
 impl Playback {
+    /// Stores the playback volume and forwards it to the active backend.
+    pub(super) fn set_volume(&mut self, volume: u8) {
+        let volume = volume.min(100);
+        if self.volume == volume {
+            return;
+        }
+        self.volume = volume;
+        self.apply_mpv_volume();
+    }
+
+    /// Applies the stored volume to the mpv backend when it is running.
+    ///
+    /// The external FFmpeg preview fallback has no gain stage; volume only
+    /// affects the mpv backend.
+    #[cfg(feature = "mpv-preview")]
+    fn apply_mpv_volume(&mut self) {
+        let Some(mpv) = self.mpv.as_ref() else {
+            return;
+        };
+        if let Err(error) = mpv.set_volume(self.volume) {
+            log::warn!("could not apply the preview volume: {error}");
+        }
+    }
+
+    #[cfg(not(feature = "mpv-preview"))]
+    fn apply_mpv_volume(&mut self) {}
+
     #[cfg(feature = "mpv-preview")]
     fn start_mpv(&mut self, media: &MediaFile, start_paused: bool) -> bool {
         if !self.mpv_enabled || self.mpv_failed {
@@ -66,6 +93,7 @@ impl Playback {
                 self.mpv = Some(mpv);
                 self.mpv_has_audio = has_audio(media);
                 self.mpv_size = Some((width, height));
+                self.apply_mpv_volume();
                 true
             }
             Err(error) => {

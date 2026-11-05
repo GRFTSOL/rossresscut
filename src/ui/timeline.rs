@@ -9,9 +9,11 @@ use crate::domain::waveform::{Peak, Waveform};
 use super::dialogs::DialogError;
 use super::i18n::fill;
 use super::icons;
+use super::settings::save_settings;
 use super::{
     RossresscutApp, SEGMENT_COLORS, ShortcutAction, Strings, TIMELINE_HEIGHT,
-    TIMELINE_HEIGHT_AUDIO, WHEEL_LINE_POINTS, WHEEL_PAGE_LINES, WHEEL_STEP_POINTS,
+    TIMELINE_HEIGHT_AUDIO, VOLUME_STEP, WHEEL_LINE_POINTS, WHEEL_PAGE_LINES, WHEEL_STEP_POINTS,
+    stepped_volume,
 };
 
 impl RossresscutApp {
@@ -53,6 +55,13 @@ impl RossresscutApp {
         let row_height = 36.0;
         let estimated_row_width = 740.0 * ui.ctx().zoom_factor();
         let padding = ((ui.available_width() - estimated_row_width) * 0.5).max(0.0);
+        // The volume control is placed against the panel edge, so remember the
+        // full row rect: `allocate_ui_with_layout` reports only the content
+        // width for a non-justified layout.
+        let row_rect = egui::Rect::from_min_size(
+            ui.available_rect_before_wrap().left_top(),
+            egui::vec2(ui.available_width(), row_height),
+        );
         ui.allocate_ui_with_layout(
             egui::vec2(ui.available_width(), row_height),
             egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true),
@@ -232,6 +241,116 @@ impl RossresscutApp {
                 }
             },
         );
+
+        // The volume control sits at the far right of the control row, above
+        // the export button. `put` keeps it aligned with the panel edge even
+        // though the transport buttons are centred.
+        let volume_size = egui::vec2(32.0, 24.0);
+        let volume_rect = egui::Rect::from_center_size(
+            egui::pos2(
+                row_rect.right() - volume_size.x * 0.5 - 4.0,
+                row_rect.center().y,
+            ),
+            volume_size,
+        );
+        let volume = self.settings.volume;
+        let volume_icon = match volume {
+            0 => icons::VOLUME_MUTED,
+            1..=49 => icons::VOLUME_LOW,
+            _ => icons::VOLUME_HIGH,
+        };
+        let volume_response = ui
+            .put(
+                volume_rect,
+                egui::Button::new(volume_icon).min_size(volume_size),
+            )
+            .on_hover_text(format!("{} {}%", strings.volume, volume));
+        if volume_response.clicked() {
+            self.volume_popup_open = !self.volume_popup_open;
+            if !self.volume_popup_open {
+                save_settings(&self.settings);
+            }
+        }
+        if self.volume_popup_open {
+            self.volume_popup(ui.ctx(), &volume_response);
+        }
+    }
+
+    /// Vertical volume slider shown above the control row.
+    ///
+    /// The slider, the wheel and the preview overlay all step by
+    /// [`VOLUME_STEP`] percent. Saving is deferred until the popup closes so a
+    /// wheel spin does not rewrite `config.toml` on every notch.
+    fn volume_popup(&mut self, context: &egui::Context, anchor: &egui::Response) {
+        let was_open = self.volume_popup_open;
+        let mut volume = self.settings.volume;
+        let mut hovered = false;
+        // Keep the popup narrow: only a little padding around the rail and the
+        // percentage label.
+        let frame = egui::Frame::popup(context.global_style().as_ref())
+            .inner_margin(egui::Margin::symmetric(4, 6));
+        egui::Popup::from_response(anchor)
+            .open_bool(&mut self.volume_popup_open)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .align(egui::RectAlign::TOP_END)
+            .frame(frame)
+            .gap(6.0)
+            .show(|ui| {
+                // A fixed content width keeps the popup from resizing while
+                // the percentage changes; "100%" is the widest label.
+                let label_width = ui
+                    .painter()
+                    .layout_no_wrap(
+                        "100%".to_owned(),
+                        egui::TextStyle::Body.resolve(ui.style()),
+                        egui::Color32::WHITE,
+                    )
+                    .size()
+                    .x;
+                ui.set_width(label_width.max(ui.spacing().interact_size.y));
+                ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+                    ui.label(egui::RichText::new(format!("{volume}%")).strong());
+                    ui.add_space(2.0);
+
+                    // `Slider::ui` lays the vertical rail out left-aligned
+                    // inside its host, so place it in an explicitly centred
+                    // rect instead of relying on the parent alignment.
+                    let rail_width = ui.spacing().interact_size.y;
+                    let rail_height = 150.0;
+                    let (row, _) = ui.allocate_exact_size(
+                        egui::vec2(ui.available_width(), rail_height),
+                        egui::Sense::hover(),
+                    );
+                    ui.spacing_mut().slider_width = rail_height;
+                    ui.put(
+                        egui::Rect::from_center_size(
+                            row.center(),
+                            egui::vec2(rail_width, rail_height),
+                        ),
+                        egui::Slider::new(&mut volume, 0..=100)
+                            .vertical()
+                            .step_by(f64::from(VOLUME_STEP))
+                            .show_value(false),
+                    );
+                });
+                hovered = ui
+                    .input(|input| input.pointer.hover_pos())
+                    .is_some_and(|pos| ui.max_rect().contains(pos));
+            });
+
+        if hovered {
+            let (delta, _modifiers) = context.input(wheel_delta);
+            let steps = accumulate_wheel_steps(&mut self.volume_popup_wheel, delta);
+            if steps != 0.0 {
+                volume = stepped_volume(volume, steps as i32);
+            }
+        }
+        if volume != self.settings.volume {
+            self.set_volume(volume);
+        }
+        if was_open && !self.volume_popup_open {
+            save_settings(&self.settings);
+        }
     }
 
     fn timeline_bar(&mut self, ui: &mut egui::Ui) {
@@ -434,45 +553,10 @@ impl RossresscutApp {
     }
 
     pub(super) fn handle_wheel(&mut self, ui: &egui::Ui) {
-        let (delta, modifiers) = ui.input(|input| {
-            let mut delta = 0.0;
-            let mut modifiers = egui::Modifiers::NONE;
-            for event in &input.events {
-                if let egui::Event::MouseWheel {
-                    unit,
-                    delta: wheel,
-                    source,
-                    modifiers: event_modifiers,
-                    ..
-                } = event
-                {
-                    if *source == egui::MouseWheelSource::Momentum {
-                        continue;
-                    }
-                    let points = match unit {
-                        egui::MouseWheelUnit::Point => wheel.y,
-                        egui::MouseWheelUnit::Line => wheel.y * WHEEL_LINE_POINTS,
-                        egui::MouseWheelUnit::Page => {
-                            wheel.y * WHEEL_LINE_POINTS * WHEEL_PAGE_LINES
-                        }
-                    };
-                    delta += points;
-                    modifiers = *event_modifiers;
-                }
-            }
-            (delta, modifiers)
-        });
-
-        if delta == 0.0 {
-            return;
-        }
-        self.wheel_accumulator += delta;
-
-        let steps = (self.wheel_accumulator / WHEEL_STEP_POINTS).trunc();
+        let (steps, modifiers) = self.take_wheel_steps(ui);
         if steps == 0.0 {
             return;
         }
-        self.wheel_accumulator -= steps * WHEEL_STEP_POINTS;
 
         if modifiers.command {
             let count = steps.abs() as i64;
@@ -481,6 +565,16 @@ impl RossresscutApp {
         } else {
             self.application.step_keyframe(wheel_direction(steps) > 0);
         }
+    }
+
+    /// Converts this frame's wheel events into whole steps.
+    ///
+    /// Fractional point deltas from touchpads accumulate across frames so that
+    /// one wheel line is one step. The caller decides what a step means.
+    pub(super) fn take_wheel_steps(&mut self, ui: &egui::Ui) -> (f32, egui::Modifiers) {
+        let (delta, modifiers) = ui.input(wheel_delta);
+        let steps = accumulate_wheel_steps(&mut self.wheel_accumulator, delta);
+        (steps, modifiers)
     }
 }
 
@@ -636,6 +730,54 @@ pub(super) fn timestamp_at_x(rect: egui::Rect, x: f32, duration: MediaDuration) 
 /// keyframe / later position.
 pub(super) fn wheel_direction(steps: f32) -> i64 {
     if steps > 0.0 { 1 } else { -1 }
+}
+
+/// Vertical wheel delta in points for this frame.
+///
+/// Momentum scrolling is ignored so an inertial flick does not keep seeking
+/// or changing the volume.
+pub(super) fn wheel_delta(input: &egui::InputState) -> (f32, egui::Modifiers) {
+    let mut delta = 0.0;
+    let mut modifiers = egui::Modifiers::NONE;
+    for event in &input.events {
+        if let egui::Event::MouseWheel {
+            unit,
+            delta: wheel,
+            source,
+            modifiers: event_modifiers,
+            ..
+        } = event
+        {
+            if *source == egui::MouseWheelSource::Momentum {
+                continue;
+            }
+            let points = match unit {
+                egui::MouseWheelUnit::Point => wheel.y,
+                egui::MouseWheelUnit::Line => wheel.y * WHEEL_LINE_POINTS,
+                egui::MouseWheelUnit::Page => wheel.y * WHEEL_LINE_POINTS * WHEEL_PAGE_LINES,
+            };
+            delta += points;
+            modifiers = *event_modifiers;
+        }
+    }
+    (delta, modifiers)
+}
+
+/// Converts a point delta into whole [`WHEEL_STEP_POINTS`] steps.
+///
+/// The remainder stays in `accumulator`, so a slow touchpad scroll still
+/// reaches a step instead of being discarded every frame.
+pub(super) fn accumulate_wheel_steps(accumulator: &mut f32, delta: f32) -> f32 {
+    if delta == 0.0 {
+        return 0.0;
+    }
+    *accumulator += delta;
+    let steps = (*accumulator / WHEEL_STEP_POINTS).trunc();
+    if steps == 0.0 {
+        return 0.0;
+    }
+    *accumulator -= steps * WHEEL_STEP_POINTS;
+    steps
 }
 
 /// Width that fits a full `HH:MM:SS.mmm` timestamp in the current font.
