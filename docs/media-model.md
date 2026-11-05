@@ -350,7 +350,8 @@ title: Option<String>
 
 ## 3. 序列化
 
-领域模型当前派生 `Serialize`。`Deserialize` 留到项目持久化阶段，并需要校验 `TimeBase` 的零值不变式。
+领域模型派生 `Serialize`。项目文件（`.rrc`，ADR 0012）使用独立的持久化结构，
+反序列化时校验 `TimeBase` 零值不变式、Segment 顺序与 `SegmentId` / `next_id` 一致性。
 
 ---
 
@@ -358,13 +359,14 @@ title: Option<String>
 
 播放位置属于应用状态，不属于 `MediaFile` 或 `Timeline`。
 
-- 有音轨且音频设备可用时，位置由音频输出设备实际消费的样本帧推进：
+- 主路径使用 libmpv：位置来自 `time-pos`，它跟随音频输出；无音轨时同一时钟仍然有效。
+- 外部 FFmpeg 回退路径由 `cpal` 实际消费的样本帧推进：
 
 ```text
 position = start_position + played_frames / sample_rate
 ```
 
-- 无音轨、音频设备不可用或音频输出格式不支持时，才使用墙钟。
+- 只有 mpv 不可用、无音频输出或回退路径时才使用墙钟。
 - 视频帧只显示 `timestamp <= position` 的最新帧，因此音频是主时钟，视频可以丢帧但不能累积漂移。
 - 快速 scrub 使用关键帧 seek，位置是近似值，不能用于 Segment 边界、编辑结果或导出。
 - 释放时间轴或执行播放 seek 时必须使用精确 seek。

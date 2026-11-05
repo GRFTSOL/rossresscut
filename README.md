@@ -9,9 +9,11 @@
 
 ## 当前状态
 
-Phase 5 已完成：单段与多段无损导出、时间轴、片段编辑、导出章节、配置与快捷键。
+Phase 7 已完成：时间轴与片段编辑、单段与多段无损导出、章节、波形、项目文件、
+批处理与合并、场景检测与静音切分、字幕与流选择、智能裁切。
 
-尚未完成：字幕与流选择、项目管理、Windows / macOS 文件对话框与发布流程。详见 `PLANS.md` 与 `docs/open-questions.md`。
+Phase 8（Linux 发布）进行中：pacman 包与桌面集成已完成；剩余许可证与
+Windows / macOS 发布。详见 `PLANS.md` 与 `docs/open-questions.md`。
 
 ## 已知限制
 
@@ -53,6 +55,7 @@ cargo build --release
 | 硬约束与入口 | `AGENTS.md` |
 | 产品目标 | `GOALS.md` |
 | 阶段计划 | `PLANS.md` |
+| 已完成阶段记录 | `docs/history/completed-phases.md` |
 | 贡献流程 | `CONTRIBUTING.md` |
 | 发布流程 | `RELEASING.md` |
 | 架构 | `docs/architecture.md` |

@@ -23,6 +23,7 @@
 | Claude 系 agent 入口 | `CLAUDE.md` |
 | 未解决问题 | `docs/open-questions.md` |
 | 架构决策 / 调查记录 | `docs/decisions/`、`docs/investigations/` |
+| 已完成阶段记录 | `docs/history/` |
 
 ## 硬约束
 
@@ -30,7 +31,7 @@
   运行时（Electron、Tauri、WebView、Node.js 等），以保持低内存占用与快速启动。
 - 项目代码保持 `unsafe_code = "forbid"`。FFI 与 `unsafe` 只能存在于依赖内部；GPU 句柄不得越过 `media::preview` 与 UI 渲染适配层。
 - 媒体时间必须使用整数 `Timestamp` / `Duration` / `TimeBase`，禁止用 `f32` / `f64` 秒作为唯一表示。
-- UI 帧内不得执行 FFmpeg、FFprobe、解码、缩略图/波形生成或阻塞等待。Domain 与 Media 不得依赖 egui。
+- UI 帧内不得执行 FFmpeg、FFprobe、解码、波形生成或阻塞等待。Domain 与 Media 不得依赖 egui。
 - 所有领域状态修改必须经由 Application 命令；UI 只构造参数、发送命令、显示结果。
 - 导出与探测使用外部 FFmpeg / FFprobe，参数逐项传递；禁止通过 shell 拼接命令。
 - 默认 `stream copy`。需要重新编码时必须给出具体原因并告知用户，不得把重编码标记为无损，也不得静默降级。

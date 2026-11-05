@@ -98,7 +98,7 @@ let first = segments.first().unwrap();
 - GPU 纹理句柄只在 `media::preview` 与 UI 渲染适配层之间按帧传递，
   不得进入 Domain、编辑状态或持久化。
 - 升级 `mpv-engine` / `wgpu` 时必须重新审查其 safe API 边界是否仍成立。
-- 必须有不依赖具体硬件的测试，以及硬件路径与软件路径的一致性测试（见 §十七）。
+- 必须有不依赖具体硬件的测试，以及硬件路径与软件路径的一致性测试（见「测试」一节）。
 
 #### 理由
 
@@ -147,6 +147,7 @@ let first = segments.first().unwrap();
 - `AGENTS.md`：入口与不可违背的硬约束。
 - `GOALS.md`：产品目标与非目标。
 - `PLANS.md`：阶段划分与当前任务。
+- `docs/history/completed-phases.md`：已完成阶段的任务、验证记录与已知限制。
 - `CONTRIBUTING.md`：贡献流程。
 - `RELEASING.md`：发布流程。
 - `docs/architecture.md`：分层与数据流。
@@ -315,7 +316,7 @@ tests/fixtures/
 
 不要为了“看起来高级”持续运行后台任务。
 
-缩略图、波形、场景检测等昂贵操作应该：
+波形、场景检测等昂贵操作应该：
 
 - 按需执行
 - 后台执行

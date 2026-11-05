@@ -1,6 +1,6 @@
 # 0010 预览后端：mpv-engine export + wgpu（方案 F）
 
-- 状态：已接受；实现未开始
+- 状态：已接受；实现完成（Phase 4C 步骤 1–8，旧预览路径保留为回退）
 - 日期：2026-10-26
 - 阶段：Phase 4C 修订
 - 取代：`0009-preview-decode-zero-copy.md` 的预览解码决策；

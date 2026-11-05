@@ -12,7 +12,6 @@
 - FFprobe
 - 视频解码
 - 大量文件读取
-- 缩略图生成
 - 波形生成
 - 场景检测
 - 大规模数据处理
@@ -99,8 +98,9 @@ UI 不允许直接修改领域状态。
 - 自动主题只在启动、打开设置或切换自动主题时检测，不做周期轮询。
 - 设置页按“常规 / 导出 / 快捷键”分组并可折叠；快捷键可录制、可为空，修改后即时生效。
 - “查看”菜单提供全屏、复位 / 增大 / 减小字体大小；设置入口保留在顶部按钮。
-- 快捷键默认值：Space 播放/暂停、I 添加切点、O 删除切点、Enter 分割、
-  Escape 清除标记、Ctrl+W 关闭媒体、Ctrl+, 打开设置；编辑动作默认
+- 快捷键默认值：Space 播放/暂停、Alt+I 添加切点、Alt+O 删除切点、Alt+B 分割、
+  Delete 删除选中片段、Escape 清除标记、Ctrl+W 关闭媒体、Ctrl+, 打开设置；
+  ArrowUp / ArrowDown 选择上/下片段，Alt+Left / Alt+Right 跳转上/下关键帧；编辑动作默认
   Ctrl+Z / Ctrl+Shift+Z / Ctrl+X / Ctrl+C / Ctrl+V / Ctrl+A。设置以 TOML 持久化到
   `$XDG_CONFIG_HOME/rossresscut/config.toml`（回退到 `~/.config`）。
 - 侧栏播放信息只显示解码器（实际 hwdec）、帧、视频、音频；不显示媒体文件信息块。

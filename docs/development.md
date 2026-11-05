@@ -23,7 +23,7 @@ cargo fmt --all --check
 - 工具链版本由 `rust-toolchain.toml` 固定，避免不同机器行为差异；升级工具链属于独立变更。
 - 命令块中的参数与 `clippy` 的 `-D warnings` 不得为了绕过报错而删减。
 - `fuck-u-code analyze` 的 `Overall Score`（及 JSON 里的 `score`）**越高越好**；文本报告中的 `Issue Score` 是反向值（`100 - score`），越高越差；`Metrics Details` 里的百分比是问题占比，越低越好。
-- `fuck-u-code` 的函数级指标依赖 `tree-sitter-wasms` 的 WASM 语法文件。pnpm 全局安装不会把它链接进 `eff-u-code/node_modules`，缺失时工具会**静默降级到 regex parser**，把整个 `impl` 块当成一个函数，函数长度与复杂度全部失真。
+- `fuck-u-code` 的函数级指标依赖 `tree-sitter-wasms` 的 WASM 语法文件。pnpm 全局安装不会把它链接进 `fuck-u-code/node_modules`，缺失时工具会**静默降级到 regex parser**，把整个 `impl` 块当成一个函数，函数长度与复杂度全部失真。
 
   判断方法：输出里出现 `Tree-sitter init failed for rust, falling back to regex parser` 就说明数据不可信；此时以 `cargo clippy -W clippy::too_many_lines` 为准。
 
@@ -31,7 +31,7 @@ cargo fmt --all --check
 
   ```bash
   PNPM_GLOBAL=$(pnpm root -g)
-  for dir in "$PNPM_GLOBAL"/.pnpm/eff-u-code@*/node_modules/eff-u-code/node_modules; do
+  for dir in "$PNPM_GLOBAL"/.pnpm/fuck-u-code@*/node_modules/fuck-u-code/node_modules; do
     ln -s "$PNPM_GLOBAL"/.pnpm/tree-sitter-wasms@*/node_modules/tree-sitter-wasms "$dir/tree-sitter-wasms"
   done
   ```

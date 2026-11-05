@@ -55,7 +55,7 @@ libmpv（进程内：预览解码与音频）
 - Domain → UI / egui
 - Media → UI / egui
 - FFmpeg 输出 → UI
-- `media::platform` 的 FFI / GPU 句柄类型 → Domain / Application / UI
+- `media::preview` 的 GPU 纹理 / FFI 句柄类型 → Domain / Application / UI
 
 核心媒体逻辑必须能在不启动图形界面的情况下测试。
 
@@ -162,6 +162,9 @@ ExportRequest
 - 预览视频帧解码（`mpv-engine` / libmpv，进程内，GPU-resident）
 - 预览音频输出（libmpv `ao`）
 - 关键帧索引（外部 ffprobe 读取 packet flags，不输入解码）
+- 文本字幕提取、裁剪与重新 mux（`media/subtitle.rs`）
+- 场景检测（`media/scene.rs`，外部 FFmpeg 只输出时间戳）
+- 导出结果合并（`media/export/merge.rs`，只 remux）
 
 Phase 4B 修订后的预览边界（ADR 0010）：
 
@@ -217,9 +220,10 @@ FFmpeg export / probe (external process)
 Preview decode (libmpv via mpv-engine, in-process)
 Keyframe indexing
 Audio output (libmpv ao; cpal only in the FFmpeg fallback)
-Thumbnail
 Waveform
 Scene Detection
+Silence Detection
+Batch / Merge export
 ```
 
 不得在 egui update 中同步执行。
@@ -382,11 +386,42 @@ docs/decisions/
 0007-segment-editing-basics.md
 0008-segment-timeline-semantics.md
 0009-preview-decode-zero-copy.md
+0010-preview-via-mpv-engine.md
+0011-waveform-in-timeline.md
+0012-project-and-settings-format.md
+0013-smart-cut.md
+0014-smart-cut-encoding-defaults.md
 ```
 
 ---
 
-# 十一、当前代码结构（Phase 5）
+# 十一、项目、批处理与派生数据
+
+## 项目文件（ADR 0012）
+
+- `.rrc` 保存源路径、有序 Segment、`SegmentId` / `next_id` 与章节标题。
+- 不保存媒体元数据、关键帧、波形与场景检测结果；打开项目时重新 probe。
+- 源文件缺失时只读加载，允许重新绑定后才能导出。
+- 自动保存按编辑后 2 秒节流；关闭媒体 / 窗口 / 应用时若有未保存修改则询问。
+
+## 批处理与合并
+
+- 批处理对队列中的每个文件套用当前 Timeline 的 enabled Segment。
+- 每个文件在后台 probe + 导出，输出到源文件旁或导出目录；UI 不阻塞。
+- 合并先导出各文件，再用 concat demuxer remux；不重新编码，不生成章节。
+- 批处理与合并都不替换当前打开的媒体。
+
+## 派生数据
+
+- 波形、关键帧索引、场景检测与静音检测结果都是派生数据，不进入项目文件。
+- 波形：外部 FFmpeg 解码为 `s16le`，折叠为 min/max peak（ADR 0011）。
+- 场景检测：外部 FFmpeg `select=gt(scene,N),showinfo`，只解析时间戳。
+- 静音切分：复用波形 peak，在静音区间中点分割。
+- 所有派生数据都在后台线程生成，UI 只轮询结果。
+
+---
+
+# 十二、当前代码结构（Phase 7）
 
 ```text
 src/
@@ -401,42 +436,59 @@ src/
 │   ├── editing.rs             标记、选择、剪贴板、撤销/重做、Segment 命令
 │   ├── playback.rs            Playback 播放引擎：时钟、解码、mpv 后端与回退
 │   ├── waveform.rs            波形后台提取、`has_audio` 与 `poll_waveform`
-│   └── export.rs              ExportStatus、ExportJob（单段 / 多段）、导出命令错误
+│   ├── export.rs              ExportStatus、ExportJob（单段 / 多段）、导出命令错误
+│   ├── batch.rs               批处理队列：对多个文件逐个 probe + 导出
+│   ├── chapters.rs            导出章节标题（按 `SegmentId` 保存）
+│   ├── project.rs             `.rrc` 项目文件保存 / 恢复与源文件重新绑定
+│   ├── scene.rs               后台场景扫描、状态与结果写入 Timeline
+│   └── silence.rs             静音检测自动建片段（复用波形 peak）
 ├── domain/
 │   ├── media.rs               MediaFile / MediaFormat / 流 / Chapter / KeyframeIndex
 │   ├── segment.rs             Segment / SegmentId / Timeline（有序 EDL、稳定身份）
 │   ├── time.rs                TimeBase / Timestamp / Duration / FrameRate
-│   └── waveform.rs            Peak / Waveform（音频包络与按列聚合）
+│   ├── waveform.rs            Peak / Waveform（音频包络与按列聚合）
+│   └── silence.rs             静音区间检测与中点切分规则
 ├── media/
 │   ├── export/
 │   │   ├── mod.rs             ExportProcess、进度/结束事件、取消与回收
 │   │   ├── command.rs         ExportRequest 与 FFmpeg stream-copy 参数
 │   │   ├── concat.rs          多段切片、concat demuxer、临时目录生命周期
-│   │   └── progress.rs        `-progress pipe:1` 解析
+│   │   ├── progress.rs        `-progress pipe:1` 解析
+│   │   ├── chapters.rs        `ffmetadata` 章节文件生成
+│   │   ├── merge.rs           已导出文件的 concat 合并（只 remux）
+│   │   ├── planning.rs        多段智能裁切规划与 seek 落点探测
+│   │   └── smart_cut.rs       智能裁切分段：编码头/尾 + 无损中段
 │   ├── ffprobe/
 │   │   ├── mod.rs             FFprobe 进程封装与 ProbeError
 │   │   ├── raw.rs             私有 serde 结构（JSON 边界）
 │   │   ├── parse.rs           JSON → 领域模型
-│   │   └── keyframes.rs       packet flags → 关键帧索引
+│   │   ├── keyframes.rs       packet flags → 关键帧索引
+│   │   ├── packets.rs         包首/末时间戳边界（拼接对齐）
+│   │   └── seek.rs            探测输入 seek 的实际落点
 │   ├── preview/
 │   │   ├── mod.rs             PreviewError、共享进程清理与参数格式化
 │   │   ├── mpv.rs             mpv-engine 封装：生命周期、export、帧获取、命令与事件
 │   │   ├── video.rs           回退路径：ffmpeg RGB 帧解码、硬件解码选择、背压、seek
 │   │   └── audio.rs           回退路径：ffmpeg PCM 解码 + cpal 输出
+│   ├── scene.rs               外部 FFmpeg 场景检测（只解析时间戳）
+│   ├── subtitle.rs            文本字幕提取、裁剪与重新 mux
 │   └── waveform.rs            ffmpeg → s16le，折叠为 min/max peak
 └── ui/
     ├── mod.rs                 RossresscutApp 状态、窗口入口与 `eframe::App`
     ├── actions.rs             快捷键分发、片段输入框同步
     ├── timeline.rs            时间轴与波形绘制、播放控件、滚轮与坐标换算
     ├── preview.rs             预览绘制、texture 上传、渲染诊断
-    ├── panels.rs              右侧信息与片段面板、导出状态行
+    ├── panels.rs              右侧播放信息、片段与章节面板、导出状态行
     ├── menu.rs                菜单栏
-    ├── windows.rs             设置、关于、导出面板、上一条 FFmpeg 命令
+    ├── windows.rs             设置、关于、导出面板、批处理、对话框窗口
     ├── settings.rs            UiSettings、config.toml 读写、主题检测与 `apply_theme`
     ├── shortcuts.rs           ShortcutAction、Shortcut 解析与默认绑定
     ├── fonts.rs               字体发现与字体选择器
-    ├── dialogs.rs             XDG 门户文件/目录选择
+    ├── dialogs.rs             XDG 门户文件/目录选择与关闭确认
+    ├── diagnostics.rs         测试用诊断驱动（预览尺寸、自动播放等）
+    ├── icons.rs               Nerd Font 图标字形常量
     └── i18n.rs                语言枚举、强类型字符串与嵌入资源
+```
 
 locales/
 ├── en.json
@@ -519,14 +571,15 @@ UI 布局：
 顶部：菜单栏（File / View / Help）、设置按钮、当前媒体标题（不含扩展名）
 中央：视频预览（点击切换播放 / 暂停，滚轮按关键帧步进）
 右侧：播放信息（mpv Tab 风格）在上；Segment 列表（输出顺序，添加切点 / 删除切点 / 上移 / 下移 / 分割）在下
-底部：时间轴单独一行；下方是播放控制（15 个符号按钮 + 片段起止时间输入框）；右下角为 Export 按钮
+底部：时间轴单独一行；下方是播放控制（13 个控制按钮 + 音量按钮 + 片段起止时间输入框）；右下角为 Export 按钮
 ```
 
 设置页：
 
 ```text
-主题：跟随系统主题复选框 + Dark / Light 下拉框
-语言：English / 简体中文
+常规：主题、界面语言、字体与缩放、波形 / 保留被截断字幕等
+导出：输出目录、章节开关、智能裁切与码率
+快捷键：可分组折叠、可录制、可为空
 ```
 
 主题、语言与 egui memory（流折叠状态、窗口尺寸）通过 eframe storage 持久化。
@@ -546,7 +599,7 @@ mod + 滚轮 → ±10 秒
 Segment 编辑流程：
 
 ```text
-UI: I / O / Buttons / Enter
+UI: Alt+I / Alt+O / Alt+B / Delete / Buttons
         ↓
 Application: set_in_point / set_out_point / add_segment
         ↓

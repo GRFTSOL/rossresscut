@@ -83,7 +83,7 @@ ffplay -nodisp -vn -autoexit -loglevel error -ss <position> -i <path>
 - 运行依赖 `ffmpeg`、`ffprobe` 与音频输出设备；`ffplay` 已不再需要（见 0004）。
 - 预览后端不是媒体处理后端：导出、裁切与合并仍只使用 FFmpeg。浏览器式的“第二套媒体处理栈”担忧不适用于预览。
 - 当前仍使用外部 FFmpeg 帧解码；是否改用 libmpv 需要单独评估（安全绑定 / IPC、FFI 禁令、窗口嵌入）并另立 ADR。
-- 参考：LosslessCut 的预览使用 Chromium HTML5 `<video>` + Media Source Extensions，seek 时重启 FFmpeg 流而不是逐次启动 CLI；调研记录见 `PLANS.md` 的“预览性能与音画同步待办”。
+- 参考：LosslessCut 的预览使用 Chromium HTML5 `<video>` + Media Source Extensions，seek 时重启 FFmpeg 流而不是逐次启动 CLI；调研记录见 `docs/history/completed-phases.md` 的「预览性能与音画同步待办」。
 - A/V 同步由 0004 的音频主时钟驱动，受音频设备缓冲延迟影响。
 - 预览固定 30fps、最大 960x540，不保留源时间戳与帧精确性。导出与编辑必须使用 FFmpeg 和源时间戳，不能依赖预览时间。
 - `-ss` 输入 seek 是预览 seek，不保证帧精确；拖动时使用快速关键帧 seek，最终 seek 使用精确 seek（见 0004）。
