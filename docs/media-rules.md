@@ -215,6 +215,11 @@ stream copy
 - 不能把重新编码操作标记成无损操作。
 - 必须显式传递源的 `pix_fmt` 与 color range / space / transfer / primaries，
   保留 10-bit/HDR 元数据；不得用预览的 8-bit 帧作为重编码输入。
+- Smart cut 重编码固定使用性价比 preset（x264 `faster`、x265 `veryfast`、
+  SVT-AV1 preset 9）；码率默认取需编码片段的源平均码率 × 1.5，可在设置中
+  改为固定 kbps。决策见 `docs/decisions/0014-smart-cut-encoding-defaults.md`。
+- VFR 素材的编码段必须使用 `-fps_mode passthrough`，并按切点附近真实 PTS
+  计算局部帧时长；图形字幕保持 stream copy，由 concat 重定基。
 
 ### 降级原因必须具体
 

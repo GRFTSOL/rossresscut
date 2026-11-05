@@ -74,4 +74,27 @@ ffmpeg -y -hide_banner -loglevel error \
     -shortest -f mpegts \
     tests/fixtures/sample.ts
 
+# Graphical subtitles: FFmpeg has no PGS/DVD/DVB encoder, so this fixture is
+# built with GStreamer's dvbsubenc and then remuxed to Matroska.
+if command -v gst-launch-1.0 >/dev/null 2>&1 \
+    && gst-inspect-1.0 dvbsubenc >/dev/null 2>&1; then
+    gst-launch-1.0 -e \
+        videotestsrc num-buffers=30 pattern=smpte \
+        ! video/x-raw,width=80,height=60,framerate=10/1 \
+        ! tee name=t \
+        t. ! queue ! x264enc bitrate=100 key-int-max=10 tune=zerolatency \
+        ! h264parse ! mux. \
+        t. ! queue ! textoverlay text=Hi font-desc='Sans 10' \
+        ! videoconvert ! video/x-raw,format=AYUV ! dvbsubenc ! mux. \
+        mpegtsmux name=mux ! filesink location=tests/fixtures/dvb_subtitles.ts \
+        >/dev/null
+    ffmpeg -y -hide_banner -loglevel error \
+        -i tests/fixtures/dvb_subtitles.ts -map 0 -c copy \
+        -muxdelay 0 -muxpreload 0 \
+        tests/fixtures/dvb_subtitles.mkv
+    rm -f tests/fixtures/dvb_subtitles.ts
+else
+    echo "warning: gst-launch-1.0 with dvbsubenc is required to regenerate dvb_subtitles.mkv" >&2
+fi
+
 echo "fixtures regenerated"

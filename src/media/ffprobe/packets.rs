@@ -49,6 +49,143 @@ pub fn probe_packet_bounds(
     Ok(parse_bounds(&stdout))
 }
 
+/// Reads the average video bit rate of `selector` inside `[start, end)`.
+///
+/// `start` and `end` are absolute container timestamps. Returns `Ok(None)`
+/// when the range has no packets.
+pub fn probe_average_bit_rate(
+    path: &Path,
+    selector: &str,
+    start: Timestamp,
+    end: Timestamp,
+) -> Result<Option<u64>, ProbeError> {
+    if end <= start {
+        return Ok(None);
+    }
+    let seconds = |time: Timestamp| format!("{:.6}", time.micros() as f64 / 1_000_000.0);
+    let interval = format!("{}%{}", seconds(start), seconds(end));
+    let output = Command::new("ffprobe")
+        .arg("-v")
+        .arg("error")
+        .arg("-select_streams")
+        .arg(selector)
+        .arg("-read_intervals")
+        .arg(interval)
+        .arg("-show_entries")
+        .arg("packet=size")
+        .arg("-of")
+        .arg("csv=p=0")
+        .arg(path)
+        .output()
+        .map_err(|source| ProbeError::Spawn {
+            path: path.to_path_buf(),
+            source,
+        })?;
+
+    if !output.status.success() {
+        return Err(ProbeError::Failed {
+            path: path.to_path_buf(),
+            status: output.status.to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        });
+    }
+
+    let stdout = String::from_utf8(output.stdout).map_err(|source| ProbeError::OutputNotUtf8 {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    Ok(bit_rate_from_size(parse_total_size(&stdout), start, end))
+}
+
+fn parse_total_size(output: &str) -> u64 {
+    output
+        .lines()
+        .filter_map(|line| line.trim().parse::<u64>().ok())
+        .fold(0_u64, u64::saturating_add)
+}
+
+fn bit_rate_from_size(bytes: u64, start: Timestamp, end: Timestamp) -> Option<u64> {
+    let micros = end.micros().checked_sub(start.micros())?;
+    let micros = u64::try_from(micros).ok()?;
+    if micros == 0 || bytes == 0 {
+        return None;
+    }
+    bytes
+        .checked_mul(8)?
+        .checked_mul(1_000_000)?
+        .checked_div(micros)
+}
+
+/// Reads the largest local frame duration of `selector` around `center`.
+///
+/// The window is clamped to the start of the file. Returns `Ok(None)` when the
+/// window has fewer than two packets. Used to pick smart-cut margins on VFR
+/// sources, where the average frame rate is not the local frame duration.
+pub fn probe_frame_duration(
+    path: &Path,
+    selector: &str,
+    center: Timestamp,
+    window: Duration,
+) -> Result<Option<Duration>, ProbeError> {
+    let start = Timestamp::from_micros(
+        center
+            .micros()
+            .saturating_sub(i64::try_from(window.micros()).unwrap_or(i64::MAX))
+            .max(0),
+    );
+    let end = Timestamp::from_micros(
+        center
+            .micros()
+            .saturating_add(i64::try_from(window.micros()).unwrap_or(i64::MAX)),
+    );
+    let seconds = |time: Timestamp| format!("{:.6}", time.micros() as f64 / 1_000_000.0);
+    let interval = format!("{}%{}", seconds(start), seconds(end));
+    let output = Command::new("ffprobe")
+        .arg("-v")
+        .arg("error")
+        .arg("-select_streams")
+        .arg(selector)
+        .arg("-read_intervals")
+        .arg(interval)
+        .arg("-show_entries")
+        .arg("packet=pts_time")
+        .arg("-of")
+        .arg("csv=p=0")
+        .arg(path)
+        .output()
+        .map_err(|source| ProbeError::Spawn {
+            path: path.to_path_buf(),
+            source,
+        })?;
+
+    if !output.status.success() {
+        return Err(ProbeError::Failed {
+            path: path.to_path_buf(),
+            status: output.status.to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        });
+    }
+
+    let stdout = String::from_utf8(output.stdout).map_err(|source| ProbeError::OutputNotUtf8 {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    Ok(parse_frame_duration(&stdout))
+}
+
+fn parse_frame_duration(output: &str) -> Option<Duration> {
+    let mut timestamps: Vec<Timestamp> = output
+        .lines()
+        .filter_map(|line| Timestamp::from_seconds(line.trim()))
+        .collect();
+    timestamps.sort_unstable();
+    timestamps
+        .windows(2)
+        .filter_map(|window| window[1].duration_since(window[0]))
+        .filter(|delta| delta.micros() > 0 && delta.micros() <= 500_000)
+        .max()
+}
+
 fn command_for(path: &Path, selector: &str) -> Command {
     let mut command = Command::new("ffprobe");
     command
@@ -129,8 +266,33 @@ mod tests {
     }
 
     #[test]
+    fn sums_packet_sizes_and_converts_to_bits_per_second() {
+        let total = parse_total_size("1000\n2500\n");
+        assert_eq!(total, 3500);
+        assert_eq!(
+            bit_rate_from_size(total, Timestamp::ZERO, Timestamp::from_micros(1_000_000)),
+            Some(28_000)
+        );
+        assert_eq!(
+            bit_rate_from_size(0, Timestamp::ZERO, Timestamp::from_micros(1)),
+            None
+        );
+    }
+
+    #[test]
+    fn picks_the_largest_local_frame_duration() {
+        let output = "0.000000\n0.008333\n0.016667\n0.041667\n0.066667\n";
+        assert_eq!(
+            parse_frame_duration(output),
+            Some(Duration::from_micros(25_000))
+        );
+        assert_eq!(parse_frame_duration("0.000000\n"), None);
+    }
+
+    #[test]
     fn returns_none_without_packets() {
         assert_eq!(parse_bounds(""), None);
         assert_eq!(parse_bounds("N/A,\n"), None);
+        assert_eq!(parse_total_size(""), 0);
     }
 }

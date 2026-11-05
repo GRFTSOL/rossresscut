@@ -21,62 +21,18 @@
   OQ-26（规划阶段探测 seek 落点，稀疏 cue 容器可用 smart cut）、OQ-16（用户
   决定不做复杂 metadata 与源章节编辑，现有功能足够）、OQ-17（4K60、1080p60、
   VFR、字幕与章节端到端拼接验证通过，见
-  `docs/investigations/multi-segment-concat.md`）。历史见
+  `docs/investigations/multi-segment-concat.md`）、OQ-18（导出 UI 由
+  `scripts/ui_export_smoke.py` 自动断言运行、完成与取消状态）、OQ-22（保持软件
+  编码；preset 与码率见
+  `docs/decisions/0014-smart-cut-encoding-defaults.md`）、OQ-23（VFR 帧时长改为
+  按切点附近 PTS 计算，编码段使用 `-fps_mode passthrough`；见
+  `docs/decisions/0013-smart-cut.md`）、OQ-24（DVB 图形字幕 smart cut 回归见
+  `tests/smart_cut_export.rs::smart_cut_keeps_graphical_subtitles_in_range`）。
+  历史见
   `docs/decisions/0009-preview-decode-zero-copy.md`、
   `docs/decisions/0010-preview-via-mpv-engine.md`、`docs/decisions/0013-smart-cut.md`
   与 git 历史。
 
 ---
 
-## 多段导出（来源：Phase 5 / `docs/investigations/multi-segment-concat.md`）
-
-### OQ-18 多段导出的 UI 交互自动化
-
-**问题**：导出按钮、进度、取消只做了启动冒烟，没有自动化 UI 交互测试。
-
-**当前状态**：`scripts/ui_a11y.py` 已提供 AT-SPI 读取与点击基础设施，导出流程尚未接入。
-
-**影响**：UI 回归只能靠人工。
-
-**计划时机**：需要稳定的 UI 回归时。
-
-**解除条件**：能自动触发导出并断言进度、完成与取消状态。
-
-## 智能裁切（来源：Phase 7C / `docs/decisions/0013-smart-cut.md`）
-
-### OQ-22 智能裁切的编码后端
-
-**问题**：当前只使用软件编码器（`libx264` / `libx265` / `libsvtav1` 等）。
-硬件编码器（NVENC / VAAPI / VideoToolbox）未接入。
-
-**当前状态**：未实现。
-
-**影响**：长片段重编码时 CPU 占用高；没有硬件编码器的机器无法加速。
-
-**计划时机**：出现真实性能需求时；必须先决定是否允许依赖 GPU 编码能力。
-
-**解除条件**：有 ADR 记录硬件编码的使用边界与降级语义。
-
-### OQ-23 智能裁切的 VFR 与音画接缝
-
-**问题**：VFR 素材用平均帧率计算一帧时长；编码段与无损段的音频接缝未测量不连续。
-
-**当前状态**：未验证。
-
-**影响**：VFR 下可能多丢或少丢一帧；接缝处可能有一帧级的音频不连续。
-
-**计划时机**：有 VFR 素材或用户报告音画问题时。
-
-**解除条件**：有基于源 PTS 的帧时长计算，或实测证明接缝不可感知。
-
-### OQ-24 智能裁切与图形字幕
-
-**问题**：智能裁切把片段拆成两个子片段，图形字幕（PGS/DVD/DVB）仍按原样 stream copy。
-
-**当前状态**：未验证。
-
-**影响**：图形字幕可能出现在错误的子片段边界，或 concat 后错位。
-
-**计划时机**：有图形字幕素材的真实需求时。
-
-**解除条件**：有测试覆盖图形字幕的智能裁切导出。
+当前没有未解决问题。

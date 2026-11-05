@@ -562,6 +562,7 @@ re-encode
 - [x] 不兼容情况处理（FFmpeg 错误向上传递并显示）
 - [x] 顺序护栏测试（导出必须读取 Timeline 既有顺序，不得按 start 重排）
 - [x] 回归测试（含非关键帧起点、重叠 Segment、取消）
+- [x] 导出 UI 自动化：`scripts/ui_export_smoke.py` 通过 AT-SPI 驱动运行、完成与取消
 
 验证记录（2026-10-26）：
 
@@ -569,10 +570,11 @@ re-encode
 - `tests/application_export.rs`：完整 `Application` 流程（open → 3 个 Segment → start_export → poll），输出顺序为 Timeline 顺序。
 - `tests/export.rs`：单段 stream copy 不变，codec / 分辨率 / 采样率 / 声道数一致。
 - `cargo test`、`cargo clippy --all-targets --all-features -- -D warnings`、`cargo fmt --check` 全部通过。
-- 未做 4K / 60fps / VFR / 字幕 / 章节验证；见 `docs/open-questions.md`。
 - 2026-11-05 完成 4K60（HEVC / AV1-WebM）、1080p60、真实 VFR、含文本字幕与
   章节素材的多段导出验证；拼接处无额外帧间隙。详见
   `docs/investigations/multi-segment-concat.md` 的「2026-11-05」一节。
+- `scripts/ui_export_smoke.py` 在 headless cage 中自动完成两次导出：一次断言
+  运行中与完成状态、输出时长与章节；一次在运行中取消并断言没有残留输出。
 
 ## 研究任务（不复制代码）
 
@@ -740,8 +742,8 @@ ADR：`docs/decisions/0012-project-and-settings-format.md`。
 
   - `-ss` 输入 seek 不会重写字幕包时间戳，因此必须替换源字幕轨；
     替换后数据流与附件（字体等）不再复制。
-  - 图形字幕（`hdmv_pgs_subtitle` / `dvd_subtitle` / `dvb_subtitle`）不处理，
-    保持 FFmpeg 原来的 stream copy 行为。
+  - 图形字幕（`hdmv_pgs_subtitle` / `dvd_subtitle` / `dvb_subtitle`）不裁剪，
+    保持 stream copy；DVB 字幕已有智能裁切回归，PGS/DVD 未直接实测。
   - 多段导出时，没有 cue 的片段会写入占位空字幕轨，保证各段流布局一致；
     回归测试见 `tests/multi_export.rs::multipart_export_replaces_source_subtitles`。
   - 字幕提取在导出启动时同步执行，超长素材会有短暂停顿。
@@ -765,16 +767,23 @@ ADR：`docs/decisions/0012-project-and-settings-format.md`。
   - 决策见 `docs/decisions/0013-smart-cut.md`；调查与实验见 `docs/investigations/smart-cut.md`
   - 起点在关键帧 → 纯 copy；起点不在关键帧 → 编码头 + 无损中段；
     终点不在关键帧 → 无损中段 + 编码尾；片段完全位于两个关键帧之间 → 整段编码
-  - 码率 = 源视频码率 × 1.2；源码率缺失时用容器大小 × 8 / 时长估算
+  - 码率默认 = 需编码片段的源平均码率 × 1.5（规划线程逐段探测包大小）；
+    探测失败回退到整条视频流平均码率 × 1.5；设置中可改为固定 kbps（0 = 自动）
   - 重编码显式传递源 `pix_fmt` 与 color range / space / transfer / primaries，
     保留 10-bit/HDR；`tests/smart_cut_export.rs` 有 HDR10 回归
   - 视频编码器按源 codec 选择：`h264`→`libx264`、`hevc`→`libx265`、`av1`→`libsvtav1`、
     `vp9`→`libvpx-vp9`、`prores`→`prores_ks` 等；不使用硬件编码
+  - 性价比 preset：`libx264` → `faster`，`libx265` → `veryfast`，
+    `libsvtav1` → `9`；决策与 VMAF 实测见
+    `docs/decisions/0014-smart-cut-encoding-defaults.md`
   - 实现：`media::export::smart_cut`（分段计划与 encoder 映射）、
     `ExportRequest::with_encode` / `with_rebase_negative`、`MultiExport` 的 `SmartCutContext`
   - 智能裁切开启时，即使只有一个片段也走临时片段 + concat，以复用同一条路径
+  - 已支持 VFR：编码段加 `-fps_mode passthrough`；规划线程按切点附近真实 PTS
+    计算局部帧时长，不再使用平均帧率
   - 已验证：`tests/smart_cut_export.rs` 覆盖起点精确、普通 copy 回退对照、
-    多段 Timeline 顺序、无可用编码器时报错
+    多段 Timeline 顺序、无可用编码器时报错、preset 与手动码率、VFR 帧间隔、
+    DVB 图形字幕
   - 真实素材验证：1080p30 HEVC 请求 5s → 输出约 5.04s，首帧对源切点 PSNR 36.9 dB
   - 2026-11-05 复测：1080p60 与 4K60 HEVC 各两段，最大视频间隔 17ms、
     最大音频间隔 21.3ms；纯 copy 对照分别为 67ms / 110ms 的段尾空洞
@@ -782,13 +791,13 @@ ADR：`docs/decisions/0012-project-and-settings-format.md`。
   ### 已知限制
 
   - 输出头部与尾部不是无损的；必须通过设置项 tooltip 告知用户。
-  - 无损段末端提前两帧，由编码尾补齐，以保证段尾无 B 帧空洞。
-  - 无损段与编码尾交界可能重复或跳过不超过一帧的内容。
+  - 无损段末端提前两帧，由编码尾从该结束点补齐，以保证段尾无 B 帧空洞。
+  - 无损段与编码尾的视频交界不再跳过内容；音频受 AAC 包边界影响，
+    B 帧 VFR 实测最大空隙约 72ms，无 B 帧 VFR 约 27ms。
   - 起点与下一关键帧之间会丢弃约一帧，用于避免拼接处重复帧。
   - cue 点稀疏的容器会在规划阶段探测实际 seek 落点；必要时延长编码头或整段编码。
   - 只支持恰好一个视频流，且必须是预览使用的那个流；否则直接失败。
   - 关键帧索引未加载完成时失败，不自动等待。
-  - 不支持 VFR 的精确帧时长；使用平均帧率计算。
   - 批处理暂不支持智能裁切（每个文件需要单独建立关键帧索引）。
 - [x] Smart cut 技术调查（只调查，不实现；输出独立文档 / ADR）
   - `docs/investigations/smart-cut.md`、`docs/decisions/0013-smart-cut.md`

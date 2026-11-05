@@ -31,6 +31,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub use chapters::ChapterSpec;
 pub use command::{
     ExportRequest, StreamSelection, SubtitlePlan, VideoColorSpec, VideoEncodeSpec, build_args,
+    encoder_preset,
 };
 pub use concat::{
     ExportSegment, ExportStage, MultiExport, MultiExportError, MultiExportEvent,

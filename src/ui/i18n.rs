@@ -234,6 +234,8 @@ pub struct Strings {
     pub silence_threshold: String,
     pub smart_cut: String,
     pub smart_cut_hint: String,
+    pub smart_cut_bit_rate: String,
+    pub smart_cut_bit_rate_hint: String,
     pub sort_segments: String,
     pub split_segment: String,
     pub streams: String,

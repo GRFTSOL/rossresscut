@@ -171,6 +171,23 @@ pacfiles -x '.*/libav(codec|format)\.so'
 - 颜色、字体渲染与布局细节仍必须用截图验证。
 - 脚本会过滤 AccessKit 与 pyatspi 之间已知的无害 AT-SPI 警告。
 
+### 导出 UI 冒烟
+
+`scripts/ui_export_smoke.py` 用 AT-SPI 驱动完整导出流程，不需要人工点击：
+
+```bash
+./scripts/ui_export_smoke.py
+./scripts/ui_export_smoke.py --keep
+./scripts/ui_export_smoke.py --binary target/debug/rossresscut
+```
+
+- 在 headless `cage` 中启动应用，生成一个带 2 个章节的 1080p30 素材；章节自动生成 Segment。
+- 配置 `smart_cut = true`，让两次导出都有可观察的运行时间。
+- 第一次导出断言运行中、完成状态、输出时长与 2 个章节；第二次在运行中点击取消，
+  断言「Export cancelled」且没有留下输出文件。
+- 要求本机没有其他 `rossresscut` 实例；脚本结束时会关闭它启动的 cage 进程组。
+- 失败时打印当前的 label/button 列表与 cage 日志尾部。
+
 ## 发布打包（Linux）
 
 `scripts/package-linux.sh` 构建 release 二进制并生成 pacman 包：

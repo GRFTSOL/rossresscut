@@ -259,3 +259,37 @@ Matroska 输出接受该参数，不报错。是否真的生效不影响可行�
 
 推荐 A。smart cut 的重编码范围通常只有几百毫秒到几秒，
 自动跟随源码率已经足够，额外的质量控制属于后续优化。
+
+## 2026-11-05 VFR 与图形字幕验证
+
+### VFR
+
+合成 VFR 素材：120/60/40fps 三段，带 B 帧，关键帧每 30 帧。
+智能裁切区间 `[4.1,7.2)` 与 `[8.1,10.2)`。
+
+实现：
+
+- 编码段加 `-fps_mode passthrough`，避免 FFmpeg 把 VFR 重采样成猜测的 CFR。
+- 用 `r_frame_rate` 与 `avg_frame_rate` 相差 >0.5% 判定 VFR。
+- 规划线程在切点 ±0.5s 读取包 PTS，取最大相邻间隔作为该边界的局部帧时长；
+  编码头/尾分别使用起点与终点的局部时长。
+- 无损段提前 2 个局部帧结束，编码尾从该结束点开始（不是从关键帧开始），
+  这样视频没有空洞，音频也不跨越整段关键帧间隔。
+
+实测（B 帧 VFR）：最大视频间隔 25ms（40fps 段正常帧间隔），
+最大音频接缝 72ms；无 B 帧 VFR 的音频接缝约 27ms。
+AAC 包 21.3ms，接缝空隙受包边界限制，已在 ADR-0013 记录为已知限制。
+回归：`tests/smart_cut_export.rs::smart_cut_preserves_vfr_timestamps_and_audio_cadence`。
+
+### 图形字幕
+
+FFmpeg 没有 PGS/DVD/DVB 编码器，用 GStreamer `dvbsubenc` 生成
+`tests/fixtures/dvb_subtitles.mkv`（80x60、10fps、3s、DVB subtitle）。
+
+智能裁切区间 `[0.2,2.8)` 会拆成编码头 + 无损中段 + 编码尾；
+输出 DVB 字幕 40 个包，时间范围 `0..2.532s`，视频 `0..2.466s`，
+没有超出输出或跨接缝的明显空洞。图形字幕保持 stream copy，
+`-ss` 与 concat 会把它和视频一起重定基。
+
+回归：`tests/smart_cut_export.rs::smart_cut_keeps_graphical_subtitles_in_range`。
+PGS / DVD 未直接实测，但走同一条非文本字幕 copy 路径。

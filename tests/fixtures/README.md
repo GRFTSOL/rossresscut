@@ -1,6 +1,7 @@
 # 测试素材
 
 这里的所有媒体文件都是使用 FFmpeg `lavfi` 源生成的合成素材，不包含第三方内容。
+`dvb_subtitles.mkv` 额外需要 GStreamer 的 `dvbsubenc`（FFmpeg 没有 PGS/DVD/DVB 编码器）。
 
 重新生成：
 
@@ -17,6 +18,7 @@
 | `sample.wmv` | ASF/WMV 解析 | ASF / WMV2 + WMA2 |
 | `sample.avi` | AVI 解析 | AVI / MPEG-4 Part 2 + PCM |
 | `sample.ts` | 非零 start time | MPEG-TS / H.264 + AAC |
+| `dvb_subtitles.mkv` | 图形字幕（DVB）智能裁切 | Matroska / H.264 + DVB subtitle |
 
 `subtitles.srt` 与 `chapters.txt` 是生成 `sample.mkv` 的输入。`not-media.bin` 用于验证 FFprobe 失败路径。
 

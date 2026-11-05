@@ -182,6 +182,8 @@ pub struct ExportOptions {
     pub streams: Option<StreamSelection>,
     /// Whether the encoded head of each segment should be re-created.
     pub smart_cut: bool,
+    /// Manual re-encode bit rate in kbps; `0` uses the automatic value.
+    pub smart_cut_bit_rate_kbps: u32,
 }
 
 /// Returns whether `codec_name` is a text subtitle format FFmpeg can convert.
@@ -497,7 +499,7 @@ impl Application {
             .ok_or(ExportCommandError::NoMedia)?;
         let subtitle = self.prepare_subtitles(options.subtitle_keep_partial);
         let smart_cut = if options.smart_cut {
-            Some(self.smart_cut_context(options.streams.as_ref())?)
+            Some(self.smart_cut_context(options.streams.as_ref(), options.smart_cut_bit_rate_kbps)?)
         } else {
             None
         };

@@ -147,6 +147,52 @@ fn generate_b_frame_fixture(path: &Path) {
     assert!(status.success(), "ffmpeg could not generate the fixture");
 }
 
+fn generate_vfr_fixture(path: &Path) {
+    // 120 fps source reduced to 120/60/40 fps sections without resampling
+    // timestamps, so the fixture has genuinely variable frame durations.
+    let status = Command::new("ffmpeg")
+        .args([
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=640x360:rate=120:duration=12",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:sample_rate=48000:duration=12",
+            "-vf",
+            "select='lt(t,4)+between(t,4,8)*not(mod(n,2))+gt(t,8)*not(mod(n,3))'",
+            "-fps_mode",
+            "vfr",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-bf",
+            "2",
+            "-g",
+            "30",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
+        ])
+        .arg(path)
+        .status()
+        .expect("run ffmpeg to generate the VFR fixture");
+    assert!(
+        status.success(),
+        "ffmpeg could not generate the VFR fixture"
+    );
+}
+
 fn generate_hdr_fixture(path: &Path) {
     let status = Command::new("ffmpeg")
         .args([
@@ -301,14 +347,14 @@ fn probe_video_color(path: &Path) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
-/// Sorted video presentation timestamps.
-fn video_pts(path: &Path) -> Vec<f64> {
+/// Sorted presentation timestamps for one stream selector.
+fn packet_pts(path: &Path, selector: &str) -> Vec<f64> {
     let output = Command::new("ffprobe")
         .args([
             "-v",
             "error",
             "-select_streams",
-            "v:0",
+            selector,
             "-show_entries",
             "packet=pts_time",
             "-of",
@@ -316,7 +362,7 @@ fn video_pts(path: &Path) -> Vec<f64> {
         ])
         .arg(path)
         .output()
-        .expect("run ffprobe for video timestamps");
+        .expect("run ffprobe for packet timestamps");
     assert!(output.status.success(), "ffprobe failed");
     let mut values: Vec<f64> = String::from_utf8_lossy(&output.stdout)
         .lines()
@@ -324,6 +370,11 @@ fn video_pts(path: &Path) -> Vec<f64> {
         .collect();
     values.sort_by(|a: &f64, b: &f64| a.partial_cmp(b).expect("finite timestamps"));
     values
+}
+
+/// Sorted video presentation timestamps.
+fn video_pts(path: &Path) -> Vec<f64> {
+    packet_pts(path, "v:0")
 }
 
 fn probe_frame_side_data(path: &Path) -> String {
@@ -601,4 +652,247 @@ fn smart_cut_ends_on_the_requested_frame_without_a_gap() {
         (duration - 2.0).abs() < 0.12,
         "expected about two seconds, got {duration}"
     );
+}
+
+#[test]
+fn smart_cut_uses_the_fast_preset_and_manual_bit_rate() {
+    let directory = fixture_directory();
+    let source = directory.join("source.mp4");
+    let output = directory.join("preset.mp4");
+    generate_fixture(&source);
+
+    let mut application = open_with_keyframes(&source);
+    add_segment(&mut application, 1_500_000, 3_500_000);
+    application
+        .start_export(
+            output.clone(),
+            ExportOptions {
+                smart_cut: true,
+                smart_cut_bit_rate_kbps: 2_500,
+                ..Default::default()
+            },
+        )
+        .expect("smart cut starts");
+    wait_for_export(&mut application);
+    assert!(
+        matches!(application.export_status(), ExportStatus::Completed { .. }),
+        "smart cut export failed: {:?}",
+        application.export_status()
+    );
+
+    let encoded = application
+        .last_ffmpeg_commands()
+        .iter()
+        .find(|command| command.contains("-c:v"))
+        .expect("an encoded piece");
+    assert!(
+        encoded.contains("-preset faster"),
+        "unexpected preset: {encoded}"
+    );
+    assert!(
+        encoded.contains("-b:v 2500000"),
+        "manual bit rate was not applied: {encoded}"
+    );
+
+    if let Err(error) = fs::remove_dir_all(&directory) {
+        eprintln!("could not remove {}: {error}", directory.display());
+    }
+}
+
+#[test]
+fn smart_cut_preserves_vfr_timestamps_and_audio_cadence() {
+    let directory = fixture_directory();
+    let source = directory.join("vfr.mp4");
+    let output = directory.join("vfr-smart.mkv");
+    generate_vfr_fixture(&source);
+
+    let source_pts = video_pts(&source);
+    let source_deltas: std::collections::BTreeSet<i64> = source_pts
+        .windows(2)
+        .map(|window| ((window[1] - window[0]) * 1_000_000.0).round() as i64)
+        .collect();
+    assert!(
+        source_deltas.len() >= 2,
+        "the fixture must be VFR: {source_deltas:?}"
+    );
+
+    let mut application = open_with_keyframes(&source);
+    // The first segment is in the 60 fps section and the second in the 40 fps
+    // section; neither boundary is a keyframe.
+    add_segment(&mut application, 4_100_000, 7_200_000);
+    add_segment(&mut application, 8_100_000, 10_200_000);
+    application
+        .start_export(
+            output.clone(),
+            ExportOptions {
+                smart_cut: true,
+                ..Default::default()
+            },
+        )
+        .expect("smart cut starts");
+    wait_for_export(&mut application);
+    assert!(
+        matches!(application.export_status(), ExportStatus::Completed { .. }),
+        "smart cut export failed: {:?}",
+        application.export_status()
+    );
+
+    let video = video_pts(&output);
+    assert!(video.len() > 200, "unexpected frame count: {}", video.len());
+    let mut largest_video = 0.0_f64;
+    for window in video.windows(2) {
+        let delta = window[1] - window[0];
+        assert!(
+            delta > 0.0,
+            "duplicate or reversed frame at {} → {}",
+            window[0],
+            window[1]
+        );
+        largest_video = largest_video.max(delta);
+    }
+    // The slowest source section is 40 fps (25 ms).
+    assert!(
+        largest_video < 0.030,
+        "video gap of {:.1}ms is a stall",
+        largest_video * 1000.0
+    );
+
+    let audio = packet_pts(&output, "a:0");
+    assert!(!audio.is_empty(), "the output must keep audio");
+    let mut largest_audio = 0.0_f64;
+    let mut repeated = 0;
+    for window in audio.windows(2) {
+        let delta = window[1] - window[0];
+        if delta.abs() < 1.0e-6 {
+            repeated += 1;
+            continue;
+        }
+        assert!(
+            delta > 0.0,
+            "audio must not go backwards: {} → {}",
+            window[0],
+            window[1]
+        );
+        largest_audio = largest_audio.max(delta);
+    }
+    // AAC packets are 21.3ms. At a copy/encoded seam the packet grid can leave
+    // up to about two packets of silence; video cadence remains the strict
+    // check. B-frame VFR measured 72ms, no-B-frame VFR measured 27ms.
+    assert!(
+        largest_audio < 0.080,
+        "audio gap of {:.1}ms at a smart-cut seam",
+        largest_audio * 1000.0
+    );
+
+    println!(
+        "VFR smart cut: {} video packets, max video gap {:.1}ms, max audio gap {:.1}ms, repeated audio packets {repeated}",
+        video.len(),
+        largest_video * 1000.0,
+        largest_audio * 1000.0
+    );
+
+    if let Err(error) = fs::remove_dir_all(&directory) {
+        eprintln!("could not remove {}: {error}", directory.display());
+    }
+}
+
+#[test]
+fn smart_cut_keeps_graphical_subtitles_in_range() {
+    let source = PathBuf::from("tests/fixtures/dvb_subtitles.mkv");
+    let directory = fixture_directory();
+    let output = directory.join("dvb-smart.mkv");
+
+    let mut application = open_with_keyframes(&source);
+    // 0.2s starts mid-GOP and 2.8s forces an encoded head, a copied middle
+    // and an encoded tail, so subtitle packets cross both smart-cut seams.
+    add_segment(&mut application, 200_000, 2_800_000);
+    application
+        .start_export(
+            output.clone(),
+            ExportOptions {
+                smart_cut: true,
+                ..Default::default()
+            },
+        )
+        .expect("smart cut starts");
+    wait_for_export(&mut application);
+    assert!(
+        matches!(application.export_status(), ExportStatus::Completed { .. }),
+        "smart cut export failed: {:?}",
+        application.export_status()
+    );
+
+    let codec = Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "s:0",
+            "-show_entries",
+            "stream=codec_name",
+            "-of",
+            "csv=p=0",
+        ])
+        .arg(&output)
+        .output()
+        .expect("run ffprobe for the subtitle codec");
+    assert_eq!(
+        String::from_utf8_lossy(&codec.stdout).trim(),
+        "dvb_subtitle",
+        "the graphical subtitle stream must be kept"
+    );
+
+    let duration = probe_duration(&output);
+    let subtitles = packet_pts(&output, "s:0");
+    assert!(
+        subtitles.len() >= 20,
+        "unexpected subtitle packet count: {}",
+        subtitles.len()
+    );
+    assert!(
+        subtitles[0] >= 0.0,
+        "subtitle timestamps must be rebased: {:?}",
+        &subtitles[..subtitles.len().min(5)]
+    );
+    assert!(
+        subtitles.last().copied().unwrap_or_default() <= duration + 0.05,
+        "subtitle packets extend past the output: {duration}"
+    );
+    for window in subtitles.windows(2) {
+        let delta = window[1] - window[0];
+        assert!(
+            delta > 0.0,
+            "subtitle timestamps must increase: {} → {}",
+            window[0],
+            window[1]
+        );
+        assert!(
+            delta < 0.2,
+            "subtitle gap of {:.1}ms after {:.3}s",
+            delta * 1000.0,
+            window[0]
+        );
+    }
+
+    let video = video_pts(&output);
+    assert!(video.len() > 20, "unexpected frame count: {}", video.len());
+    for window in video.windows(2) {
+        assert!(
+            window[1] > window[0],
+            "video timestamps must increase: {} → {}",
+            window[0],
+            window[1]
+        );
+        // The fixture is 10 fps, so one frame is 100ms.
+        assert!(
+            window[1] - window[0] < 0.15,
+            "video gap of {:.1}ms after {:.3}s",
+            (window[1] - window[0]) * 1000.0,
+            window[0]
+        );
+    }
+
+    if let Err(error) = fs::remove_dir_all(&directory) {
+        eprintln!("could not remove {}: {error}", directory.display());
+    }
 }

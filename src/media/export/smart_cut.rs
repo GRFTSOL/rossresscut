@@ -87,6 +87,8 @@ pub struct CopyBoundary {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SmartCutPlan {
     pieces: Vec<SmartCutPiece>,
+    /// Source average bit rate for each piece, when probed.
+    bit_rates: Vec<Option<u64>>,
 }
 
 impl SmartCutPlan {
@@ -99,6 +101,7 @@ impl SmartCutPlan {
                 seek: start,
                 encode: false,
             }],
+            bit_rates: vec![None],
         }
     }
 
@@ -142,6 +145,31 @@ impl SmartCutPlan {
         keyframes: &KeyframeIndex,
         frame_duration: Option<Duration>,
     ) -> Result<Self, SmartCutUnavailable> {
+        Self::plan_with_frame_durations(
+            start,
+            end,
+            copy,
+            keyframes,
+            frame_duration,
+            frame_duration,
+            2,
+        )
+    }
+
+    /// Splits `[start, end)` with separate head and tail frame durations.
+    ///
+    /// VFR sources can have different local frame durations at the two
+    /// boundaries. The head uses one frame of `head_frame`, while the copy tail
+    /// ends `tail_margin_frames` units of `tail_frame` before the tail keyframe.
+    pub fn plan_with_frame_durations(
+        start: Timestamp,
+        end: Timestamp,
+        copy: CopyBoundary,
+        keyframes: &KeyframeIndex,
+        head_frame: Option<Duration>,
+        tail_frame: Option<Duration>,
+        tail_margin_frames: u32,
+    ) -> Result<Self, SmartCutUnavailable> {
         if start >= end {
             return Ok(Self::copy_only(start, end));
         }
@@ -149,13 +177,21 @@ impl SmartCutPlan {
             return Ok(Self::encoded(start, end));
         }
 
-        let frame = frame_duration.ok_or(SmartCutUnavailable::UnknownFrameRate)?;
+        let head_frame = head_frame
+            .or(tail_frame)
+            .ok_or(SmartCutUnavailable::UnknownFrameRate)?;
+        let tail_frame = tail_frame.unwrap_or(head_frame);
 
         // A stream-copy cut can end on the keyframe itself and keep a fringe
         // from the next GOP whose out-of-order B-frames are then missing. End
-        // the copy two frames early, then re-encode from the keyframe so the
-        // join and the segment end are both exact.
-        let margin = frame.checked_add(frame).unwrap_or(frame);
+        // the copy early, then re-encode from the keyframe so the join and the
+        // segment end are both exact. Sources without B-frames need only one
+        // frame of margin, which also keeps the audio seam tighter.
+        let margin = if tail_margin_frames >= 2 {
+            tail_frame.checked_add(tail_frame).unwrap_or(tail_frame)
+        } else {
+            tail_frame
+        };
         let anchor = if keyframes.at_or_after(end) == Some(end) {
             end
         } else {
@@ -164,7 +200,12 @@ impl SmartCutPlan {
         if anchor <= copy.start {
             return Ok(Self::encoded(start, end));
         }
-        let copy_end = anchor.checked_sub(margin).unwrap_or(start);
+        let copy_end = if anchor == end {
+            // Ending on a keyframe needs no encoded tail; keep the copy exact.
+            end
+        } else {
+            anchor.checked_sub(margin).unwrap_or(start)
+        };
         if copy_end <= copy.start || copy.seek >= copy_end {
             return Ok(Self::encoded(start, end));
         }
@@ -173,7 +214,7 @@ impl SmartCutPlan {
         if copy.start > start {
             pieces.push(SmartCutPiece {
                 start,
-                end: head_end(start, copy.start, frame),
+                end: head_end(start, copy.start, head_frame),
                 seek: start,
                 encode: true,
             });
@@ -184,15 +225,16 @@ impl SmartCutPlan {
             seek: copy.seek,
             encode: false,
         });
-        if anchor < end {
+        if copy_end < end {
             pieces.push(SmartCutPiece {
-                start: anchor,
+                start: copy_end,
                 end,
-                seek: anchor,
+                seek: copy_end,
                 encode: true,
             });
         }
-        Ok(Self { pieces })
+        let bit_rates = vec![None; pieces.len()];
+        Ok(Self { pieces, bit_rates })
     }
 
     /// Returns a plan that re-encodes the whole range.
@@ -204,6 +246,7 @@ impl SmartCutPlan {
                 seek: start,
                 encode: true,
             }],
+            bit_rates: vec![None],
         }
     }
 
@@ -215,6 +258,18 @@ impl SmartCutPlan {
     /// Returns the pieces in output order.
     pub fn pieces(&self) -> &[SmartCutPiece] {
         &self.pieces
+    }
+
+    /// Returns the probed source bit rate of one piece.
+    pub fn bit_rate(&self, index: usize) -> Option<u64> {
+        self.bit_rates.get(index).copied().flatten()
+    }
+
+    /// Stores the probed source bit rates, one per piece.
+    pub(super) fn set_bit_rates(&mut self, bit_rates: Vec<Option<u64>>) {
+        if bit_rates.len() == self.pieces.len() {
+            self.bit_rates = bit_rates;
+        }
     }
 
     /// Returns the sum of the piece lengths.
@@ -287,7 +342,7 @@ mod tests {
         assert!(plan.is_copy_only());
         assert_eq!(plan.pieces().len(), 1);
         assert_eq!(plan.pieces()[0].start(), Timestamp::from_micros(2_000_000));
-        assert_eq!(plan.pieces()[0].end(), Timestamp::from_micros(3_933_334));
+        assert_eq!(plan.pieces()[0].end(), Timestamp::from_micros(4_000_000));
         assert!(!plan.pieces()[0].encode());
     }
 
@@ -304,7 +359,7 @@ mod tests {
         assert_eq!(plan.pieces()[1].start(), Timestamp::from_micros(6_000_000));
         assert_eq!(plan.pieces()[1].end(), Timestamp::from_micros(8_933_334));
         assert!(!plan.pieces()[1].encode());
-        assert_eq!(plan.pieces()[2].start(), Timestamp::from_micros(9_000_000));
+        assert_eq!(plan.pieces()[2].start(), Timestamp::from_micros(8_933_334));
         assert_eq!(plan.pieces()[2].end(), Timestamp::from_micros(10_000_000));
         assert!(plan.pieces()[2].encode());
     }
@@ -318,7 +373,7 @@ mod tests {
         assert_eq!(plan.pieces()[0].start(), Timestamp::from_micros(6_000_000));
         assert_eq!(plan.pieces()[0].end(), Timestamp::from_micros(8_933_334));
         assert!(!plan.pieces()[0].encode());
-        assert_eq!(plan.pieces()[1].start(), Timestamp::from_micros(9_000_000));
+        assert_eq!(plan.pieces()[1].start(), Timestamp::from_micros(8_933_334));
         assert_eq!(plan.pieces()[1].end(), Timestamp::from_micros(10_000_000));
         assert!(plan.pieces()[1].encode());
     }
@@ -331,7 +386,7 @@ mod tests {
         assert!(plan.is_copy_only());
         assert_eq!(plan.pieces().len(), 1);
         assert_eq!(plan.pieces()[0].start(), Timestamp::from_micros(6_000_000));
-        assert_eq!(plan.pieces()[0].end(), Timestamp::from_micros(8_933_334));
+        assert_eq!(plan.pieces()[0].end(), Timestamp::from_micros(9_000_000));
     }
 
     #[test]

@@ -70,6 +70,12 @@ impl ExportSegment {
 pub struct SmartCutContext {
     /// Re-encode settings for every encoded head.
     pub encode: VideoEncodeSpec,
+    /// Manual bit rate override in bits per second; `None` uses each piece's
+    /// probed source bit rate plus headroom.
+    pub manual_bit_rate: Option<u64>,
+    /// Whether the source has variable frame durations, so smart-cut margins
+    /// must use the local PTS spacing instead of the average frame rate.
+    pub variable_frame_rate: bool,
     /// Nominal duration of one frame.
     pub frame_duration: Duration,
     /// Keyframes of the exported video stream.
@@ -203,6 +209,8 @@ struct PartSpec {
     /// `-ss` target; encoded parts seek to their own start.
     seek: Timestamp,
     encode: bool,
+    /// Source average bit rate probed for this piece, when available.
+    encode_bit_rate: Option<u64>,
     path: PathBuf,
 }
 
@@ -444,6 +452,7 @@ impl MultiExport {
                     end: part.end(),
                     seek: part.seek(),
                     encode: part.encode(),
+                    encode_bit_rate: plan.bit_rate(piece),
                     path: self
                         .work_dir
                         .path()
@@ -677,6 +686,7 @@ impl MultiExport {
             part.encode,
             part.segment,
         );
+        let encode_bit_rate = part.encode_bit_rate;
         let mut request = ExportRequest::new(&self.source, start, end, &path)
             .ok_or(MultiExportError::InvalidPart { index: segment })?
             .with_seek(seek)
@@ -689,7 +699,13 @@ impl MultiExport {
                 .smart_cut
                 .as_ref()
                 .ok_or(MultiExportError::InvalidPart { index: segment })?;
-            request = request.with_encode(Some(context.encode.clone()));
+            let mut spec = context.encode.clone();
+            if context.manual_bit_rate.is_none()
+                && let Some(source) = encode_bit_rate
+            {
+                spec.bit_rate = source.checked_add(source / 2).unwrap_or(spec.bit_rate);
+            }
+            request = request.with_encode(Some(spec));
         }
         let subtitle_text = self.subtitle.as_ref().map(|plan| {
             let text = plan.crop_for(start, end);

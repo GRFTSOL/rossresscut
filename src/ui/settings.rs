@@ -234,6 +234,7 @@ pub(super) struct UiSettings {
     pub(super) export_directory: String,
     pub(super) export_title: String,
     pub(super) smart_cut: bool,
+    pub(super) smart_cut_bit_rate_kbps: u32,
 }
 
 /// `config.toml` layout.
@@ -288,6 +289,7 @@ pub(super) struct ExportSettings {
     directory: String,
     title: String,
     smart_cut: bool,
+    smart_cut_bit_rate: u32,
 }
 
 impl Default for ExportSettings {
@@ -299,6 +301,7 @@ impl Default for ExportSettings {
             directory: defaults.export_directory,
             title: defaults.export_title,
             smart_cut: defaults.smart_cut,
+            smart_cut_bit_rate: defaults.smart_cut_bit_rate_kbps,
         }
     }
 }
@@ -327,6 +330,7 @@ impl From<SettingsFile> for UiSettings {
             export_directory: export.directory,
             export_title: export.title,
             smart_cut: export.smart_cut,
+            smart_cut_bit_rate_kbps: export.smart_cut_bit_rate,
         }
     }
 }
@@ -353,6 +357,7 @@ impl From<&UiSettings> for SettingsFile {
                 directory: settings.export_directory.clone(),
                 title: settings.export_title.clone(),
                 smart_cut: settings.smart_cut,
+                smart_cut_bit_rate: settings.smart_cut_bit_rate_kbps,
             },
         }
     }
@@ -413,6 +418,7 @@ impl From<LegacySettings> for UiSettings {
             export_directory: legacy.export_directory,
             export_title: String::new(),
             smart_cut: false,
+            smart_cut_bit_rate_kbps: 0,
         }
     }
 }
@@ -505,6 +511,7 @@ impl Default for UiSettings {
             export_directory: String::new(),
             export_title: String::new(),
             smart_cut: false,
+            smart_cut_bit_rate_kbps: 0,
         }
     }
 }
@@ -604,5 +611,23 @@ mod tests {
         assert_eq!(shortcuts["add_cut"], "I");
         assert_eq!(shortcuts["remove_cut"], "O");
         assert_eq!(shortcuts["split"], "Ctrl+B");
+    }
+
+    #[test]
+    fn round_trips_the_smart_cut_bit_rate() {
+        let settings = UiSettings {
+            smart_cut_bit_rate_kbps: 2_500,
+            ..Default::default()
+        };
+        let text = toml::to_string_pretty(&SettingsFile::from(&settings)).expect("serialize");
+        let parsed = parse_settings(&text).expect("parse");
+
+        assert_eq!(parsed.smart_cut_bit_rate_kbps, 2_500);
+        assert_eq!(
+            parse_settings("[general]\n[export]\n")
+                .expect("parse")
+                .smart_cut_bit_rate_kbps,
+            0
+        );
     }
 }

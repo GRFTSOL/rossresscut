@@ -305,5 +305,6 @@ OQ-17 解除。
 - 不同容器之间的 concat（例如 MP4 片段 → MKV 输出）；本次只测了输入输出同容器。
 - 音频 priming 在多次 concat 后的累积偏移。
 - attached_pic 的单独复测（当前保持 stream copy）。
-- 图形字幕（PGS / DVD / DVB）；见 `docs/open-questions.md` 的 OQ-24。
-- smart cut 下的 VFR 帧时长与音频接缝；见 OQ-23。
+
+smart cut 的 VFR 与图形字幕已另行验证：见 `docs/investigations/smart-cut.md`
+的「2026-11-05 VFR 与图形字幕验证」。

@@ -284,6 +284,10 @@ pub fn build_args(
         // the concatenated output starts with a hole.
         args.push("-ss".into());
         args.push("0".into());
+        // Keep source frame timestamps; VFR input must not be resampled to a
+        // guessed constant rate.
+        args.push("-fps_mode".into());
+        args.push("passthrough".into());
     }
 
     args.push("-t".into());
@@ -351,6 +355,10 @@ pub fn build_args(
         args.push(encode.encoder.clone().into());
         args.push("-b:v".into());
         args.push(encode.bit_rate.to_string().into());
+        if let Some(preset) = encoder_preset(&encode.encoder) {
+            args.push("-preset".into());
+            args.push(preset.into());
+        }
         if let Some(b_frames) = encode.b_frames.filter(|count| *count > 0) {
             args.push("-bf".into());
             args.push(b_frames.to_string().into());
@@ -404,6 +412,20 @@ fn append_color_args(args: &mut Vec<OsString>, color: &VideoColorSpec) {
             args.push(value.clone().into());
         }
     }
+}
+
+/// Returns the speed preset used for a re-encode.
+///
+/// These are the measured speed/quality sweet spots for short smart-cut
+/// pieces: x264 `faster`, x265 `veryfast` and SVT-AV1 preset 9. Encoders
+/// without a useful preset keep their defaults.
+pub fn encoder_preset(encoder: &str) -> Option<&'static str> {
+    Some(match encoder {
+        "libx264" => "faster",
+        "libx265" => "veryfast",
+        "libsvtav1" => "9",
+        _ => return None,
+    })
 }
 
 /// Picks a subtitle codec the output container can store.
@@ -581,12 +603,32 @@ mod tests {
         assert_eq!(values[position(&values, "-c") + 1], "copy");
         assert_eq!(values[position(&values, "-c:v") + 1], "libx264");
         assert_eq!(values[position(&values, "-b:v") + 1], "1000000");
+        assert_eq!(values[position(&values, "-preset") + 1], "faster");
+        assert_eq!(values[position(&values, "-fps_mode") + 1], "passthrough");
         assert_eq!(values[position(&values, "-bf") + 1], "3");
         assert_eq!(
             values[position(&values, "-video_track_timescale") + 1],
             "15360"
         );
         assert!(!values.iter().any(|value| value == "-avoid_negative_ts"));
+    }
+
+    #[test]
+    fn picks_speed_presets_for_software_encoders() {
+        assert_eq!(encoder_preset("libx264"), Some("faster"));
+        assert_eq!(encoder_preset("libx265"), Some("veryfast"));
+        assert_eq!(encoder_preset("libsvtav1"), Some("9"));
+        assert_eq!(encoder_preset("prores_ks"), None);
+
+        let request = request(0, 1_000_000).with_encode(Some(VideoEncodeSpec {
+            encoder: "libsvtav1".to_owned(),
+            bit_rate: 1_000_000,
+            b_frames: None,
+            timescale: None,
+            color: VideoColorSpec::default(),
+        }));
+        let values = args(&request);
+        assert_eq!(values[position(&values, "-preset") + 1], "9");
     }
 
     #[test]

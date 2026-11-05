@@ -184,6 +184,7 @@ impl RossresscutApp {
                                 subtitle_keep_partial: self.settings.subtitle_keep_partial,
                                 streams: self.current_stream_selection(),
                                 smart_cut: self.settings.smart_cut,
+                                smart_cut_bit_rate_kbps: self.settings.smart_cut_bit_rate_kbps,
                             },
                         ) {
                             Ok(()) => {
@@ -390,6 +391,20 @@ impl RossresscutApp {
                         });
                         ui.checkbox(&mut self.settings.smart_cut, strings.smart_cut.as_str())
                             .on_hover_text(strings.smart_cut_hint.as_str());
+                        ui.add_enabled_ui(self.settings.smart_cut, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(strings.smart_cut_bit_rate.as_str());
+                                ui.add(
+                                    egui::DragValue::new(
+                                        &mut self.settings.smart_cut_bit_rate_kbps,
+                                    )
+                                    .range(0..=1_000_000)
+                                    .speed(50)
+                                    .suffix(" kbps"),
+                                )
+                                .on_hover_text(strings.smart_cut_bit_rate_hint.as_str());
+                            });
+                        });
                         ui.add(
                             egui::Label::new(
                                 egui::RichText::new(strings.export_join_hint.as_str()).small(),

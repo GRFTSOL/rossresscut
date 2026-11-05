@@ -234,6 +234,7 @@ impl Application {
     pub(super) fn smart_cut_context(
         &self,
         streams: Option<&StreamSelection>,
+        manual_bit_rate_kbps: u32,
     ) -> Result<SmartCutContext, ExportCommandError> {
         let media = self.media.as_ref().ok_or(ExportCommandError::NoMedia)?;
         let keyframes = self
@@ -256,11 +257,13 @@ impl Application {
             .and_then(FrameRate::frame_duration)
             .ok_or_else(|| smart_cut_error("the video frame rate is unknown"))?;
 
-        let bit_rate = smart_cut_bit_rate(media, video)?;
-        // Same 20% headroom as the reference implementation, to absorb
-        // encoder differences and avoid visible quality loss.
-        let bit_rate = bit_rate
-            .checked_add(bit_rate / 5)
+        let source_bit_rate = smart_cut_bit_rate(media, video)?;
+        let manual_bit_rate = if manual_bit_rate_kbps > 0 {
+            Some(u64::from(manual_bit_rate_kbps) * 1_000)
+        } else {
+            None
+        };
+        let bit_rate = smart_cut_target_bit_rate(source_bit_rate, manual_bit_rate)
             .ok_or_else(|| smart_cut_error("the video bit rate overflows"))?;
 
         let timescale = video
@@ -272,6 +275,8 @@ impl Application {
         Ok(SmartCutContext {
             stream_index: video.info.index,
             start_time: media.start_time,
+            manual_bit_rate,
+            variable_frame_rate: has_variable_frame_rate(video),
             encode: VideoEncodeSpec {
                 encoder: encoder.to_owned(),
                 bit_rate,
@@ -320,6 +325,28 @@ fn smart_cut_video<'a>(
     Ok(preview)
 }
 
+/// Returns the target bit rate for a smart-cut re-encode.
+///
+/// A manual value wins. Otherwise the source video bit rate gets 50%
+/// headroom to absorb encoder differences.
+fn smart_cut_target_bit_rate(source_bit_rate: u64, manual: Option<u64>) -> Option<u64> {
+    manual.or_else(|| source_bit_rate.checked_add(source_bit_rate / 2))
+}
+
+/// Returns whether the nominal and average frame rates differ by more than 0.5%.
+fn has_variable_frame_rate(video: &VideoStream) -> bool {
+    frame_rates_differ(video.frame_rate, video.average_frame_rate)
+}
+
+fn frame_rates_differ(nominal: Option<FrameRate>, average: Option<FrameRate>) -> bool {
+    let (Some(nominal), Some(average)) = (nominal, average) else {
+        return false;
+    };
+    let left = u64::from(nominal.numerator()) * u64::from(average.denominator());
+    let right = u64::from(average.numerator()) * u64::from(nominal.denominator());
+    left.abs_diff(right) * 200 > left.max(right)
+}
+
 /// Returns the video bit rate, falling back to the container size and duration.
 fn smart_cut_bit_rate(media: &MediaFile, video: &VideoStream) -> Result<u64, ExportCommandError> {
     video
@@ -361,6 +388,26 @@ fn single_error(stderr: String, ended: bool, exit: io::Result<ExitStatus>) -> Op
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn smart_cut_bit_rate_defaults_to_source_with_headroom() {
+        assert_eq!(smart_cut_target_bit_rate(2_000_000, None), Some(3_000_000));
+        assert_eq!(
+            smart_cut_target_bit_rate(2_000_000, Some(2_500_000)),
+            Some(2_500_000)
+        );
+        assert_eq!(smart_cut_target_bit_rate(1, None), Some(1));
+        assert_eq!(smart_cut_target_bit_rate(u64::MAX, None), None);
+    }
+
+    #[test]
+    fn detects_variable_frame_rates() {
+        let rate = FrameRate::parse;
+        assert!(!frame_rates_differ(rate("60000/1001"), rate("60000/1001")));
+        assert!(!frame_rates_differ(rate("60000/1001"), rate("120000/2002")));
+        assert!(frame_rates_differ(rate("120/1"), rate("52800/719")));
+        assert!(!frame_rates_differ(None, rate("30/1")));
+    }
 
     #[test]
     fn progress_is_clamped_to_the_requested_duration() {

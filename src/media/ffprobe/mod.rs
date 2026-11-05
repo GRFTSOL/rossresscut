@@ -10,7 +10,9 @@ mod raw;
 mod seek;
 
 pub use keyframes::probe_keyframes;
-pub use packets::{PacketBounds, probe_packet_bounds};
+pub use packets::{
+    PacketBounds, probe_average_bit_rate, probe_frame_duration, probe_packet_bounds,
+};
 pub use seek::probe_seek_start;
 
 use std::fmt;

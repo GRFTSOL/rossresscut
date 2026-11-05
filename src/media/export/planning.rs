@@ -33,6 +33,26 @@ impl SeekProbe<'_> {
         self.cache.push((target, landing));
         Ok(landing)
     }
+
+    /// Returns the local frame duration at `center`, falling back to the
+    /// average value when the probe fails.
+    fn frame_duration(&self, center: Timestamp, fallback: Duration) -> Duration {
+        let absolute = Timestamp::from_micros(center.micros().saturating_add(self.start_time));
+        let selector = self.stream_index.to_string();
+        match ffprobe::probe_frame_duration(
+            self.source,
+            &selector,
+            absolute,
+            Duration::from_micros(500_000),
+        ) {
+            Ok(Some(duration)) => duration,
+            Ok(None) => fallback,
+            Err(error) => {
+                log::warn!("could not probe the local frame duration at {center}: {error}");
+                fallback
+            }
+        }
+    }
 }
 
 /// Splits every segment according to the smart-cut settings.
@@ -53,11 +73,50 @@ pub(super) fn plan_segments(
         start_time: context.start_time.map_or(0, Timestamp::micros),
         cache: Vec::new(),
     };
-    segments
-        .iter()
-        .enumerate()
-        .map(|(index, segment)| plan_segment(&mut probe, *segment, context, index))
-        .collect()
+    let mut plans = Vec::with_capacity(segments.len());
+    for (index, segment) in segments.iter().enumerate() {
+        let mut plan = plan_segment(&mut probe, *segment, context, index)?;
+        let bit_rates = plan
+            .pieces()
+            .iter()
+            .map(|piece| {
+                if piece.encode() && context.manual_bit_rate.is_none() {
+                    probe_bit_rate(source, context, *piece)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        plan.set_bit_rates(bit_rates);
+        plans.push(plan);
+    }
+    Ok(plans)
+}
+
+/// Probes the source average bit rate of one piece to re-encode.
+///
+/// A failed probe falls back to the whole-stream bit rate; it is only a
+/// quality tuning hint, so it must not fail the export.
+fn probe_bit_rate(
+    source: &Path,
+    context: &SmartCutContext,
+    piece: super::smart_cut::SmartCutPiece,
+) -> Option<u64> {
+    let offset = context.start_time.map_or(0, Timestamp::micros);
+    let start = Timestamp::from_micros(piece.start().micros().saturating_add(offset));
+    let end = Timestamp::from_micros(piece.end().micros().saturating_add(offset));
+    let selector = context.stream_index.to_string();
+    match ffprobe::probe_average_bit_rate(source, &selector, start, end) {
+        Ok(rate) => rate,
+        Err(error) => {
+            log::warn!(
+                "could not probe the smart-cut bit rate for {}..{}: {error}",
+                piece.start(),
+                piece.end()
+            );
+            None
+        }
+    }
 }
 
 fn plan_segment(
@@ -79,12 +138,23 @@ fn plan_segment(
     let Some(copy) = find_copy_start(probe, start, next, end)? else {
         return Ok(SmartCutPlan::encoded(start, end));
     };
-    SmartCutPlan::plan_with_seek(
+    let (head_frame, tail_frame) = if context.variable_frame_rate {
+        (
+            probe.frame_duration(start, context.frame_duration),
+            probe.frame_duration(end, context.frame_duration),
+        )
+    } else {
+        (context.frame_duration, context.frame_duration)
+    };
+    let tail_margin_frames = 2;
+    SmartCutPlan::plan_with_frame_durations(
         start,
         end,
         copy,
         &context.keyframes,
-        Some(context.frame_duration),
+        Some(head_frame),
+        Some(tail_frame),
+        tail_margin_frames,
     )
     .map_err(|reason| MultiExportError::SmartCut { index, reason })
 }

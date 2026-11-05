@@ -165,6 +165,8 @@
   "silence_threshold": "Silence threshold",
   "smart_cut": "Smart cut",
   "smart_cut_hint": "Re-encode the keyframe-boundary regions so each segment starts and ends exactly. These head/tail parts are not lossless; it fails instead of falling back when it cannot run.",
+  "smart_cut_bit_rate": "Smart cut bit rate",
+  "smart_cut_bit_rate_hint": "0 uses the source video average bitrate × 1.5. A non-zero value overrides it in kbps.",
   "sort_segments": "Sort by start time",
   "split_segment": "Split segment",
   "streams": "Streams",
