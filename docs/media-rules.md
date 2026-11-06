@@ -215,6 +215,12 @@ stream copy
 - 不能把重新编码操作标记成无损操作。
 - 必须显式传递源的 `pix_fmt` 与 color range / space / transfer / primaries，
   保留 10-bit/HDR 元数据；不得用预览的 8-bit 帧作为重编码输入。
+- HDR10 静态元数据（Mastering display / Content light level）只在解码帧的 side data
+  里可见，stream 层没有。smart cut 额外探测首帧，并以
+  `-x265-params master-display=...:max-cll=...` 显式交给 `libx265`，不依赖 FFmpeg
+  版本是否把输入帧的 side data 转发给编码器（ffmpeg 9.0 会转发，6.x 不会）。该探测
+  只在 transfer 为 PQ（`smpte2084`）或 HLG（`arib-std-b67`）时执行，失败不阻断打开。
+  其他编码器不传这组参数：`-x265-params` 是 x265 私有语法。
 - Smart cut 重编码固定使用性价比 preset（x264 `faster`、x265 `veryfast`、
   SVT-AV1 preset 9）；码率默认取需编码片段的源平均码率 × 1.5，可在设置中
   改为固定 kbps。决策见 `docs/decisions/0014-smart-cut-encoding-defaults.md`。

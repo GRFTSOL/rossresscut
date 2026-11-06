@@ -9,7 +9,9 @@ use crate::domain::media::{
 use crate::domain::time::{Duration, FrameRate, TimeBase, Timestamp};
 
 use super::ProbeError;
-use super::raw::{ProbeOutput, RawChapter, RawDisposition, RawFormat, RawStream, Scalar};
+use super::raw::{
+    ProbeOutput, RawChapter, RawDisposition, RawFormat, RawFrames, RawSideData, RawStream, Scalar,
+};
 
 pub(super) fn parse_output(json: &str, path: &Path) -> Result<MediaFile, ProbeError> {
     let output: ProbeOutput =
@@ -135,6 +137,8 @@ fn parse_stream(raw: &RawStream, position: usize, path: &Path) -> Result<MediaSt
             color_space: raw.color_space.clone(),
             color_transfer: raw.color_transfer.clone(),
             color_primaries: raw.color_primaries.clone(),
+            mastering_display: None,
+            content_light: None,
         })),
         "audio" => Ok(MediaStream::Audio(AudioStream {
             info,
@@ -150,6 +154,64 @@ fn parse_stream(raw: &RawStream, position: usize, path: &Path) -> Result<MediaSt
         "subtitle" => Ok(MediaStream::Subtitle(SubtitleStream { info })),
         _ => Ok(MediaStream::Other(info)),
     }
+}
+
+/// Reads HDR10 side data from a `-show_frames` probe of the first frame.
+///
+/// FFprobe only exposes mastering display and content light metadata on
+/// decoded frames, not on the stream section. The returned strings use the
+/// x265 parameter syntax so they can be forwarded to `-x265-params`.
+pub(super) fn parse_hdr_side_data(json: &str) -> (Option<String>, Option<String>) {
+    let Ok(raw) = serde_json::from_str::<RawFrames>(json) else {
+        return (None, None);
+    };
+    for frame in raw.frames {
+        let Some(list) = frame.side_data_list else {
+            continue;
+        };
+        let mut mastering = None;
+        let mut light = None;
+        for data in list {
+            match data.side_data_type.as_deref() {
+                Some("Mastering display metadata") => mastering = mastering_display(&data),
+                Some("Content light level metadata") => light = content_light(&data),
+                _ => {}
+            }
+        }
+        if mastering.is_some() || light.is_some() {
+            return (mastering, light);
+        }
+    }
+    (None, None)
+}
+
+fn mastering_display(data: &RawSideData) -> Option<String> {
+    let chromaticity = |x: &Option<String>, y: &Option<String>| -> Option<(i64, i64)> {
+        Some((scaled(x, 50_000)?, scaled(y, 50_000)?))
+    };
+    let (green_x, green_y) = chromaticity(&data.green_x, &data.green_y)?;
+    let (blue_x, blue_y) = chromaticity(&data.blue_x, &data.blue_y)?;
+    let (red_x, red_y) = chromaticity(&data.red_x, &data.red_y)?;
+    let (white_x, white_y) = chromaticity(&data.white_point_x, &data.white_point_y)?;
+    let min_luminance = scaled(&data.min_luminance, 10_000)?;
+    let max_luminance = scaled(&data.max_luminance, 10_000)?;
+    Some(format!(
+        "G({green_x},{green_y})B({blue_x},{blue_y})R({red_x},{red_y})WP({white_x},{white_y})L({max_luminance},{min_luminance})"
+    ))
+}
+
+/// Converts an FFprobe `numerator/divisor` ratio to integer units scaled by
+/// `denominator`, rounding to the nearest unit.
+fn scaled(value: &Option<String>, denominator: i64) -> Option<i64> {
+    let value = value.as_deref()?;
+    let (numerator, divisor) = value.split_once('/')?;
+    let numerator: i64 = numerator.trim().parse().ok()?;
+    let divisor: i64 = divisor.trim().parse().ok()?;
+    (divisor > 0).then(|| (numerator * denominator + divisor / 2) / divisor)
+}
+
+fn content_light(data: &RawSideData) -> Option<String> {
+    Some(format!("{},{}", data.max_content?, data.max_average?))
 }
 
 fn parse_chapter(raw: &RawChapter, position: usize, path: &Path) -> Result<Chapter, ProbeError> {
@@ -500,5 +562,54 @@ mod tests {
             Err(ProbeError::Json { .. }) => {}
             other => panic!("expected a JSON error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn converts_hdr_side_data_to_x265_parameters() {
+        let json = r#"
+        {
+          "frames": [
+            {
+              "media_type": "video",
+              "side_data_list": [
+                {
+                  "side_data_type": "Mastering display metadata",
+                  "red_x": "34000/50000",
+                  "red_y": "16000/50000",
+                  "green_x": "13200/50000",
+                  "green_y": "34500/50000",
+                  "blue_x": "7500/50000",
+                  "blue_y": "3000/50000",
+                  "white_point_x": "15635/50000",
+                  "white_point_y": "16450/50000",
+                  "min_luminance": "1/10000",
+                  "max_luminance": "10000000/10000"
+                },
+                {
+                  "side_data_type": "Content light level metadata",
+                  "max_content": 1000,
+                  "max_average": 400
+                }
+              ]
+            }
+          ]
+        }
+        "#;
+
+        let (mastering, light) = parse_hdr_side_data(json);
+
+        assert_eq!(
+            mastering.as_deref(),
+            Some("G(13200,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1)")
+        );
+        assert_eq!(light.as_deref(), Some("1000,400"));
+    }
+
+    #[test]
+    fn ignores_frames_without_hdr_side_data() {
+        let json = r#"{ "frames": [{ "media_type": "video" }] }"#;
+
+        assert_eq!(parse_hdr_side_data(json), (None, None));
+        assert_eq!(parse_hdr_side_data("not json"), (None, None));
     }
 }

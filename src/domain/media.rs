@@ -120,6 +120,10 @@ pub struct VideoStream {
     pub color_transfer: Option<String>,
     /// Color primaries.
     pub color_primaries: Option<String>,
+    /// HDR10 mastering display metadata, in x265 `master-display` syntax.
+    pub mastering_display: Option<String>,
+    /// HDR10 content light level metadata, in x265 `max-cll` syntax.
+    pub content_light: Option<String>,
 }
 
 /// An audio stream.

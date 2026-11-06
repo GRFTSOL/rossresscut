@@ -62,6 +62,10 @@ pub struct VideoColorSpec {
     pub transfer: Option<String>,
     /// Color primaries, for example `bt2020`.
     pub primaries: Option<String>,
+    /// HDR10 mastering display metadata in x265 `master-display` syntax.
+    pub mastering_display: Option<String>,
+    /// HDR10 content light level metadata in x265 `max-cll` syntax.
+    pub content_light: Option<String>,
 }
 
 /// Video re-encode settings for a smart-cut head.
@@ -367,7 +371,7 @@ pub fn build_args(
             args.push("-video_track_timescale".into());
             args.push(timescale.to_string().into());
         }
-        append_color_args(&mut args, &encode.color);
+        append_color_args(&mut args, &encode.color, &encode.encoder);
     }
 
     if subtitle_included {
@@ -399,7 +403,7 @@ pub fn build_args(
 }
 
 /// Appends the source pixel format and color tags used when re-encoding.
-fn append_color_args(args: &mut Vec<OsString>, color: &VideoColorSpec) {
+fn append_color_args(args: &mut Vec<OsString>, color: &VideoColorSpec, encoder: &str) {
     for (option, value) in [
         ("-pix_fmt", &color.pixel_format),
         ("-color_range", &color.range),
@@ -410,6 +414,23 @@ fn append_color_args(args: &mut Vec<OsString>, color: &VideoColorSpec) {
         if let Some(value) = value {
             args.push(option.into());
             args.push(value.clone().into());
+        }
+    }
+
+    // libx265 accepts HDR10 static metadata through its private options. Other
+    // encoders do not get these parameters: FFmpeg's wrappers differ and the
+    // syntax is x265-specific.
+    if encoder == "libx265" {
+        let mut params = Vec::new();
+        if let Some(mastering) = &color.mastering_display {
+            params.push(format!("master-display={mastering}"));
+        }
+        if let Some(light) = &color.content_light {
+            params.push(format!("max-cll={light}"));
+        }
+        if !params.is_empty() {
+            args.push("-x265-params".into());
+            args.push(params.join(":").into());
         }
     }
 }
@@ -644,6 +665,8 @@ mod tests {
                 space: Some("bt2020nc".to_owned()),
                 transfer: Some("smpte2084".to_owned()),
                 primaries: Some("bt2020".to_owned()),
+                mastering_display: None,
+                content_light: None,
             },
         }));
         let values = args(&request);
@@ -653,6 +676,41 @@ mod tests {
         assert_eq!(values[position(&values, "-colorspace") + 1], "bt2020nc");
         assert_eq!(values[position(&values, "-color_trc") + 1], "smpte2084");
         assert_eq!(values[position(&values, "-color_primaries") + 1], "bt2020");
+    }
+
+    #[test]
+    fn writes_hdr10_metadata_only_for_libx265() {
+        let color = VideoColorSpec {
+            mastering_display: Some(
+                "G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1)".to_owned(),
+            ),
+            content_light: Some("1000,400".to_owned()),
+            ..VideoColorSpec::default()
+        };
+        let x265 = request(0, 1_000_000).with_encode(Some(VideoEncodeSpec {
+            encoder: "libx265".to_owned(),
+            bit_rate: 1_000_000,
+            b_frames: None,
+            timescale: None,
+            color: color.clone(),
+        }));
+        let values = args(&x265);
+
+        assert_eq!(
+            values[position(&values, "-x265-params") + 1],
+            "master-display=G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1):max-cll=1000,400"
+        );
+
+        let x264 = request(0, 1_000_000).with_encode(Some(VideoEncodeSpec {
+            encoder: "libx264".to_owned(),
+            bit_rate: 1_000_000,
+            b_frames: None,
+            timescale: None,
+            color,
+        }));
+        let values = args(&x264);
+
+        assert!(!values.iter().any(|value| value == "-x265-params"));
     }
 
     #[test]

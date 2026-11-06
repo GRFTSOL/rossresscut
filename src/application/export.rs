@@ -288,6 +288,8 @@ impl Application {
                     space: video.color_space.clone(),
                     transfer: video.color_transfer.clone(),
                     primaries: video.color_primaries.clone(),
+                    mastering_display: video.mastering_display.clone(),
+                    content_light: video.content_light.clone(),
                 },
             },
             frame_duration,

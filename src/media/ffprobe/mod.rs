@@ -19,7 +19,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::domain::media::MediaFile;
+use crate::domain::media::{MediaFile, MediaStream};
 
 /// Errors produced while probing a media file.
 #[derive(Debug)]
@@ -170,7 +170,68 @@ pub fn probe(path: &Path) -> Result<MediaFile, ProbeError> {
         source,
     })?;
 
-    parse::parse_output(&stdout, path)
+    parse::parse_output(&stdout, path).map(|mut media| {
+        enrich_hdr_metadata(&mut media, path);
+        media
+    })
+}
+
+/// Adds HDR10 side data to the first video stream when the source carries it.
+///
+/// The extra probe only runs for PQ or HLG video, so ordinary SDR files still
+/// open with a single FFprobe call. A failure leaves the colour tags untouched
+/// and must not make opening the media fail.
+fn enrich_hdr_metadata(media: &mut MediaFile, path: &Path) {
+    let Some(MediaStream::Video(video)) = media
+        .streams
+        .iter_mut()
+        .find(|stream| matches!(stream, MediaStream::Video(_)))
+    else {
+        return;
+    };
+    if !is_hdr(&video.color_transfer) {
+        return;
+    }
+    let Some((mastering_display, content_light)) = probe_hdr_metadata(path, video.info.index)
+    else {
+        return;
+    };
+    video.mastering_display = mastering_display;
+    video.content_light = content_light;
+}
+
+/// Returns whether the transfer characteristics describe HDR video.
+fn is_hdr(transfer: &Option<String>) -> bool {
+    matches!(transfer.as_deref(), Some("smpte2084" | "arib-std-b67"))
+}
+
+fn probe_hdr_metadata(
+    path: &Path,
+    stream_index: usize,
+) -> Option<(Option<String>, Option<String>)> {
+    let output = Command::new("ffprobe")
+        .arg("-v")
+        .arg("error")
+        .arg("-print_format")
+        .arg("json")
+        .arg("-select_streams")
+        .arg(stream_index.to_string())
+        .arg("-show_frames")
+        .arg("-read_intervals")
+        .arg("%+#1")
+        .arg(path)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        log::debug!(
+            "HDR side-data probe failed for {}: {}",
+            path.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+        return None;
+    }
+    let text = String::from_utf8(output.stdout).ok()?;
+    Some(parse::parse_hdr_side_data(&text))
 }
 
 fn command_for(path: &Path) -> Command {

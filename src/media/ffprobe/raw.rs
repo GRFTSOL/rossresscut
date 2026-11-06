@@ -73,6 +73,37 @@ pub(super) struct RawStream {
     pub tags: Option<RawTags>,
 }
 
+/// Frame section used when reading the first frame's HDR side data.
+#[derive(Debug, Deserialize)]
+pub(super) struct RawFrames {
+    #[serde(default)]
+    pub frames: Vec<RawFrame>,
+}
+
+/// A single frame with its optional side data list.
+#[derive(Debug, Deserialize)]
+pub(super) struct RawFrame {
+    pub side_data_list: Option<Vec<RawSideData>>,
+}
+
+/// HDR side data attached to a decoded frame.
+#[derive(Debug, Deserialize)]
+pub(super) struct RawSideData {
+    pub side_data_type: Option<String>,
+    pub red_x: Option<String>,
+    pub red_y: Option<String>,
+    pub green_x: Option<String>,
+    pub green_y: Option<String>,
+    pub blue_x: Option<String>,
+    pub blue_y: Option<String>,
+    pub white_point_x: Option<String>,
+    pub white_point_y: Option<String>,
+    pub min_luminance: Option<String>,
+    pub max_luminance: Option<String>,
+    pub max_content: Option<u32>,
+    pub max_average: Option<u32>,
+}
+
 /// Stream disposition flags as emitted by FFprobe (zero or one).
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
