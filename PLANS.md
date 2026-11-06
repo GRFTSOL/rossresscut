@@ -59,19 +59,28 @@ LosslessCut 是产品行为、媒体语义和 FFmpeg 工作流的参考实现，
 
 - [x] Windows 文件打开 / 保存对话框：`rfd` 的 Windows 后端已接入
   （`IFileOpenDialog` / `IFileSaveDialog` COM 接口），`FILE_DIALOG_SUPPORTED`
-  已覆盖 Windows；尚未在真实 Windows 上验证
+  已覆盖 Windows
+- [ ] 文件对话框、拖放与高 DPI 的实机验收
 - [x] Windows 版 libmpv：已用 MSVC 导入库 `mpv.lib`（由 `libmpv-2.dll`
   的 `dumpbin /exports` + `lib /def:` 生成）链接成功；运行期 `libmpv-2.dll`
   放 exe 同目录
 - [x] Windows 版 FFmpeg / FFprobe：`ffmpeg.exe` / `ffprobe.exe` 位于 `PATH`，
   探测、波形、场景检测与导出均已在 Windows 上跑通
-- [x] 原生 MSVC 构建：`cargo build` / `cargo test` / 两轮 `clippy` 均通过，
-  构建命令与环境见 `docs/development.md`（`msvc-kit run` + `MPV_LIBRARY_DIR`）
+- [x] 原生 MSVC 构建：`cargo build` / `cargo test` / 两轮 `clippy` 均通过；
+  `msvc-kit setup --persistent` 后普通 `cargo build` 即可（`MPV_LIBRARY_DIR` 仍需）
+- [x] 中文名与含空格路径的媒体实测：探测、预览、波形均正常
+- [x] 启动失败可见：Windows 上弹原生错误对话框（`rfd` MessageDialog）
 - [x] 硬件解码实测：预览走 `vo=libmpv` + OpenGL，`hwdec=auto-safe` 在 NVIDIA
   机器上解析为 `nvdec`（`d3d11va` 需要 `gpu-context=d3d11`，该路径不可用）；
   播放信息与日志 `mpv preview decoder:` 可见
+- [x] 便携包：`dist/rossresscut-<version>-windows-x64.zip`（exe + DLL + FFmpeg
+  + 许可证 + README），双击可运行
 - [ ] 导出路径选择、章节写入与多段 concat 的人工验收（自动化测试已在
   Windows 通过，尚未由用户在界面上逐项确认）
+- [ ] Windows 包自动化：`mpv.lib` 生成与 zip 打包都是手工步骤，见
+  `docs/open-questions.md` OQ-27 / OQ-28
+- [ ] 运行期 panic 的可见性：目前只覆盖启动阶段，见 OQ-29
+- [ ] 应用图标（窗口 / 任务栏）尚未设置
 - [x] 交叉编译不再是主路径：Windows 版改为原生 MSVC 构建；mingw 交叉编译
   方案保留在 git 历史中，不再维护
 

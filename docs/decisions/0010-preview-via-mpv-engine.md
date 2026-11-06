@@ -155,12 +155,17 @@ ADR 0004 §1 的 cpal 主时钟与 §3 的 FFmpeg scrub 设计由本节取代。
 
 预览启动时显式设置 `hwdec=auto-safe`：
 
-- Linux 默认 VAAPI，Windows 默认 D3D11VA，macOS 默认 VideoToolbox；
+- Linux 默认 VAAPI，macOS 默认 VideoToolbox；
 - 设备不可用时由 mpv 回退软件解码；
 - 解码器不可用时不得静默失败，播放信息必须显示实际后端。
 
+> 2026-11-06 Windows 实测修正：预览走 `vo=libmpv` + OpenGL
+> （`WGL_NV_DX_interop2`），该路径不支持 `d3d11va`（它要求
+> `gpu-context=d3d11`），因此 `auto-safe` 在 NVIDIA 机器上解析为 `nvdec`。
+> 这是 `auto-safe` 的正常取值，不是 `hwdec=auto` 也不是显式指定。
+
 UI 通过 `hwdec-current` 显示实际后端（例如 `vaapi`、`vaapi-copy`、
-`videotoolbox`、`no`）。该属性由 `Application` 每 500 ms 读取一次并缓存，
+`videotoolbox`、`nvdec`、`no`）。该属性由 `Application` 每 500 ms 读取一次并缓存，
 不放在 egui 帧的同步路径上。
 
 ## 快速 scrub 与精确 seek
@@ -385,7 +390,9 @@ tone map 到 SDR。
 > OQ-21 为精确 seek 旧帧门控；详见
 > `docs/investigations/playback-pipeline.md` 与 `docs/investigations/mpv-engine-spike.md`。
 
-- Windows D3D11VA / macOS VideoToolbox 的实机验证。
+- ~~Windows D3D11VA / macOS VideoToolbox 的实机验证。~~ Windows 已实测：预览使用
+  `nvdec`，`d3d11va` 在 libmpv/OpenGL 导出路径下不可用（2026-11-06）；
+  macOS 仍未验证。
 - ~~多 GPU / 多 render node 时 mpv 的设备选择策略。~~ 已委托给 mpv：
   Linux 使用 `--vaapi-device`（默认 `/dev/dri/renderD128`），项目不枚举设备；
   Windows D3D11 适配器选择未验证。见 `docs/architecture.md`。

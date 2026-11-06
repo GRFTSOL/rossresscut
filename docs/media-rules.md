@@ -58,6 +58,10 @@ FFmpeg
 
 文件路径、参数等必须作为独立进程参数传递。
 
+所有外部进程（`ffmpeg` / `ffprobe`）必须经 `media::process::command` 创建，
+不得直接调用 `std::process::Command::new`：它在 Windows 上设置
+`CREATE_NO_WINDOW`，避免 GUI 程序为每次探测、波形或解码弹出控制台窗口。
+
 预览解码与音频使用进程内 `mpv-engine`（libmpv），同样不得经由 shell，也不得在 egui 帧内同步调用。
 
 ---

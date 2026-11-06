@@ -155,6 +155,7 @@ ExportRequest
 - FFprobe
 - FFmpeg
 - 进程管理
+- 外部进程统一构造（`media/process.rs`，Windows 上设置 `CREATE_NO_WINDOW`）
 - 参数构建
 - 进度解析
 - 取消
@@ -473,6 +474,7 @@ src/
 │   │   ├── video.rs           回退路径：ffmpeg RGB 帧解码、硬件解码选择、背压、seek
 │   │   └── audio.rs           回退路径：ffmpeg PCM 解码 + cpal 输出
 │   ├── scene.rs               外部 FFmpeg 场景检测（只解析时间戳）
+│   ├── process.rs             外部进程构造（Windows 上 `CREATE_NO_WINDOW`）
 │   ├── subtitle.rs            文本字幕提取、裁剪与重新 mux
 │   └── waveform.rs            ffmpeg → s16le，折叠为 min/max peak
 └── ui/

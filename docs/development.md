@@ -63,22 +63,34 @@ cargo fmt --all --check
 同一棵树也在这台 Windows 机器上用 MSVC 直接构建，不是交叉编译。
 
 - **MSVC 与 Windows SDK**：由 `msvc-kit` 安装在 `C:\data\msvc-kit-data`
-  （MSVC `14.40.33807`、Windows SDK `10.0.19041.0`）。它们不在默认 `PATH` 上，
-  且 Git for Windows 的 `C:\application\git\usr\bin\link.exe` 会遮蔽 MSVC 的
-  `link.exe`，直接 `cargo build` 会在链接阶段失败。所有 cargo 命令经
-  `msvc-kit` 运行：
+  （MSVC `14.40.33807`、Windows SDK `10.0.19041.0`）。执行一次持久化后，它们被
+  写进用户环境变量（`PATH`、`INCLUDE`、`LIB`、`CC`、`AR`、
+  `CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER`），普通 `cargo build` 与
+  rust-analyzer 都直接可用：
+
+  ```powershell
+  msvc-kit setup --persistent   # 只需一次；之后重启编辑器与终端
+  cargo build
+  ```
+
+  没有做持久化时，用 `msvc-kit run` 临时注入环境：
 
   ```bash
   msvc-kit run -- cargo build
   ```
+
+  注意：Git for Windows 的 `usr\bin\link.exe` 仍可能排在 MSVC 之前，但持久化设置
+  通过 `CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER` 把链接器路径显式传给 rustc，
+  因此不影响构建。
 
 - **libmpv 导入库**：`mpv-engine` 需要 MSVC 导入库 `mpv.lib`，官方 Windows
   构建只提供 `libmpv-2.dll`。本机在 `C:\data\mpv-msvc\` 下由 `dumpbin /exports`
   生成 `.def`，再 `lib /def:mpv.def /machine:x64` 生成 `mpv.lib`；构建时用
   `MPV_LIBRARY_DIR` 指向该目录：
 
-  ```bash
-  MPV_LIBRARY_DIR=C:/data/mpv-msvc msvc-kit run -- cargo build
+  ```powershell
+  $env:MPV_LIBRARY_DIR = "C:/data/mpv-msvc"
+  cargo build
   ```
 
 - **运行时 DLL**：`libmpv-2.dll` 必须与 exe 同目录或位于 `PATH`。集成测试的
@@ -87,13 +99,16 @@ cargo fmt --all --check
 - **准入门槛**：在 Git Bash 中一条命令跑完全部检查：
 
   ```bash
-  MPV_LIBRARY_DIR=C:/data/mpv-msvc msvc-kit run -- bash scripts/check.sh
+  MPV_LIBRARY_DIR=C:/data/mpv-msvc bash scripts/check.sh
   ```
+
+  未做持久化环境时在前面加 `msvc-kit run --`。
 
 - 程序以 `windows_subsystem = "windows"` 构建，自身没有控制台。所以所有外部
   `ffmpeg` / `ffprobe` 进程必须经 `media::process::command` 创建；它在 Windows
   上设置 `CREATE_NO_WINDOW`。直接用 `std::process::Command` 会为每次探测、
-  波形或解码另开一个控制台窗口。
+  波形或解码另开一个控制台窗口。启动失败会弹原生错误对话框，界面规则见
+  `docs/ui-guidelines.md`。
 - **不要把 Windows SDK 的 `bin\<version>\x64` 放进 `PATH`。** 该目录自带旧版
   `dxcompiler.dll` / `dxil.dll`，wgpu 的 D3D12 后端会从 `PATH` 加载它们，然后
   `DxcCreateInstance` 返回 `E_NOINTERFACE`，整个初始化失败：

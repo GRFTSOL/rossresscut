@@ -106,35 +106,55 @@ sudo pacman -R rossresscut
 
 ## 6. Windows / macOS
 
-尚未发布，阻塞项记录在 `PLANS.md` 的 Phase 8。
+Windows 已能原生构建并产出便携包；macOS 尚未开始。剩余项见 `PLANS.md`。
 
 ### Windows
 
+构建（原生 MSVC，当前主路径）：
+
+- 工具链：`msvc-kit`（便携 MSVC + Windows SDK）。执行一次
+  `msvc-kit setup --persistent` 后普通 `cargo build` 即可；PATH 注意事项与
+  `mpv.lib` 生成步骤见 `docs/development.md`。
+
 文件对话框：
 
-- `rfd` 0.17 的 Windows 后端已经使用 Shell COM 的 `IFileOpenDialog` /
-  `IFileSaveDialog`（`IFileDialog` 派生接口），通过 `windows-sys` 调用，
-  不需要自建对话框，也不需要额外 feature。
-- 已在 Windows target 下启用：`Cargo.toml` 增加
-  `[target.'cfg(target_os = "windows")'.dependencies]` 的
+- `rfd` 0.17 的 Windows 后端使用 Shell COM 的 `IFileOpenDialog` /
+  `IFileSaveDialog`（`IFileDialog` 派生接口），不需要自建对话框。
+- `Cargo.toml` 在 `[target.'cfg(target_os = "windows")'.dependencies]` 下启用
   `rfd = { version = "0.17", default-features = false }`，
   `FILE_DIALOG_SUPPORTED` 覆盖 Linux 与 Windows。
-- 尚未在真实 Windows 环境中验证对话框行为。
+- 尚未人工验收对话框行为（应用本身已在实机运行）。
 
-libmpv：
+链接与运行时文件：
 
-- `rsmpv-sys` 在编译期用 `-lmpv` 链接，Windows 需要 import library：
-  mingw 用 `libmpv.dll.a`，MSVC 用 `mpv.lib`。
-- 通过 `MPV_LIBRARY_DIR=<import lib 目录>` 让 `rsmpv-sys` 找到它。
-- 运行期需要 `libmpv-2.dll`。Windows 默认 DLL 搜索顺序会先找可执行文件
-  所在目录，再找系统目录与 `PATH`；因此放在 exe 同目录或 `PATH` 任一位置都可以。
-- mpv 官方 Windows 构建同时提供 `libmpv-2.dll` 与对应的 `.dll.a`。
+- `rsmpv-sys` 在编译期用 `-lmpv` 链接，MSVC 需要导入库 `mpv.lib`。官方 Windows
+  构建只提供 `libmpv-2.dll`，因此用 `dumpbin /exports` 生成 `.def`，再
+  `lib /def:mpv.def /machine:x64` 生成，所在目录通过 `MPV_LIBRARY_DIR` 传入。
+- 运行期需要 `libmpv-2.dll`。Windows 默认 DLL 搜索顺序先找可执行文件目录，
+  放在 exe 同目录即可（`PATH` 亦可）。
+- `ffmpeg.exe` / `ffprobe.exe` 放在 exe 同目录或 `PATH`；两者都由
+  `media::process::command` 启动，Windows 上带 `CREATE_NO_WINDOW`。
 
-FFmpeg：
+便携包：
 
-- `ffmpeg.exe` / `ffprobe.exe` 需要 Windows 构建，放在 exe 同目录或 `PATH`。
+- 产物：`dist/rossresscut-<version>-windows-x64.zip`，解压即可运行。
+- 内含 `rossresscut.exe`、`libmpv-2.dll`、`ffmpeg.exe`、`ffprobe.exe`、
+  `LICENSE`、`ATTRIBUTION.md` 与 `README-WINDOWS.txt`；包内说明记录了运行方式、
+  日志与故障排查。
+- 打包目前是手工步骤，尚未脚本化（见 `docs/open-questions.md` 的 OQ-28）。
 
-交叉编译（Arch Linux，GNU target）：
+验证状态（0.4.0）：
+
+- [x] 原生 MSVC 构建、`cargo test`、两轮 `cargo clippy` 通过。
+- [x] 预览（wgpu DX12 + libmpv 导出纹理）、波形、关键帧索引，NVIDIA `nvdec`。
+- [x] 中文名、带空格路径的媒体可正常打开、预览并生成波形。
+- [x] 启动失败弹原生错误对话框（GUI 无控制台）。
+- [ ] 文件打开 / 保存对话框、拖放、高 DPI 的人工验收。
+- [ ] 导出路径选择、章节写入与多段 concat 的人工验收（自动化测试已通过）。
+
+历史方案（已不再维护）：在 Arch Linux 上用 mingw 交叉编译到
+`x86_64-pc-windows-gnu`。0.3.0 的测试包由该方式构建；0.4.0 起以原生 MSVC 为准，
+命令保留在这里仅作参考：
 
 ```bash
 sudo pacman -S --needed mingw-w64-gcc
@@ -143,19 +163,7 @@ MPV_LIBRARY_DIR=/path/to/libmpv-import-lib \
   cargo build --release --target x86_64-pc-windows-gnu
 ```
 
-- `mingw-w64-gcc` 会带入 `mingw-w64-binutils` / `mingw-w64-crt` /
-  `mingw-w64-headers` / `mingw-w64-winpthreads`。
-- `cargo check --target x86_64-pc-windows-gnu` 已在 Linux 上通过；
-  链接阶段只缺 Windows 版 libmpv import library。
-- 获取 import library：mpv 官方 Windows 构建（如 `mpv-dev-x86_64-*.7z`）
-  包含 `libmpv.dll.a` 与 `libmpv-2.dll`；解压后把 `libmpv.dll.a` 所在目录
-  传给 `MPV_LIBRARY_DIR`。
-- Rust 依赖（eframe / wgpu / cpal / rfd）在 GNU target 下都是纯 Rust
-  或通过 `windows-sys` 调用系统 API，不需要额外 C 库。
-- 尚未实测 wgpu 的 D3D12 / Vulkan 后端在交叉构建产物中的运行情况。
-- `MPV_LIBRARY_DIR` 只影响链接期；运行期 DLL 仍需随包分发。
-
-D3D11VA 预览与导出路径、章节、多段 concat 仍需在真实 Windows 环境验证。
+- 该方式需要 `libmpv.dll.a`（mpv 官方 `mpv-dev-*.7z`），且未在实机验证。
 
 macOS 至少需要 libmpv dylib、VideoToolbox 验证、签名与公证。
 
