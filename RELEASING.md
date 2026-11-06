@@ -55,7 +55,7 @@ dist/rossresscut-<version>-<pkgrel>-x86_64.pkg.tar.zst
 安装与卸载：
 
 ```bash
-sudo pacman -U dist/rossresscut-0.3.0-1-x86_64.pkg.tar.zst
+sudo pacman -U dist/rossresscut-0.4.0-1-x86_64.pkg.tar.zst
 sudo pacman -R rossresscut
 ```
 
