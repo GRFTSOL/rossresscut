@@ -2,6 +2,7 @@
 
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -10,8 +11,12 @@ use rossresscut::logging;
 
 fn main() -> ExitCode {
     if let Err(error) = logging::init() {
-        eprintln!("warning: logging was already initialized: {error}");
+        let _ = writeln!(
+            std::io::stderr(),
+            "warning: logging was already initialized: {error}"
+        );
     }
+    logging::install_panic_hook();
 
     log::info!("rossresscut {} starting", env!("CARGO_PKG_VERSION"));
 
@@ -19,8 +24,10 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             log::error!("{error}");
-            eprintln!("error: {error}");
+            // The dialog comes first: a GUI build may not have a usable stderr,
+            // and the user must not lose the only visible error report.
             report_startup_failure(&error);
+            let _ = writeln!(std::io::stderr(), "error: {error}");
             ExitCode::FAILURE
         }
     }

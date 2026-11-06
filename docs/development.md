@@ -84,14 +84,25 @@ cargo fmt --all --check
   因此不影响构建。
 
 - **libmpv 导入库**：`mpv-engine` 需要 MSVC 导入库 `mpv.lib`，官方 Windows
-  构建只提供 `libmpv-2.dll`。本机在 `C:\data\mpv-msvc\` 下由 `dumpbin /exports`
-  生成 `.def`，再 `lib /def:mpv.def /machine:x64` 生成 `mpv.lib`；构建时用
-  `MPV_LIBRARY_DIR` 指向该目录：
+  构建只提供 `libmpv-2.dll`。用脚本生成（Windows 走 `dumpbin` + `lib`，
+  Linux / macOS 走 LLVM 的 `llvm-readobj` + `llvm-dlltool`）：
+
+  ```bash
+  ./scripts/mpv-import-lib.sh /path/to/libmpv-2.dll
+  ```
+
+  输出在 `dist/mpv-lib/`，构建时指向它：
 
   ```powershell
-  $env:MPV_LIBRARY_DIR = "C:/data/mpv-msvc"
+  $env:MPV_LIBRARY_DIR = "C:/project/rust/rossresscut/dist/mpv-lib"
   cargo build
   ```
+
+- **打包**：从干净工作树运行 `./scripts/package-windows.sh`，产出
+  `dist/rossresscut-<version>-windows-x64.zip` 与 `.sha256`。
+- **崩溃日志**：未捕获的 panic 追加到 `%LOCALAPPDATA%\rossresscut\crash.log`
+  （UTC 时间、版本与堆栈）；Linux / macOS 为
+  `$XDG_STATE_HOME/rossresscut/crash.log`（回退 `~/.local/state`）。
 
 - **运行时 DLL**：`libmpv-2.dll` 必须与 exe 同目录或位于 `PATH`。集成测试的
   exe 在 `target\debug\deps` 下，需要把 DLL 也复制到那里。

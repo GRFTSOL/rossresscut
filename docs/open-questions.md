@@ -15,35 +15,12 @@ OQ-1…OQ-26 均已解决或失效，结论分散在 ADR 0009 / 0010 / 0013 / 00
 `docs/investigations/` 与 `docs/history/completed-phases.md` 中。
 需要逐条追溯时查看 git 历史。
 
+OQ-27…OQ-29（Windows 构建复现性、打包自动化、运行期失败可见性）已解决：
+
+- OQ-27 → `scripts/mpv-import-lib.sh`（说明见 `docs/development.md`）
+- OQ-28 → `scripts/package-windows.sh`（说明见 `RELEASING.md`）
+- OQ-29 → `logging::install_panic_hook`，日志位置见 `docs/development.md`
+
 ---
 
 当前没有未解决的问题。
-
----
-
-## OQ-27 Windows 构建的可复现性
-
-- 问题：`mpv.lib` 由本机 `libmpv-2.dll` 手工生成（`dumpbin` + `lib /def:`），
-  `MPV_LIBRARY_DIR` 也指向本机目录；换机器或 CI 无法直接复现。
-- 当前状态：生成步骤写在 `docs/development.md`，但没有脚本。
-- 影响：只有本机能构建 Windows 版；新环境需手工执行三步。
-- 处理时机：需要 CI 或第二台 Windows 机器时。
-- 解除条件：一条脚本能从 `libmpv-2.dll` 生成 `mpv.lib` 并被文档引用。
-
-## OQ-28 Windows 打包自动化
-
-- 问题：0.4.0 的便携 zip 是手工打的，没有 `scripts/package-windows.*`，
-  也没有校验和。
-- 当前状态：包内容与验证状态记录在 `RELEASING.md`。
-- 影响：每次发布需人工重复，容易漏文件（例如 DLL）。
-- 处理时机：需要第二个平台发布或对外分发时。
-- 解除条件：一条命令产出 zip，并断言包含全部运行时文件。
-
-## OQ-29 运行期失败的可见性
-
-- 问题：启动失败已在 Windows 上弹原生对话框，但窗口创建之后的 panic 仍然
-  静默（GUI 子系统没有 stderr），日志也只写 stderr。
-- 当前状态：见 `src/main.rs` 的 `report_startup_failure`。
-- 影响：用户遇到运行期崩溃只能描述现象，拿不到堆栈。
-- 处理时机：需要收集用户崩溃报告时。
-- 解除条件：panic 能写入本地日志文件（或在下次启动时提示）。

@@ -137,11 +137,14 @@ Windows 已能原生构建并产出便携包；macOS 尚未开始。剩余项见
 
 便携包：
 
-- 产物：`dist/rossresscut-<version>-windows-x64.zip`，解压即可运行。
+- 一条命令产出：`./scripts/package-windows.sh`（前提：干净的 git 工作树、
+  `MPV_LIBRARY_DIR`、`MPV_DLL` 或 `target/release/libmpv-2.dll`、
+  `PATH` 上的 `ffmpeg` / `ffprobe`）。
+- 产物：`dist/rossresscut-<version>-windows-x64.zip` 与同名 `.sha256`，
+  解压即可运行。
 - 内含 `rossresscut.exe`、`libmpv-2.dll`、`ffmpeg.exe`、`ffprobe.exe`、
-  `LICENSE`、`ATTRIBUTION.md` 与 `README-WINDOWS.txt`；包内说明记录了运行方式、
-  日志与故障排查。
-- 打包目前是手工步骤，尚未脚本化（见 `docs/open-questions.md` 的 OQ-28）。
+  `LICENSE`、`ATTRIBUTION.md` 与 `README-WINDOWS.txt`；包内说明由
+  `packaging/README-WINDOWS.txt` 模板生成。
 
 验证状态（0.4.0）：
 
