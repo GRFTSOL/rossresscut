@@ -13,6 +13,7 @@ use std::thread;
 
 use crate::domain::time::{Duration, Timestamp};
 use crate::domain::waveform::{Peak, Waveform};
+use crate::media::process;
 
 /// Peaks per second of audio.
 const PEAKS_PER_SECOND: u64 = 200;
@@ -221,7 +222,7 @@ pub fn extract(
 }
 
 fn command_for(path: &Path, stream_index: usize) -> Command {
-    let mut command = Command::new("ffmpeg");
+    let mut command = process::command("ffmpeg");
     command
         .arg("-nostdin")
         .arg("-loglevel")

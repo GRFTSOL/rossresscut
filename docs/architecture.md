@@ -205,8 +205,9 @@ media::preview 导入为 wgpu::Texture
 
 预览解码设备选择委托给 libmpv：主路径使用 `hwdec=auto-safe`，Linux 上 mpv 提供
 `--vaapi-device`（默认 `/dev/dri/renderD128`）。项目不枚举 GPU，也不在 UI 中
-暴露设备选择；需要指定设备时属于后续功能，不在当前范围内。Windows D3D11
-适配器选择未验证，当前不承诺。
+暴露设备选择；需要指定设备时属于后续功能，不在当前范围内。Windows 上预览走
+`vo=libmpv` + OpenGL，实测 `auto-safe` 解析为 `nvdec`（`d3d11va` 要求
+`gpu-context=d3d11`，该路径不可用）；D3D11 适配器选择仍未实现，当前不承诺。
 
 ---
 

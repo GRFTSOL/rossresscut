@@ -6,9 +6,10 @@
 //! probes the landing point before choosing a copy boundary.
 
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use crate::domain::time::Timestamp;
+use crate::media::process;
 
 use super::ProbeError;
 
@@ -22,7 +23,7 @@ pub fn probe_seek_start(
     stream_index: usize,
     position: Timestamp,
 ) -> Result<Option<Timestamp>, ProbeError> {
-    let mut ffmpeg = Command::new("ffmpeg");
+    let mut ffmpeg = process::command("ffmpeg");
     ffmpeg
         .arg("-nostdin")
         .arg("-hide_banner")
@@ -54,7 +55,7 @@ pub fn probe_seek_start(
         return Ok(None);
     };
 
-    let output = Command::new("ffprobe")
+    let output = process::command("ffprobe")
         .args([
             "-v",
             "error",

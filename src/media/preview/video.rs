@@ -11,6 +11,7 @@ use std::thread::{self, JoinHandle};
 use std::path::Path;
 
 use crate::domain::time::{Duration, Timestamp};
+use crate::media::process;
 
 use super::{PreviewError, join_detail, read_stderr, seconds_arg, terminate_child};
 
@@ -267,7 +268,7 @@ impl Drop for PreviewVideo {
 }
 
 fn command_for(config: &PreviewVideoConfig, width: u32, height: u32) -> Command {
-    let mut command = Command::new("ffmpeg");
+    let mut command = process::command("ffmpeg");
     command
         .arg("-nostdin")
         .arg("-loglevel")

@@ -16,12 +16,13 @@ use std::ffi::OsString;
 use std::fmt;
 use std::io::{self, BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::process::{Child, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration as StdDuration, Instant};
 
 use crate::domain::time::Timestamp;
+use crate::media::process;
 
 use chapters::TempMetadata;
 
@@ -244,7 +245,7 @@ impl ExportProcess {
         metadata: Option<TempMetadata>,
         subtitle: Option<TempSubtitle>,
     ) -> Result<Self, ExportError> {
-        let mut child = Command::new(FFMPEG)
+        let mut child = process::command(FFMPEG)
             .args(&args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())

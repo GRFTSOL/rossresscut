@@ -419,6 +419,7 @@ mod tests {
     use super::preview::fit_size;
     #[cfg(feature = "mpv-preview")]
     use super::preview::{PreviewBounds, physical_bounds};
+    #[cfg(target_os = "linux")]
     use super::settings::{gtk_theme_from_ini, ini_value, qt_theme_from_ini, theme_from_label};
     use super::shortcuts::default_shortcuts;
     use super::timeline::{fraction_of, timestamp_at_x, wheel_direction};

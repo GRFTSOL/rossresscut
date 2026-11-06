@@ -284,8 +284,11 @@ impl Application {
         Ok(texture)
     }
 
-    /// Returns whether the preview is waiting for the first frame after a
-    /// precise seek. The UI must not paint the previous texture while true.
+    /// Returns whether a precise seek is still waiting for its target frame.
+    ///
+    /// While true, [`Self::acquire_mpv_texture`] withholds new frames so a
+    /// frame from before the seek cannot be mistaken for the target. The UI
+    /// keeps painting the last texture it has instead of blanking the preview.
     pub fn is_preview_stale(&self) -> bool {
         #[cfg(feature = "mpv-preview")]
         {

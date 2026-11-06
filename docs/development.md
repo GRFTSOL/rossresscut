@@ -36,6 +36,16 @@ cargo fmt --all --check
   done
   ```
 
+  Windows 上 `ln -s` 不可靠（需要开发者模式或管理员），改用目录联接；两侧路径
+  按实际的 pnpm store 替换：
+
+  ```powershell
+  powershell -NoProfile -Command 'New-Item -ItemType Junction -Path "<eff-u-code>\node_modules\tree-sitter-wasms" -Target "<tree-sitter-wasms>"'
+  ```
+
+  验证：再跑一次，输出中不再出现 `Tree-sitter init failed for rust`（`.sh` 脚本
+  降级到 regex parser 不影响 Rust 结果）。
+
 ## 开发环境
 
 本节只记录**会改变构建与验证行为**的机器约定，不是产品支持范围。
@@ -47,6 +57,45 @@ cargo fmt --all --check
 - **桌面会话**：Wayland（`XDG_SESSION_TYPE=wayland`，合成器为 niri），没有 X11 会话。egui / winit 的行为验证必须在 Wayland 下进行，不依赖 X11 专属路径。
 - **交互 shell**：fish。脚本不依赖交互 shell 配置：显式写 shebang（`#!/usr/bin/env bash` 或 `#!/usr/bin/env fish`），并保证在非交互环境下可运行。
 - **辅助脚本**：只用于开发与验证，不进入产品运行时；项目不引入 Python / Node 运行时依赖。
+
+### Windows（本机原生 MSVC 构建）
+
+同一棵树也在这台 Windows 机器上用 MSVC 直接构建，不是交叉编译。
+
+- **MSVC 与 Windows SDK**：由 `msvc-kit` 安装在 `C:\data\msvc-kit-data`
+  （MSVC `14.40.33807`、Windows SDK `10.0.19041.0`）。它们不在默认 `PATH` 上，
+  且 Git for Windows 的 `C:\application\git\usr\bin\link.exe` 会遮蔽 MSVC 的
+  `link.exe`，直接 `cargo build` 会在链接阶段失败。所有 cargo 命令经
+  `msvc-kit` 运行：
+
+  ```bash
+  msvc-kit run -- cargo build
+  ```
+
+- **libmpv 导入库**：`mpv-engine` 需要 MSVC 导入库 `mpv.lib`，官方 Windows
+  构建只提供 `libmpv-2.dll`。本机在 `C:\data\mpv-msvc\` 下由 `dumpbin /exports`
+  生成 `.def`，再 `lib /def:mpv.def /machine:x64` 生成 `mpv.lib`；构建时用
+  `MPV_LIBRARY_DIR` 指向该目录：
+
+  ```bash
+  MPV_LIBRARY_DIR=C:/data/mpv-msvc msvc-kit run -- cargo build
+  ```
+
+- **运行时 DLL**：`libmpv-2.dll` 必须与 exe 同目录或位于 `PATH`。集成测试的
+  exe 在 `target\debug\deps` 下，需要把 DLL 也复制到那里。
+- **FFmpeg / FFprobe**：`ffmpeg.exe`、`ffprobe.exe` 位于 `C:\bin` 并在 `PATH` 中。
+- **准入门槛**：在 Git Bash 中一条命令跑完全部检查：
+
+  ```bash
+  MPV_LIBRARY_DIR=C:/data/mpv-msvc msvc-kit run -- bash scripts/check.sh
+  ```
+
+- 程序以 `windows_subsystem = "windows"` 构建，自身没有控制台。所以所有外部
+  `ffmpeg` / `ffprobe` 进程必须经 `media::process::command` 创建；它在 Windows
+  上设置 `CREATE_NO_WINDOW`。直接用 `std::process::Command` 会为每次探测、
+  波形或解码另开一个控制台窗口。
+- 交互 shell 是 nushell，PowerShell 5.1 保留可用；脚本仍显式写 shebang，
+  不依赖交互 shell 配置。
 
 产品支持平台仍以 `GOALS.md` 与 `PLANS.md` 中的 Linux / Windows / macOS 为准。本节描述的是当前开发机的验证环境，不能作为"只支持 Arch Linux"的依据。
 

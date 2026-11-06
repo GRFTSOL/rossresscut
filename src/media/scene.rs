@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::domain::time::Timestamp;
+use crate::media::process;
 
 /// Errors produced while scanning for scene changes.
 #[derive(Debug)]
@@ -103,7 +104,7 @@ pub fn detect(
 
 fn command_for(path: &Path, threshold: f32) -> Command {
     let threshold = threshold.clamp(0.01, 1.0);
-    let mut command = Command::new("ffmpeg");
+    let mut command = process::command("ffmpeg");
     command
         .arg("-nostdin")
         .arg("-hide_banner")

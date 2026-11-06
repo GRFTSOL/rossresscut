@@ -5,7 +5,7 @@
 **Phase 8：Linux 发布（进行中）**
 
 - Linux：release 构建、`packaging/PKGBUILD` 与 pacman 包已完成（见 Phase 8）。
-- Windows / macOS 未开始。
+- Windows：原生 MSVC 构建、测试与 clippy 已打通（进行中）；macOS 未开始。
 - Phase 0–7C 已完成；详细实现与验证记录归档在 `docs/history/completed-phases.md`。
 - 未解决问题记录在 `docs/open-questions.md`。
 
@@ -60,13 +60,20 @@ LosslessCut 是产品行为、媒体语义和 FFmpeg 工作流的参考实现，
 - [x] Windows 文件打开 / 保存对话框：`rfd` 的 Windows 后端已接入
   （`IFileOpenDialog` / `IFileSaveDialog` COM 接口），`FILE_DIALOG_SUPPORTED`
   已覆盖 Windows；尚未在真实 Windows 上验证
-- [ ] Windows 版 libmpv：需要 import library（mingw `libmpv.dll.a` / MSVC `mpv.lib`）
-  用于链接；运行期 `libmpv-2.dll` 放 exe 同目录或 `PATH`
-- [ ] Windows 版 FFmpeg / FFprobe：`ffmpeg.exe` / `ffprobe.exe` 放 exe 同目录或 `PATH`
-- [ ] 交叉编译：`sudo pacman -S --needed mingw-w64-gcc` 与
-  `rustup target add x86_64-pc-windows-gnu`；尚未实测
-- [ ] D3D11VA 硬件解码与 wgpu 预览链路验证
-- [ ] 导出路径选择、章节写入与多段 concat 验证
+- [x] Windows 版 libmpv：已用 MSVC 导入库 `mpv.lib`（由 `libmpv-2.dll`
+  的 `dumpbin /exports` + `lib /def:` 生成）链接成功；运行期 `libmpv-2.dll`
+  放 exe 同目录
+- [x] Windows 版 FFmpeg / FFprobe：`ffmpeg.exe` / `ffprobe.exe` 位于 `PATH`，
+  探测、波形、场景检测与导出均已在 Windows 上跑通
+- [x] 原生 MSVC 构建：`cargo build` / `cargo test` / 两轮 `clippy` 均通过，
+  构建命令与环境见 `docs/development.md`（`msvc-kit run` + `MPV_LIBRARY_DIR`）
+- [x] 硬件解码实测：预览走 `vo=libmpv` + OpenGL，`hwdec=auto-safe` 在 NVIDIA
+  机器上解析为 `nvdec`（`d3d11va` 需要 `gpu-context=d3d11`，该路径不可用）；
+  播放信息与日志 `mpv preview decoder:` 可见
+- [ ] 导出路径选择、章节写入与多段 concat 的人工验收（自动化测试已在
+  Windows 通过，尚未由用户在界面上逐项确认）
+- [x] 交叉编译不再是主路径：Windows 版改为原生 MSVC 构建；mingw 交叉编译
+  方案保留在 git 历史中，不再维护
 
 ## macOS
 

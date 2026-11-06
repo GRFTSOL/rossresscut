@@ -7,6 +7,7 @@ use std::path::Path;
 use std::process::Command;
 
 use crate::domain::time::{Duration, Timestamp};
+use crate::media::process;
 
 use super::ProbeError;
 
@@ -64,7 +65,7 @@ pub fn probe_average_bit_rate(
     }
     let seconds = |time: Timestamp| format!("{:.6}", time.micros() as f64 / 1_000_000.0);
     let interval = format!("{}%{}", seconds(start), seconds(end));
-    let output = Command::new("ffprobe")
+    let output = process::command("ffprobe")
         .arg("-v")
         .arg("error")
         .arg("-select_streams")
@@ -140,7 +141,7 @@ pub fn probe_frame_duration(
     );
     let seconds = |time: Timestamp| format!("{:.6}", time.micros() as f64 / 1_000_000.0);
     let interval = format!("{}%{}", seconds(start), seconds(end));
-    let output = Command::new("ffprobe")
+    let output = process::command("ffprobe")
         .arg("-v")
         .arg("error")
         .arg("-select_streams")
@@ -187,7 +188,7 @@ fn parse_frame_duration(output: &str) -> Option<Duration> {
 }
 
 fn command_for(path: &Path, selector: &str) -> Command {
-    let mut command = Command::new("ffprobe");
+    let mut command = process::command("ffprobe");
     command
         .arg("-v")
         .arg("error")

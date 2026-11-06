@@ -188,25 +188,22 @@ impl RossresscutApp {
                     }
                 }
                 OpenState::Ready => {
-                    let preview_stale = self.application.is_preview_stale();
                     let mpv_texture: Option<(egui::TextureId, egui::Vec2)> = {
                         #[cfg(feature = "mpv-preview")]
                         {
-                            if preview_stale {
-                                None
-                            } else {
-                                self.preview_mpv_id.zip(self.preview_mpv_size)
-                            }
+                            self.preview_mpv_id.zip(self.preview_mpv_size)
                         }
                         #[cfg(not(feature = "mpv-preview"))]
                         {
                             None
                         }
                     };
+                    // Keep painting the newest frame that exists. A precise
+                    // seek hides the outgoing frame from publication for a
+                    // moment, but blanking the pane for that long makes the
+                    // preview flash on every seek; the gate belongs in
+                    // `Application`, not in the paint path.
                     let texture = mpv_texture.or_else(|| {
-                        if preview_stale {
-                            return None;
-                        }
                         self.preview_texture
                             .as_ref()
                             .map(|texture| (texture.id(), texture.size_vec2()))
@@ -235,7 +232,7 @@ impl RossresscutApp {
                         if response.hovered() {
                             self.handle_wheel(ui);
                         }
-                    } else if preview_stale || self.application.is_waiting_for_preview() {
+                    } else if self.application.is_waiting_for_preview() {
                         self.centered_spinner(ui, strings.loading_preview.clone());
                     } else {
                         centered_message(ui, strings.no_video_frame.as_str());

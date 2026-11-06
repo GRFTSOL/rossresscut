@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::domain::media::{MediaFile, MediaStream};
+use crate::media::process;
 
 /// Errors produced while probing a media file.
 #[derive(Debug)]
@@ -209,7 +210,7 @@ fn probe_hdr_metadata(
     path: &Path,
     stream_index: usize,
 ) -> Option<(Option<String>, Option<String>)> {
-    let output = Command::new("ffprobe")
+    let output = process::command("ffprobe")
         .arg("-v")
         .arg("error")
         .arg("-print_format")
@@ -235,7 +236,7 @@ fn probe_hdr_metadata(
 }
 
 fn command_for(path: &Path) -> Command {
-    let mut command = Command::new("ffprobe");
+    let mut command = process::command("ffprobe");
     command
         .arg("-v")
         .arg("error")

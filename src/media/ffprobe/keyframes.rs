@@ -9,6 +9,7 @@ use std::process::Command;
 
 use crate::domain::media::KeyframeIndex;
 use crate::domain::time::Timestamp;
+use crate::media::process;
 
 use super::ProbeError;
 
@@ -47,7 +48,7 @@ pub fn probe_keyframes(
 }
 
 fn command_for(path: &Path, stream_index: usize) -> Command {
-    let mut command = Command::new("ffprobe");
+    let mut command = process::command("ffprobe");
     command
         .arg("-v")
         .arg("error")

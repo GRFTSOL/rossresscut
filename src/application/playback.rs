@@ -242,7 +242,14 @@ impl Playback {
             .mpv_decoder_checked_at
             .is_none_or(|last| now.duration_since(last) >= std::time::Duration::from_millis(500))
         {
-            self.mpv_decoder = mpv.hardware_decoder();
+            let decoder = mpv.hardware_decoder();
+            if decoder != self.mpv_decoder {
+                log::info!(
+                    "mpv preview decoder: {}",
+                    decoder.as_deref().unwrap_or("unknown")
+                );
+                self.mpv_decoder = decoder;
+            }
             self.mpv_decoder_checked_at = Some(now);
         }
         if let Some(message) = failed.as_deref() {

@@ -7,9 +7,9 @@
 
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use crate::domain::time::Timestamp;
+use crate::media::process;
 
 /// Errors produced while extracting subtitles.
 #[derive(Debug)]
@@ -84,7 +84,7 @@ pub struct Cue {
 ///
 /// This blocks until FFmpeg finishes and must run outside the UI thread.
 pub fn extract(path: &Path, stream_index: usize) -> Result<String, SubtitleError> {
-    let output = Command::new("ffmpeg")
+    let output = process::command("ffmpeg")
         .arg("-nostdin")
         .arg("-hide_banner")
         .arg("-loglevel")

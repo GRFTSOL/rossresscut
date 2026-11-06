@@ -6,7 +6,9 @@
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
+
+use crate::media::process;
 
 use super::concat::{TempDir, concat_line};
 
@@ -77,7 +79,7 @@ pub fn merge_files(inputs: &[PathBuf], output: &Path) -> Result<(), MergeError> 
     }
     fs::write(&list, text).map_err(|source| MergeError::List { source })?;
 
-    let result = Command::new("ffmpeg")
+    let result = process::command("ffmpeg")
         .arg("-nostdin")
         .arg("-hide_banner")
         .arg("-loglevel")

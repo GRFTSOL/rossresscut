@@ -6,6 +6,7 @@
 pub mod export;
 pub mod ffprobe;
 pub mod preview;
+pub(crate) mod process;
 pub mod scene;
 pub mod subtitle;
 pub mod waveform;

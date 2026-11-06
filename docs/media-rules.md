@@ -71,13 +71,18 @@ FFmpeg
 - `PlaybackRestart` 事件缺失时，精确 seek 以 `position()` 落点兜底，容差为 100 ms。
 - 快速 scrub 的位置是近似值，不得用于 Segment 边界、编辑结果或导出。
 - 硬件解码由 libmpv 自动选择（`hwdec=auto-safe`）；设备不可用时自动回退软件。
+  预览走 `vo=libmpv` + OpenGL 渲染 API，因此 Windows 上 `d3d11va` 不可用
+  （该 hwdec 要求 `gpu-context=d3d11`）。NVIDIA 机器上实测 `hwdec-current`
+  为 `nvdec`，这是 `auto-safe` 在该渲染路径下的正常取值，不是 `hwdec=auto`
+  或显式指定 `nvdec`。
 - 预览导出尺寸按预览窗格大小与源宽高比等比适配，按物理像素下发，且不得超过源分辨率（不放大）。
 - 解码失败或 mpv 启动失败必须可见；播放信息显示 `mpv (<hwdec-current>)`，
   例如 `mpv (vaapi)`、`mpv (vaapi-copy)`、`mpv (no)`；外部回退路径显示 `ffmpeg (...)`。
 - 预览区点击切换播放 / 暂停；滚轮按关键帧步进（上滚上一个，下滚下一个），按住 mod 键时步进 10 秒。
 - 预览不保证帧精确；导出与编辑不得依赖预览时间。
-- 精确 seek 在目标纹理到达前不得绘制旧位置纹理；UI 显示加载状态，并有超时
-  回退避免画面卡死。快速 scrub 不受此门控影响。
+- 精确 seek 在目标纹理到达前由 `Application` 门控，不发布旧位置纹理；UI 不因此
+  清空预览，继续绘制上一张已发布纹理，避免每次 seek 都闪一次加载状态。
+  门控有超时回退避免画面卡死。快速 scrub 不受此门控影响。
 
 ---
 

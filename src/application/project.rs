@@ -44,14 +44,14 @@ pub enum ProjectError {
         /// Project file path.
         path: PathBuf,
         /// TOML parser failure.
-        source: toml::de::Error,
+        source: Box<toml::de::Error>,
     },
     /// The serialized project could not be produced.
     Serialize {
         /// Project file path.
         path: PathBuf,
         /// TOML serializer failure.
-        source: toml::ser::Error,
+        source: Box<toml::ser::Error>,
     },
     /// The file parsed but its contents are inconsistent.
     Invalid {
@@ -107,8 +107,8 @@ impl std::error::Error for ProjectError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Read { source, .. } | Self::Write { source, .. } => Some(source),
-            Self::Parse { source, .. } => Some(source),
-            Self::Serialize { source, .. } => Some(source),
+            Self::Parse { source, .. } => Some(source.as_ref()),
+            Self::Serialize { source, .. } => Some(source.as_ref()),
             Self::Invalid { .. } | Self::UnsupportedVersion { .. } | Self::NoTimeline => None,
         }
     }
@@ -194,7 +194,7 @@ impl Application {
 
         let text = toml::to_string_pretty(&file).map_err(|source| ProjectError::Serialize {
             path: path.to_path_buf(),
-            source,
+            source: Box::new(source),
         })?;
         if let Some(parent) = path.parent()
             && !parent.as_os_str().is_empty()
@@ -301,7 +301,7 @@ fn read_project(path: &Path) -> Result<ProjectData, ProjectError> {
     })?;
     let file: ProjectFile = toml::from_str(&text).map_err(|source| ProjectError::Parse {
         path: path.to_path_buf(),
-        source,
+        source: Box::new(source),
     })?;
 
     if file.version != PROJECT_VERSION {

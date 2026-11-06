@@ -20,6 +20,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, Stream, StreamConfig};
 
 use crate::domain::time::{Duration, Timestamp};
+use crate::media::process;
 
 use super::{PreviewError, join_detail, read_stderr, seconds_arg, terminate_child};
 
@@ -292,7 +293,7 @@ fn build_stream(
 }
 
 fn command_for(path: &Path, start: Timestamp, channels: u16, sample_rate: u32) -> Command {
-    let mut command = Command::new("ffmpeg");
+    let mut command = process::command("ffmpeg");
     command
         .arg("-nostdin")
         .arg("-loglevel")
