@@ -94,6 +94,19 @@ cargo fmt --all --check
   `ffmpeg` / `ffprobe` 进程必须经 `media::process::command` 创建；它在 Windows
   上设置 `CREATE_NO_WINDOW`。直接用 `std::process::Command` 会为每次探测、
   波形或解码另开一个控制台窗口。
+- **不要把 Windows SDK 的 `bin\<version>\x64` 放进 `PATH`。** 该目录自带旧版
+  `dxcompiler.dll` / `dxil.dll`，wgpu 的 D3D12 后端会从 `PATH` 加载它们，然后
+  `DxcCreateInstance` 返回 `E_NOINTERFACE`，整个初始化失败：
+
+  ```text
+  DxcCreateInstance failed: 不支持此接口 (0x80004002)
+  Failed to create surface for any enabled backend: {}
+  ```
+
+  由于程序是 GUI 子系统且没有控制台，双击时表现为**默默退出、没有任何提示**。
+  `msvc-kit setup --persistent` 会把该目录写进用户 `PATH`，需要手动移除；
+  `rc.exe` / `mt.exe` 只在编译 Windows 资源脚本时才需要，rustc 不使用。
+  构建只需要 MSVC 的 `Tools\MSVC\<version>\bin\Hostx64\x64` 在 `PATH` 上。
 - 交互 shell 是 nushell，PowerShell 5.1 保留可用；脚本仍显式写 shebang，
   不依赖交互 shell 配置。
 
