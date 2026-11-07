@@ -1,0 +1,114 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-package:
+    name: Linux package (pacman)
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux/archlinux:base-devel
+    steps:
+      # actions/checkout needs git, which base-devel does not include.
+      - name: Install git
+        run: pacman -Syu --noconfirm --needed git
+
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: >
+          pacman -S --noconfirm --needed
+          rust pkgconf ffmpeg mpv alsa-lib libglvnd mesa wayland
+          libxkbcommon libxcb
+
+      - name: Check versions
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          pkgver=$(sed -n 's/^pkgver=//p' packaging/PKGBUILD)
+          if [[ -z $version || $version != "$pkgver" ]]; then
+            echo "error: Cargo.toml version ($version) differs from PKGBUILD pkgver ($pkgver)" >&2
+            exit 1
+          fi
+          if [[ $REF_TYPE == tag && $REF_NAME != "v$version" ]]; then
+            echo "error: tag $REF_NAME does not match version v$version" >&2
+            exit 1
+          fi
+
+      - name: Build binary and package
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          set -euo pipefail
+
+          # makepkg refuses to run as root, so build as an unprivileged user.
+          useradd -m builder
+          chown -R builder "$GITHUB_WORKSPACE"
+
+          runuser -u builder -- env HOME=/home/builder \
+            cargo build --release --locked
+
+          mkdir -p dist
+          chown builder dist
+          # --nodeps: runtime dependencies are declared in the package, they are
+          # not needed to assemble it. The binary was built above, so the
+          # PKGBUILD build() only verifies it exists.
+          runuser -u builder -- env \
+            HOME=/home/builder \
+            PKGEXT=.pkg.tar.zst \
+            PKGDEST="$GITHUB_WORKSPACE/dist" \
+            bash -c 'cd packaging && makepkg --force --nodeps'
+
+          (cd dist && sha256sum *.pkg.tar.zst > SHA256SUMS)
+          ls -l dist
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-package
+          path: |
+            dist/*.pkg.tar.zst
+            dist/SHA256SUMS
+          if-no-files-found: error
+
+  attach-to-release:
+    name: Attach package to the release
+    needs: linux-package
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download package artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-package
+          path: dist
+
+      # The release is usually created from the git tag before or after this
+      # run. Upload only when it exists, so a tag push never creates an empty
+      # release page.
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG does not exist yet; the package stays in the workflow artifacts" >&2
+            exit 0
+          fi
+          gh release upload "$TAG" dist/* --clobber

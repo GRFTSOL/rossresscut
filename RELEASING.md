@@ -74,6 +74,26 @@ sudo pacman -R rossresscut
 
 `dist/` 与 `packaging/{src,pkg}` 不提交到 Git。
 
+### GitHub Actions
+
+不用本机打包时，推送 `v*` tag 即可（也可手动触发 `Release` workflow）：
+
+```bash
+git tag v0.4.2
+git push origin v0.4.2
+```
+
+- 在 `archlinux/archlinux:base-devel` 容器里运行 `cargo build --release --locked`
+  与 `makepkg`，产物是同一个 `.pkg.tar.zst`，另附 `SHA256SUMS`。
+- 先校验 `Cargo.toml` 版本、`PKGBUILD` 的 `pkgver` 与 tag 三者一致，不一致直接失败。
+- `makepkg` 拒绝以 root 运行，因此编译和打包都在临时非 root 用户下执行。
+- 产物同时上传为 workflow artifact。同名 Release 已存在时附加进去；Release
+  不存在时只保留 artifact，不会创建空 Release 页（Source code 归档由 GitHub
+  随 Release 生成，满足 GPL 的源码提供要求）。
+- 该 workflow 不跑 `./scripts/check.sh`：容器里的 Rust 是 Arch 滚动版，
+  fmt / clippy / 测试由 `CI` workflow 在 push 时负责。
+- 仍然只适合源码/私有渠道发布；AUR 需要基于 tagged tarball 的独立 PKGBUILD。
+
 ## 4. 运行时依赖
 
 包声明了以下 `depends`：

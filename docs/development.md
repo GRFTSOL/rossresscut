@@ -69,7 +69,9 @@ cargo fmt --all --check
 
 ### Windows（本机原生 MSVC 构建）
 
-同一棵树也在这台 Windows 机器上用 MSVC 直接构建，不是交叉编译。
+同一棵树也在这台 Windows 机器上用 MSVC 直接构建，不是交叉编译。Linux 侧因此
+不再需要 `x86_64-pc-windows-gnu` target 与 `mingw-w64-gcc`；这些工具链可以卸载，
+本仓库的脚本与 CI 都不再引用它们。
 
 - **MSVC 与 Windows SDK**：由 `msvc-kit` 安装在 `C:\data\msvc-kit-data`
   （MSVC `14.40.33807`、Windows SDK `10.0.19041.0`）。执行一次持久化后，它们被

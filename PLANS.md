@@ -93,8 +93,10 @@ LosslessCut 是产品行为、媒体语义和 FFmpeg 工作流的参考实现，
 
 ## 通用
 
-- [ ] 自动发布
-- [ ] 安装包
+- [ ] 自动发布：Linux 的 pacman 包已由 `.github/workflows/release.yml` 在 `v*` tag
+  上构建并附加到同名 Release；Windows 便携包仍在本机手动构建，尚未进入 CI
+- [ ] 安装包：Linux 有 pacman 包（本地脚本与 CI），Windows 只有便携 zip，
+  没有安装器
 
 ---
 
