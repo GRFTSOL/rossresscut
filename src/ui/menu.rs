@@ -101,7 +101,7 @@ impl RossresscutApp {
                         &undo_tooltip,
                         self.application.can_undo(),
                     ) {
-                        self.run_shortcut(ShortcutAction::Undo);
+                        self.run_shortcut(ui.ctx(), ShortcutAction::Undo);
                         ui.close();
                     }
                     let redo_tooltip =
@@ -112,7 +112,7 @@ impl RossresscutApp {
                         &redo_tooltip,
                         self.application.can_redo(),
                     ) {
-                        self.run_shortcut(ShortcutAction::Redo);
+                        self.run_shortcut(ui.ctx(), ShortcutAction::Redo);
                         ui.close();
                     }
                     ui.separator();
@@ -120,13 +120,13 @@ impl RossresscutApp {
                     let cut_tooltip =
                         self.shortcut_tooltip(strings.cut.as_str(), ShortcutAction::Cut);
                     if menu_button(ui, strings.cut.as_str(), &cut_tooltip, has_selection) {
-                        self.run_shortcut(ShortcutAction::Cut);
+                        self.run_shortcut(ui.ctx(), ShortcutAction::Cut);
                         ui.close();
                     }
                     let copy_tooltip =
                         self.shortcut_tooltip(strings.copy.as_str(), ShortcutAction::Copy);
                     if menu_button(ui, strings.copy.as_str(), &copy_tooltip, has_selection) {
-                        self.run_shortcut(ShortcutAction::Copy);
+                        self.run_shortcut(ui.ctx(), ShortcutAction::Copy);
                         ui.close();
                     }
                     let paste_tooltip =
@@ -137,7 +137,7 @@ impl RossresscutApp {
                         &paste_tooltip,
                         self.application.media().is_some(),
                     ) {
-                        self.run_shortcut(ShortcutAction::Paste);
+                        self.run_shortcut(ui.ctx(), ShortcutAction::Paste);
                         ui.close();
                     }
                     ui.separator();
@@ -149,29 +149,32 @@ impl RossresscutApp {
                         &select_all_tooltip,
                         !self.application.timeline().is_empty(),
                     ) {
-                        self.run_shortcut(ShortcutAction::SelectAll);
+                        self.run_shortcut(ui.ctx(), ShortcutAction::SelectAll);
                         ui.close();
                     }
                 });
 
                 ui.menu_button(strings.menu_segment.as_str(), |ui| {
                     let has_media = self.application.media().is_some();
+                    let silence_tooltip = self.shortcut_tooltip(
+                        strings.auto_cut_silence.as_str(),
+                        ShortcutAction::AutoCutSilence,
+                    );
                     if menu_button(
                         ui,
                         strings.auto_cut_silence.as_str(),
-                        strings.auto_cut_silence.as_str(),
+                        &silence_tooltip,
                         has_media,
                     ) {
-                        self.open_silence_dialog();
+                        self.run_shortcut(ui.ctx(), ShortcutAction::AutoCutSilence);
                         ui.close();
                     }
-                    if menu_button(
-                        ui,
+                    let scene_tooltip = self.shortcut_tooltip(
                         strings.menu_scene.as_str(),
-                        strings.menu_scene.as_str(),
-                        has_media,
-                    ) {
-                        self.open_scene_dialog();
+                        ShortcutAction::SceneDetection,
+                    );
+                    if menu_button(ui, strings.menu_scene.as_str(), &scene_tooltip, has_media) {
+                        self.run_shortcut(ui.ctx(), ShortcutAction::SceneDetection);
                         ui.close();
                     }
                     let random_tooltip = self.shortcut_tooltip(
@@ -184,7 +187,7 @@ impl RossresscutApp {
                         &random_tooltip,
                         has_media,
                     ) {
-                        self.run_shortcut(ShortcutAction::RandomSegment);
+                        self.run_shortcut(ui.ctx(), ShortcutAction::RandomSegment);
                         ui.close();
                     }
                     ui.separator();
@@ -198,7 +201,7 @@ impl RossresscutApp {
                         &sort_tooltip,
                         self.application.timeline().len() > 1,
                     ) {
-                        self.run_shortcut(ShortcutAction::SortSegments);
+                        self.run_shortcut(ui.ctx(), ShortcutAction::SortSegments);
                         ui.close();
                     }
                     let shuffle_tooltip = self.shortcut_tooltip(
@@ -211,7 +214,7 @@ impl RossresscutApp {
                         &shuffle_tooltip,
                         self.application.timeline().len() > 1,
                     ) {
-                        self.run_shortcut(ShortcutAction::ShuffleSegments);
+                        self.run_shortcut(ui.ctx(), ShortcutAction::ShuffleSegments);
                         ui.close();
                     }
                     ui.separator();
@@ -225,7 +228,7 @@ impl RossresscutApp {
                         &merge_tooltip,
                         self.application.timeline().len() > 1,
                     ) {
-                        self.run_shortcut(ShortcutAction::MergeOverlapping);
+                        self.run_shortcut(ui.ctx(), ShortcutAction::MergeOverlapping);
                         ui.close();
                     }
                     let reverse_tooltip = self.shortcut_tooltip(
@@ -238,7 +241,7 @@ impl RossresscutApp {
                         &reverse_tooltip,
                         self.application.timeline().len() > 1,
                     ) {
-                        self.run_shortcut(ShortcutAction::InvertSegments);
+                        self.run_shortcut(ui.ctx(), ShortcutAction::InvertSegments);
                         ui.close();
                     }
                     ui.separator();
@@ -252,7 +255,7 @@ impl RossresscutApp {
                         &clear_tooltip,
                         !self.application.timeline().is_empty(),
                     ) {
-                        self.run_shortcut(ShortcutAction::ClearSegments);
+                        self.run_shortcut(ui.ctx(), ShortcutAction::ClearSegments);
                         ui.close();
                     }
                 });
@@ -268,7 +271,7 @@ impl RossresscutApp {
                         &command_tooltip,
                         true,
                     ) {
-                        self.run_shortcut(ShortcutAction::ShowLastCommand);
+                        self.run_shortcut(ui.ctx(), ShortcutAction::ShowLastCommand);
                         ui.close();
                     }
                 });

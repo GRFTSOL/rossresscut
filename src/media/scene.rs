@@ -5,10 +5,12 @@
 //! this process; only timestamps are parsed from `showinfo` output.
 
 use std::fmt;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::domain::time::Timestamp;
+use crate::domain::time::{Duration, Timestamp};
 use crate::media::process;
 
 /// Errors produced while scanning for scene changes.
@@ -30,6 +32,15 @@ pub enum SceneError {
         /// Captured standard error tail, possibly empty.
         stderr: String,
     },
+    /// Waiting for the FFmpeg process failed.
+    Wait {
+        /// Media file that was being scanned.
+        path: PathBuf,
+        /// Operating-system error from waiting for the process.
+        source: std::io::Error,
+    },
+    /// The caller cancelled the scan.
+    Cancelled,
 }
 
 impl fmt::Display for SceneError {
@@ -56,6 +67,12 @@ impl fmt::Display for SceneError {
                 }
                 Ok(())
             }
+            Self::Wait { path, source } => write!(
+                formatter,
+                "waiting for ffmpeg scene detection on {}: {source}",
+                path.display()
+            ),
+            Self::Cancelled => formatter.write_str("scene detection was cancelled"),
         }
     }
 }
@@ -63,8 +80,8 @@ impl fmt::Display for SceneError {
 impl std::error::Error for SceneError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Spawn { source, .. } => Some(source),
-            Self::Failed { .. } => None,
+            Self::Spawn { source, .. } | Self::Wait { source, .. } => Some(source),
+            Self::Failed { .. } | Self::Cancelled => None,
         }
     }
 }
@@ -72,34 +89,90 @@ impl std::error::Error for SceneError {
 /// Scans `path` and returns scene-change timestamps on the media timeline.
 ///
 /// `threshold` is FFmpeg's scene score in `0.0..=1.0`; higher values keep only
-/// sharper cuts. Timestamps are normalized by subtracting `start_time`, which
-/// matches the keyframe index and the preview seek coordinates.
+/// sharper cuts. `duration` is used to report decode progress as a percentage;
+/// without it the callback is never called. Timestamps are normalized by
+/// subtracting `start_time`, which matches the keyframe index and the preview
+/// seek coordinates.
 ///
 /// This function blocks until FFmpeg finishes and must run outside the UI
-/// thread.
-pub fn detect(
+/// thread. `on_progress` runs on the calling thread.
+pub fn detect<F: FnMut(u8)>(
     path: &Path,
     threshold: f32,
     start_time: Option<Timestamp>,
+    duration: Option<Duration>,
+    cancel: &AtomicBool,
+    mut on_progress: F,
 ) -> Result<Vec<Timestamp>, SceneError> {
-    let output = command_for(path, threshold)
-        .output()
+    if cancel.load(Ordering::Relaxed) {
+        return Err(SceneError::Cancelled);
+    }
+
+    let mut child = command_for(path, threshold)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|source| SceneError::Spawn {
             path: path.to_path_buf(),
             source,
         })?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = child.stderr.take().ok_or_else(|| SceneError::Spawn {
+        path: path.to_path_buf(),
+        source: std::io::Error::other("ffmpeg stderr pipe is unavailable"),
+    })?;
+
+    let offset = start_time.map_or(0, Timestamp::micros).max(0);
+    let duration_micros = duration
+        .map(|duration| i64::try_from(duration.micros()).unwrap_or(i64::MAX))
+        .filter(|duration| *duration > 0);
+    let mut cuts = Vec::new();
+    let mut diagnostics = String::new();
+    let mut last_percent = 0u8;
+
+    for line in BufReader::new(stderr).lines() {
+        if cancel.load(Ordering::Relaxed) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(SceneError::Cancelled);
+        }
+        let Ok(line) = line else {
+            continue;
+        };
+        if line.contains("showinfo@progress") {
+            if let Some(percent) = progress_percent(&line, offset, duration_micros) {
+                let percent = percent.max(last_percent);
+                if percent > last_percent {
+                    last_percent = percent;
+                    on_progress(percent);
+                }
+            }
+        } else if line.contains("showinfo@cuts") {
+            if let Some(time) = showinfo_timestamp(&line) {
+                cuts.push(normalize_cut(time, offset));
+            }
+        } else if diagnostics.len() < 16_384 {
+            diagnostics.push_str(&line);
+            diagnostics.push('\n');
+        }
+    }
+
+    let status = child.wait().map_err(|source| SceneError::Wait {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    if !status.success() {
         return Err(SceneError::Failed {
             path: path.to_path_buf(),
-            status: output.status.to_string(),
-            stderr: stderr_tail(&stderr),
+            status: status.to_string(),
+            stderr: stderr_tail(&diagnostics),
         });
     }
 
-    let text = String::from_utf8_lossy(&output.stderr);
-    Ok(parse_cuts(&text, start_time))
+    cuts.sort_unstable();
+    cuts.dedup();
+    Ok(cuts)
 }
 
 fn command_for(path: &Path, threshold: f32) -> Command {
@@ -119,32 +192,36 @@ fn command_for(path: &Path, threshold: f32) -> Command {
         .arg("-sn")
         .arg("-dn")
         .arg("-filter:v")
-        .arg(format!("select='gt(scene,{threshold:.3})',showinfo"))
+        .arg(format!(
+            "showinfo@progress=checksum=0,select='gt(scene,{threshold:.3})',showinfo@cuts=checksum=0"
+        ))
         .arg("-f")
         .arg("null")
         .arg("-");
     command
 }
 
-/// Extracts `pts_time:` values from `showinfo` lines.
-fn parse_cuts(output: &str, start_time: Option<Timestamp>) -> Vec<Timestamp> {
-    let offset = start_time.map_or(0, Timestamp::micros);
-    let mut cuts = Vec::new();
+/// Extracts `pts_time:` from one `showinfo` line.
+fn showinfo_timestamp(line: &str) -> Option<Timestamp> {
+    let (_, rest) = line.split_once("pts_time:")?;
+    let value = rest.split_whitespace().next()?;
+    Timestamp::from_seconds(value)
+}
 
-    for line in output.lines() {
-        let Some((_, rest)) = line.split_once("pts_time:") else {
-            continue;
-        };
-        let value = rest.split_whitespace().next().unwrap_or_default();
-        let Some(time) = Timestamp::from_seconds(value) else {
-            continue;
-        };
-        cuts.push(Timestamp::from_micros((time.micros() - offset).max(0)));
-    }
+/// Converts a progress line into a 0-99 percent.
+///
+/// 100 is reserved for completion, which the application represents with
+/// [`crate::application::SceneScan::Ready`]. Returns `None` when the duration is
+/// unknown or the line has no timestamp.
+fn progress_percent(line: &str, offset: i64, duration_micros: Option<i64>) -> Option<u8> {
+    let duration = duration_micros.filter(|duration| *duration > 0)?;
+    let elapsed = (showinfo_timestamp(line)?.micros() - offset).max(0);
+    let percent = i128::from(elapsed) * 100 / i128::from(duration);
+    Some(u8::try_from(percent.clamp(0, 99)).unwrap_or(99))
+}
 
-    cuts.sort_unstable();
-    cuts.dedup();
-    cuts
+fn normalize_cut(time: Timestamp, offset: i64) -> Timestamp {
+    Timestamp::from_micros((time.micros() - offset).max(0))
 }
 
 fn stderr_tail(stderr: &str) -> String {
@@ -161,45 +238,60 @@ fn stderr_tail(stderr: &str) -> String {
 mod tests {
     use super::*;
 
+    const PROGRESS: &str = "[showinfo@progress @ 0x55] n:  10 pts: 1000 pts_time:1.5 duration:1";
+    const CUT: &str = "[showinfo@cuts @ 0x66] n:  20 pts: 2000 pts_time:3.25 duration:1";
+
     #[test]
     fn parses_showinfo_timestamps() {
-        let output = "\
-[Parsed_showinfo_1 @ 0x55] n:   0 pts:     0 pts_time:0       duration:1
-[Parsed_showinfo_1 @ 0x55] n:  10 pts:  1000 pts_time:1.5     duration:1
-[Parsed_showinfo_1 @ 0x55] n:  20 pts:  2000 pts_time:3.25    duration:1
-";
-
-        let cuts = parse_cuts(output, None);
-
         assert_eq!(
-            cuts,
-            vec![
-                Timestamp::ZERO,
-                Timestamp::from_micros(1_500_000),
-                Timestamp::from_micros(3_250_000),
-            ]
+            showinfo_timestamp(PROGRESS),
+            Some(Timestamp::from_micros(1_500_000))
         );
+        assert_eq!(
+            showinfo_timestamp(CUT),
+            Some(Timestamp::from_micros(3_250_000))
+        );
+        assert_eq!(showinfo_timestamp("frame= 120 time=00:00:04.00"), None);
     }
 
     #[test]
     fn subtracts_the_container_start_and_clamps_at_zero() {
-        let output = "\
-[Parsed_showinfo_1 @ 0x55] n:   0 pts:     0 pts_time:1.0 duration:1
-[Parsed_showinfo_1 @ 0x55] n:  10 pts:  1000 pts_time:2.5 duration:1
-";
-
-        let cuts = parse_cuts(output, Some(Timestamp::from_micros(1_400_000)));
-
         assert_eq!(
-            cuts,
-            vec![Timestamp::ZERO, Timestamp::from_micros(1_100_000),]
+            normalize_cut(Timestamp::from_micros(2_500_000), 1_400_000),
+            Timestamp::from_micros(1_100_000)
+        );
+        assert_eq!(
+            normalize_cut(Timestamp::from_micros(1_000_000), 1_400_000),
+            Timestamp::ZERO
         );
     }
 
     #[test]
-    fn ignores_unrelated_lines() {
-        let output = "frame=  120 fps=0.0 q=-0.0 size=N/A time=00:00:04.00 bitrate=N/A";
+    fn computes_progress_percentages_and_reserves_one_hundred() {
+        assert_eq!(progress_percent(PROGRESS, 0, Some(4_000_000)), Some(37));
+        assert_eq!(
+            progress_percent(PROGRESS, 500_000, Some(4_000_000)),
+            Some(25)
+        );
+        // Past the end, and before completion, the bar stays at 99%.
+        assert_eq!(progress_percent(PROGRESS, 0, Some(1_000_000)), Some(99));
+        // Unknown durations cannot produce a percentage.
+        assert_eq!(progress_percent(PROGRESS, 0, None), None);
+    }
 
-        assert!(parse_cuts(output, None).is_empty());
+    #[test]
+    fn distinguishes_progress_from_cut_lines() {
+        assert!(PROGRESS.contains("showinfo@progress"));
+        assert!(!PROGRESS.contains("showinfo@cuts"));
+        assert!(CUT.contains("showinfo@cuts"));
+        assert!(!CUT.contains("showinfo@progress"));
+    }
+
+    #[test]
+    fn returns_immediately_when_already_cancelled() {
+        let cancel = AtomicBool::new(true);
+        let result = detect(Path::new("missing.mp4"), 0.4, None, None, &cancel, |_| {});
+
+        assert!(matches!(result, Err(SceneError::Cancelled)));
     }
 }

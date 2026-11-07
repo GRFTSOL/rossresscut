@@ -39,6 +39,16 @@
 - 不扩大任务范围；不为未来假想需求引入 trait、泛型、事件总线或新依赖。新增模块必须说明分层归属与依赖关系。
 - LosslessCut、FilmCraft、EffectCraft 只作为**行为与工程实践参考**，不复制其代码，也不照搬其架构。边界见 `docs/research.md`。
 
+## 构建
+
+- 图标是构建输入：`build.rs` 从 `assets/img/icon.png` 生成窗口图标，Windows 上还用
+  `assets/img/icon.ico` 作为可执行文件资源。两者都不能删除或改名；`icon.ico`
+  必须保留多尺寸帧。
+- Windows 原生 MSVC 构建需要 `MPV_LIBRARY_DIR` 指向包含 `mpv.lib` 的目录；
+  完整构建与测试还需要 `libmpv-2.dll` 位于 exe / 测试 exe 同目录。
+- 外部 `ffmpeg` / `ffprobe` 必须在 `PATH` 或 exe 同目录；细节见
+  `docs/development.md`。
+
 ## Agent 工作方式
 
 1. 修改前先读 `AGENTS.md`、`GOALS.md`、`PLANS.md`、相关 `docs/` 与 ADR，确认现有模块是否已经具备该能力。
@@ -47,7 +57,7 @@
 4. 研究外部实现时遵循 `docs/research.md` 的顺序与许可证约束，不把 TypeScript / Electron 实现直接翻译成 Rust。
 5. **每次写完代码都用 `fuck-u-code-analysis` 检查一下；查看其输出并判断是否合理。如果合理，依照它的输出进行更正，然后再提交 commit。**
 6. 提交前运行 `./scripts/check.sh` 并确保全部通过。禁止声称没有实际运行的检查已经通过。
-7. 检查 UI 优先用 `scripts/ui_a11y.py` 读取和点击控件；截图只用于颜色、布局与视频画面。用法见 `docs/development.md`。
+7. 检查 UI：Linux 优先用 `scripts/ui_a11y.py` 读取和点击控件；Windows 用截图加输入注入。截图只用于颜色、布局与视频画面。用法见 `docs/development.md`。
 8. 不自动 commit、push、reset、rebase 或修改历史，除非用户明确要求。
 9. 思维过程（包括内部推理）、计划与回答一律使用简体中文；代码、标识符、命令、日志与专有名词不强行翻译。
 

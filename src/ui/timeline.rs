@@ -16,6 +16,13 @@ use super::{
     stepped_volume,
 };
 
+/// Seek distance for one wheel notch while the command modifier is held.
+///
+/// The unmodified step is a user setting (`preview.seek_step_micros`); this
+/// larger step mirrors the old `Ctrl`+wheel behaviour and stays fixed so it
+/// remains predictable next to the configurable step.
+const COMMAND_WHEEL_SEEK_MICROS: i64 = 10_000_000;
+
 impl RossresscutApp {
     pub(super) fn timeline_panel(&mut self, ui: &mut egui::Ui) {
         let strings = self.strings();
@@ -558,13 +565,11 @@ impl RossresscutApp {
             return;
         }
 
-        if modifiers.command {
-            let count = steps.abs() as i64;
-            self.application
-                .skip(wheel_direction(steps) * 10_000_000 * count);
-        } else {
-            self.application.step_keyframe(wheel_direction(steps) > 0);
-        }
+        self.application.skip(wheel_seek_micros(
+            steps,
+            modifiers,
+            self.settings.preview_seek_micros,
+        ));
     }
 
     /// Converts this frame's wheel events into whole steps.
@@ -729,10 +734,29 @@ pub(super) fn timestamp_at_x(rect: egui::Rect, x: f32, duration: MediaDuration) 
 /// Maps accumulated wheel points to playback direction.
 ///
 /// Positive egui scroll points mean the content moves down, which is the
-/// gesture users perceive as scrolling forward in this application: next
-/// keyframe / later position.
+/// gesture users perceive as scrolling forward in this application: later
+/// position.
 pub(super) fn wheel_direction(steps: f32) -> i64 {
     if steps > 0.0 { 1 } else { -1 }
+}
+
+/// Total seek distance in microseconds for this frame's wheel input.
+///
+/// A notch moves by a fixed duration instead of jumping to the next keyframe,
+/// so streams with dense keyframes (intra-only codecs, screen recordings) do
+/// not turn a scroll into a frame-by-frame crawl. `step_micros` is the
+/// configured unmodified step.
+pub(super) fn wheel_seek_micros(steps: f32, modifiers: egui::Modifiers, step_micros: i64) -> i64 {
+    let count = steps.abs() as i64;
+    if count == 0 {
+        return 0;
+    }
+    let per_step = if modifiers.command {
+        COMMAND_WHEEL_SEEK_MICROS
+    } else {
+        step_micros
+    };
+    wheel_direction(steps).saturating_mul(per_step.saturating_mul(count))
 }
 
 /// Vertical wheel delta in points for this frame.

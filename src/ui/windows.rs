@@ -14,12 +14,69 @@ use crate::media::export::StreamSelection;
 use super::dialogs::DirectoryTarget;
 use super::i18n::{Language, fill};
 use super::settings::{detect_system_theme, save_settings, theme_label};
+use super::shortcuts::SETTINGS_ROWS;
 use super::{
     FONT_ZOOM_STEP, MAX_FONT_ZOOM, MIN_FONT_ZOOM, RossresscutApp, ShortcutAction, Strings,
     ThemeChoice,
 };
 
+const SHORTCUT_LABEL_WIDTH: f32 = 180.0;
+const SHORTCUT_BUTTON_WIDTH: f32 = 115.0;
+/// Label + binding button, including the horizontal spacing.
+const SHORTCUT_CELL_WIDTH: f32 = SHORTCUT_LABEL_WIDTH + SHORTCUT_BUTTON_WIDTH + 8.0;
+/// Height of one shortcut row, matching the button height.
+const SHORTCUT_ROW_HEIGHT: f32 = 26.0;
+
+/// Floating windows that can be the topmost dialog for keyboard input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DialogWindow {
+    ClosePrompt,
+    Silence,
+    Random,
+    Scene,
+    Drop,
+    Export,
+    FfmpegCommand,
+    About,
+}
+
 impl RossresscutApp {
+    /// Floating windows that can be the topmost dialog for keyboard input.
+    ///
+    /// Order matches the render order in `RossresscutApp::ui`; later windows
+    /// are on top.
+    fn topmost_dialog(&self) -> Option<DialogWindow> {
+        if self.about_open {
+            Some(DialogWindow::About)
+        } else if self.ffmpeg_command_open {
+            Some(DialogWindow::FfmpegCommand)
+        } else if self.export_panel_open {
+            Some(DialogWindow::Export)
+        } else if self.pending_drop.is_some() {
+            Some(DialogWindow::Drop)
+        } else if self.scene_dialog_open {
+            Some(DialogWindow::Scene)
+        } else if self.random_dialog_open {
+            Some(DialogWindow::Random)
+        } else if self.silence_dialog_open {
+            Some(DialogWindow::Silence)
+        } else if self.pending_close.is_some() {
+            Some(DialogWindow::ClosePrompt)
+        } else {
+            None
+        }
+    }
+
+    /// Whether Enter should activate `dialog`'s primary action.
+    ///
+    /// Text fields keep Enter for themselves; only the topmost window reacts,
+    /// so stacked dialogs cannot all confirm at once.
+    fn dialog_enter(&self, context: &egui::Context, dialog: DialogWindow) -> bool {
+        self.topmost_dialog() == Some(dialog)
+            && !context.text_edit_focused()
+            && context.input(|input| input.key_pressed(egui::Key::Enter))
+    }
+
     fn export_directory_ui(&mut self, ui: &mut egui::Ui, strings: &Strings) {
         ui.checkbox(
             &mut self.settings.export_to_source_dir,
@@ -150,6 +207,7 @@ impl RossresscutApp {
             .iter()
             .any(|segment| segment.enabled());
         let can_export = output.is_some() && has_enabled_segment && !running;
+        let confirm = self.dialog_enter(context, DialogWindow::Export);
 
         egui::Window::new(strings.export.as_str())
             .id(egui::Id::unique("export_panel"))
@@ -171,11 +229,11 @@ impl RossresscutApp {
                     ui.colored_label(ui.visuals().error_fg_color, error);
                 }
                 ui.horizontal(|ui| {
-                    if ui
+                    let export_clicked = ui
                         .add_enabled(can_export, egui::Button::new(strings.export.as_str()))
                         .clicked()
-                        && let Some(output) = output.clone()
-                    {
+                        || (confirm && can_export);
+                    if export_clicked && let Some(output) = output.clone() {
                         match self.application.start_export(
                             output,
                             ExportOptions {
@@ -255,217 +313,19 @@ impl RossresscutApp {
             .open(&mut open)
             .resizable(true)
             .collapsible(false)
-            .min_width(760.0)
-            .min_height(560.0)
-            .default_size(egui::vec2(820.0, 700.0))
+            .min_width(360.0)
+            .max_width(720.0)
+            .min_height(240.0)
+            .default_size(egui::vec2(660.0, 700.0))
             .show(context, |ui| {
-                egui::CollapsingHeader::new(strings.general.as_str())
-                    .default_open(true)
+                egui::ScrollArea::vertical()
+                    .id_salt("settings_scroll")
+                    .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        let follow = ui
-                            .checkbox(
-                                &mut self.settings.follow_system_theme,
-                                strings.follow_system_theme.as_str(),
-                            )
-                            .on_hover_text(strings.follow_system_theme.as_str());
-                        if follow.changed() {
-                            // Re-detect immediately instead of reusing the
-                            // value captured at startup.
-                            self.detected_theme = detect_system_theme();
-                        }
-                        ui.add_enabled_ui(!self.settings.follow_system_theme, |ui| {
-                            egui::ComboBox::from_label(strings.theme.as_str())
-                                .selected_text(theme_label(strings, self.settings.theme))
-                                .show_ui(ui, |ui| {
-                                    ui.selectable_value(
-                                        &mut self.settings.theme,
-                                        ThemeChoice::Dark,
-                                        strings.theme_dark.as_str(),
-                                    );
-                                    ui.selectable_value(
-                                        &mut self.settings.theme,
-                                        ThemeChoice::Light,
-                                        strings.theme_light.as_str(),
-                                    );
-                                });
-                        });
-
-                        ui.horizontal(|ui| {
-                            ui.label(strings.language.as_str());
-                            egui::ComboBox::from_id_salt("language")
-                                .selected_text(self.settings.language.label())
-                                .show_ui(ui, |ui| {
-                                    for language in Language::ALL {
-                                        ui.selectable_value(
-                                            &mut self.settings.language,
-                                            language,
-                                            language.label(),
-                                        );
-                                    }
-                                });
-                        });
-
-                        ui.separator();
-                        ui.horizontal(|ui| {
-                            ui.label(strings.font_size.as_str());
-                            let slider = ui.add(
-                                egui::Slider::new(
-                                    &mut self.font_zoom_draft,
-                                    MIN_FONT_ZOOM..=MAX_FONT_ZOOM,
-                                )
-                                .step_by(f64::from(FONT_ZOOM_STEP))
-                                .fixed_decimals(2),
-                            );
-                            // The preview only follows a released slider; this
-                            // avoids rebuilding the font atlas on every drag
-                            // frame.
-                            if slider.drag_stopped() || (slider.changed() && !slider.dragged()) {
-                                self.settings.font_zoom =
-                                    self.font_zoom_draft.clamp(MIN_FONT_ZOOM, MAX_FONT_ZOOM);
-                            }
-                            if ui
-                                .button(strings.reset_font_size.as_str())
-                                .on_hover_text(strings.reset_font_size.as_str())
-                                .clicked()
-                            {
-                                self.set_font_zoom(1.0);
-                            }
-                        });
-                        self.font_family_ui(ui, strings);
-
-                        ui.separator();
-                        ui.checkbox(
-                            &mut self.settings.subtitle_keep_partial,
-                            strings.subtitle_keep_partial.as_str(),
-                        )
-                        .on_hover_text(strings.subtitle_keep_partial_hint.as_str());
-                        ui.checkbox(
-                            &mut self.settings.autosave_projects,
-                            strings.autosave_projects.as_str(),
-                        )
-                        .on_hover_text(strings.autosave_projects_hint.as_str());
-                        ui.add_enabled_ui(self.settings.autosave_projects, |ui| {
-                            ui.checkbox(
-                                &mut self.settings.project_to_source_dir,
-                                strings.project_to_source_dir.as_str(),
-                            )
-                            .on_hover_text(strings.project_to_source_dir.as_str());
-                            ui.add_enabled_ui(!self.settings.project_to_source_dir, |ui| {
-                                ui.horizontal(|ui| {
-                                    if ui
-                                        .button(strings.choose_project_directory.as_str())
-                                        .clicked()
-                                    {
-                                        self.start_directory_dialog(DirectoryTarget::Project);
-                                    }
-                                    ui.add(
-                                        egui::TextEdit::singleline(
-                                            &mut self.settings.project_directory,
-                                        )
-                                        .desired_width(360.0)
-                                        .hint_text(strings.project_directory.as_str()),
-                                    );
-                                });
-                            });
-                        });
-                    });
-
-                egui::CollapsingHeader::new(strings.export.as_str())
-                    .default_open(true)
-                    .show(ui, |ui| {
-                        ui.checkbox(
-                            &mut self.settings.export_chapters,
-                            strings.export_chapters.as_str(),
-                        )
-                        .on_hover_text(strings.export_chapters_hint.as_str());
-                        self.export_directory_ui(ui, strings);
-
-                        ui.separator();
-                        ui.horizontal(|ui| {
-                            ui.label(strings.export_title.as_str());
-                            ui.add(
-                                egui::TextEdit::singleline(&mut self.settings.export_title)
-                                    .desired_width(320.0),
-                            )
-                            .on_hover_text(strings.export_title_hint.as_str());
-                        });
-                        ui.checkbox(&mut self.settings.smart_cut, strings.smart_cut.as_str())
-                            .on_hover_text(strings.smart_cut_hint.as_str());
-                        ui.add_enabled_ui(self.settings.smart_cut, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(strings.smart_cut_bit_rate.as_str());
-                                ui.add(
-                                    egui::DragValue::new(
-                                        &mut self.settings.smart_cut_bit_rate_kbps,
-                                    )
-                                    .range(0..=1_000_000)
-                                    .speed(50)
-                                    .suffix(" kbps"),
-                                )
-                                .on_hover_text(strings.smart_cut_bit_rate_hint.as_str());
-                            });
-                        });
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(strings.export_join_hint.as_str()).small(),
-                            )
-                            .wrap(),
-                        );
-                    });
-
-                egui::CollapsingHeader::new(strings.shortcuts.as_str())
-                    .default_open(false)
-                    .show(ui, |ui| {
-                        egui::ScrollArea::vertical()
-                            .max_height(360.0)
-                            .show(ui, |ui| {
-                                for action in ShortcutAction::ALL {
-                                    ui.horizontal(|ui| {
-                                        ui.add_sized(
-                                            [210.0, 20.0],
-                                            egui::Label::new(action.label(strings)).truncate(),
-                                        );
-                                        let recording = self.recording_shortcut == Some(action);
-                                        let binding = self.settings.binding(action).to_owned();
-                                        let text = if recording {
-                                            strings.shortcut_press_keys.clone()
-                                        } else if binding.is_empty() {
-                                            strings.shortcut_unassigned.clone()
-                                        } else {
-                                            binding.clone()
-                                        };
-                                        if ui
-                                            .add(
-                                                egui::Button::new(text)
-                                                    .min_size(egui::vec2(140.0, 26.0)),
-                                            )
-                                            .on_hover_text(strings.shortcut_press_keys.as_str())
-                                            .clicked()
-                                        {
-                                            self.recording_shortcut =
-                                                if recording { None } else { Some(action) };
-                                            self.recording_pending = None;
-                                        }
-                                        if ui
-                                            .add_enabled(
-                                                !binding.is_empty(),
-                                                egui::Button::new("×")
-                                                    .min_size(egui::vec2(28.0, 26.0)),
-                                            )
-                                            .on_hover_text(strings.shortcut_clear.as_str())
-                                            .clicked()
-                                        {
-                                            self.settings
-                                                .shortcuts
-                                                .insert(action.key().to_owned(), String::new());
-                                            if recording {
-                                                self.recording_shortcut = None;
-                                                self.recording_pending = None;
-                                            }
-                                        }
-                                    });
-                                }
-                            });
+                        self.general_settings_ui(ui, strings);
+                        self.preview_settings_ui(ui, strings);
+                        self.export_settings_ui(ui, strings);
+                        self.shortcut_settings_ui(ui, strings);
                     });
             });
 
@@ -477,10 +337,271 @@ impl RossresscutApp {
         }
     }
 
-    /// Opens the scene detection dialog and starts a scan.
+    fn general_settings_ui(&mut self, ui: &mut egui::Ui, strings: &Strings) {
+        egui::CollapsingHeader::new(strings.general.as_str())
+            .default_open(true)
+            .show(ui, |ui| {
+                let follow = ui
+                    .checkbox(
+                        &mut self.settings.follow_system_theme,
+                        strings.follow_system_theme.as_str(),
+                    )
+                    .on_hover_text(strings.follow_system_theme.as_str());
+                if follow.changed() {
+                    // Re-detect immediately instead of reusing the value captured
+                    // at startup.
+                    self.detected_theme = detect_system_theme();
+                }
+                ui.add_enabled_ui(!self.settings.follow_system_theme, |ui| {
+                    egui::ComboBox::from_label(strings.theme.as_str())
+                        .selected_text(theme_label(strings, self.settings.theme))
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut self.settings.theme,
+                                ThemeChoice::Dark,
+                                strings.theme_dark.as_str(),
+                            );
+                            ui.selectable_value(
+                                &mut self.settings.theme,
+                                ThemeChoice::Light,
+                                strings.theme_light.as_str(),
+                            );
+                        });
+                });
+
+                ui.horizontal(|ui| {
+                    ui.label(strings.language.as_str());
+                    egui::ComboBox::from_id_salt("language")
+                        .selected_text(self.settings.language.label())
+                        .show_ui(ui, |ui| {
+                            for language in Language::ALL {
+                                ui.selectable_value(
+                                    &mut self.settings.language,
+                                    language,
+                                    language.label(),
+                                );
+                            }
+                        });
+                });
+
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.label(strings.font_size.as_str());
+                    let slider = ui.add(
+                        egui::Slider::new(&mut self.font_zoom_draft, MIN_FONT_ZOOM..=MAX_FONT_ZOOM)
+                            .step_by(f64::from(FONT_ZOOM_STEP))
+                            .fixed_decimals(2),
+                    );
+                    // The preview only follows a released slider; this avoids
+                    // rebuilding the font atlas on every drag frame.
+                    if slider.drag_stopped() || (slider.changed() && !slider.dragged()) {
+                        self.settings.font_zoom =
+                            self.font_zoom_draft.clamp(MIN_FONT_ZOOM, MAX_FONT_ZOOM);
+                    }
+                    if ui
+                        .button(strings.reset_font_size.as_str())
+                        .on_hover_text(strings.reset_font_size.as_str())
+                        .clicked()
+                    {
+                        self.set_font_zoom(1.0);
+                    }
+                });
+                self.font_family_ui(ui, strings);
+
+                ui.separator();
+                ui.checkbox(
+                    &mut self.settings.subtitle_keep_partial,
+                    strings.subtitle_keep_partial.as_str(),
+                )
+                .on_hover_text(strings.subtitle_keep_partial_hint.as_str());
+                ui.checkbox(
+                    &mut self.settings.autosave_projects,
+                    strings.autosave_projects.as_str(),
+                )
+                .on_hover_text(strings.autosave_projects_hint.as_str());
+                ui.add_enabled_ui(self.settings.autosave_projects, |ui| {
+                    ui.checkbox(
+                        &mut self.settings.project_to_source_dir,
+                        strings.project_to_source_dir.as_str(),
+                    )
+                    .on_hover_text(strings.project_to_source_dir.as_str());
+                    ui.add_enabled_ui(!self.settings.project_to_source_dir, |ui| {
+                        ui.horizontal(|ui| {
+                            if ui
+                                .button(strings.choose_project_directory.as_str())
+                                .clicked()
+                            {
+                                self.start_directory_dialog(DirectoryTarget::Project);
+                            }
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.settings.project_directory)
+                                    .desired_width(360.0)
+                                    .hint_text(strings.project_directory.as_str()),
+                            );
+                        });
+                    });
+                });
+            });
+    }
+
+    fn preview_settings_ui(&mut self, ui: &mut egui::Ui, strings: &Strings) {
+        egui::CollapsingHeader::new(strings.preview.as_str())
+            .default_open(true)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(strings.preview_seek_step.as_str());
+                    let mut seconds = self.settings.preview_seek_micros as f64 / 1_000_000.0;
+                    let response = ui.add(
+                        egui::DragValue::new(&mut seconds)
+                            .range(0.1..=600.0)
+                            .speed(0.1)
+                            .fixed_decimals(2)
+                            .suffix(" s"),
+                    );
+                    let response = response.on_hover_text(strings.preview_seek_step_hint.as_str());
+                    if response.changed() {
+                        self.settings.preview_seek_micros = (seconds * 1_000_000.0).round() as i64;
+                    }
+                });
+            });
+    }
+
+    fn export_settings_ui(&mut self, ui: &mut egui::Ui, strings: &Strings) {
+        egui::CollapsingHeader::new(strings.export.as_str())
+            .default_open(true)
+            .show(ui, |ui| {
+                ui.checkbox(
+                    &mut self.settings.export_chapters,
+                    strings.export_chapters.as_str(),
+                )
+                .on_hover_text(strings.export_chapters_hint.as_str());
+                self.export_directory_ui(ui, strings);
+
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.label(strings.export_title.as_str());
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.settings.export_title)
+                            .desired_width(320.0),
+                    )
+                    .on_hover_text(strings.export_title_hint.as_str());
+                });
+                ui.checkbox(&mut self.settings.smart_cut, strings.smart_cut.as_str())
+                    .on_hover_text(strings.smart_cut_hint.as_str());
+                ui.add_enabled_ui(self.settings.smart_cut, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(strings.smart_cut_bit_rate.as_str());
+                        ui.add(
+                            egui::DragValue::new(&mut self.settings.smart_cut_bit_rate_kbps)
+                                .range(0..=1_000_000)
+                                .speed(50)
+                                .suffix(" kbps"),
+                        )
+                        .on_hover_text(strings.smart_cut_bit_rate_hint.as_str());
+                    });
+                });
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(strings.export_join_hint.as_str()).small(),
+                    )
+                    .wrap(),
+                );
+            });
+    }
+
+    fn shortcut_settings_ui(&mut self, ui: &mut egui::Ui, strings: &Strings) {
+        egui::CollapsingHeader::new(strings.shortcuts.as_str())
+            .default_open(false)
+            .show(ui, |ui| {
+                let row_width = ui.available_width();
+                ui.add(
+                    egui::Label::new(egui::RichText::new(strings.shortcut_hint.as_str()).small())
+                        .wrap(),
+                );
+                let clip_rect = ui.clip_rect();
+                let row_visible = |ui: &egui::Ui| {
+                    let top = ui.cursor().min.y;
+                    top + SHORTCUT_ROW_HEIGHT > clip_rect.top() && top < clip_rect.bottom()
+                };
+                let skip_row = |ui: &mut egui::Ui| {
+                    ui.allocate_space(egui::vec2(row_width, SHORTCUT_ROW_HEIGHT));
+                };
+                if row_width >= SHORTCUT_CELL_WIDTH * 2.0 {
+                    for row in SETTINGS_ROWS {
+                        if !row_visible(ui) {
+                            skip_row(ui);
+                            continue;
+                        }
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(row_width, SHORTCUT_ROW_HEIGHT),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                for action in row {
+                                    match action {
+                                        Some(action) => {
+                                            self.shortcut_editor(ui, *action, strings);
+                                        }
+                                        None => {
+                                            ui.add_space(SHORTCUT_CELL_WIDTH);
+                                        }
+                                    }
+                                }
+                            },
+                        );
+                    }
+                } else {
+                    for action in SETTINGS_ROWS.iter().flatten().flatten() {
+                        if !row_visible(ui) {
+                            skip_row(ui);
+                            continue;
+                        }
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(row_width, SHORTCUT_ROW_HEIGHT),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| self.shortcut_editor(ui, *action, strings),
+                        );
+                    }
+                }
+            });
+    }
+
+    /// One shortcut cell: a label followed by its binding button.
+    ///
+    /// Clicking the button starts recording; Backspace clears the binding while
+    /// recording. No per-row clear button is drawn, because reserving space for
+    /// it would push the second column out of alignment.
+    fn shortcut_editor(&mut self, ui: &mut egui::Ui, action: ShortcutAction, strings: &Strings) {
+        ui.add_sized(
+            [SHORTCUT_LABEL_WIDTH, 20.0],
+            egui::Label::new(action.label(strings)).truncate(),
+        );
+
+        let recording = self.recording_shortcut == Some(action);
+        let binding = self.settings.binding(action).to_owned();
+        let text = if recording {
+            strings.shortcut_press_keys.clone()
+        } else if binding.is_empty() {
+            strings.shortcut_unassigned.clone()
+        } else {
+            binding
+        };
+        if ui
+            .add(egui::Button::new(text).min_size(egui::vec2(SHORTCUT_BUTTON_WIDTH, 26.0)))
+            .on_hover_text(strings.shortcut_press_keys.as_str())
+            .clicked()
+        {
+            self.recording_shortcut = if recording { None } else { Some(action) };
+            self.recording_pending = None;
+        }
+    }
+
+    /// Opens the scene detection dialog.
+    ///
+    /// Analysis starts when the user presses the primary button, so the same
+    /// button can read "Start" first and "Apply" after the scan completes.
     pub(super) fn open_scene_dialog(&mut self) {
         self.scene_dialog_open = true;
-        self.application.start_scene_scan(self.scene_threshold);
+        self.application.reset_scene_scan();
     }
 
     pub(super) fn scene_window(&mut self, context: &egui::Context) {
@@ -491,6 +612,7 @@ impl RossresscutApp {
         let mut open = self.scene_dialog_open;
         let mut close_requested = false;
         let status = self.application.scene_scan().cloned();
+        let confirm = self.dialog_enter(context, DialogWindow::Scene);
 
         egui::Window::new(strings.scene_detection.as_str())
             .id(egui::Id::unique("scene_window"))
@@ -508,11 +630,11 @@ impl RossresscutApp {
                 );
 
                 match &status {
-                    Some(SceneScan::Running) => {
-                        ui.horizontal(|ui| {
-                            ui.spinner();
-                            ui.label(strings.scene_scanning.as_str());
-                        });
+                    Some(SceneScan::Running(percent)) => {
+                        ui.add(
+                            egui::ProgressBar::new(f32::from(*percent) / 100.0)
+                                .text(format!("{} {percent}%", strings.scene_scanning)),
+                        );
                     }
                     Some(SceneScan::Ready(cuts)) => {
                         if cuts.is_empty() {
@@ -528,26 +650,35 @@ impl RossresscutApp {
                         ui.colored_label(ui.visuals().error_fg_color, message);
                     }
                     None => {
-                        ui.label(strings.scene_no_cuts.as_str());
+                        ui.label(strings.scene_start_hint.as_str());
                     }
                 }
 
                 ui.horizontal(|ui| {
                     let ready = matches!(status, Some(SceneScan::Ready(_)));
-                    if ui
-                        .add_enabled(ready, egui::Button::new(strings.apply.as_str()))
-                        .clicked()
-                    {
-                        match self.application.segments_from_scene_changes() {
-                            Ok(count) => {
-                                log::info!("created {count} segments from scene changes");
-                                self.segment_error = None;
-                                close_requested = true;
+                    let running = matches!(status, Some(SceneScan::Running(_)));
+                    let label = if ready {
+                        strings.apply.as_str()
+                    } else {
+                        strings.start.as_str()
+                    };
+                    let primary = ui.add_enabled(!running, egui::Button::new(label)).clicked()
+                        || (confirm && !running);
+                    if primary {
+                        if ready {
+                            match self.application.segments_from_scene_changes() {
+                                Ok(count) => {
+                                    log::info!("created {count} segments from scene changes");
+                                    self.segment_error = None;
+                                    close_requested = true;
+                                }
+                                Err(error) => self.segment_error = Some(error.to_string()),
                             }
-                            Err(error) => self.segment_error = Some(error.to_string()),
+                        } else {
+                            self.application.start_scene_scan(self.scene_threshold);
                         }
                     }
-                    if ui.button(strings.scene_rescan.as_str()).clicked() {
+                    if status.is_some() && ui.button(strings.scene_rescan.as_str()).clicked() {
                         self.application.start_scene_scan(self.scene_threshold);
                     }
                     if ui.button(strings.cancel.as_str()).clicked() {
@@ -556,7 +687,10 @@ impl RossresscutApp {
                 });
             });
 
-        if close_requested {
+        if close_requested || !open {
+            // Closing with X, Escape or Cancel must stop the FFmpeg process;
+            // dropping the result channel alone leaves it running.
+            self.application.cancel_scene_scan();
             open = false;
         }
         self.scene_dialog_open = open;
@@ -592,6 +726,7 @@ impl RossresscutApp {
         let mut open = self.silence_dialog_open;
         let mut recompute = false;
         let mut close_requested = false;
+        let confirm = self.dialog_enter(context, DialogWindow::Silence);
 
         egui::Window::new(strings.silence_detection.as_str())
             .id(egui::Id::unique("silence_window"))
@@ -640,7 +775,7 @@ impl RossresscutApp {
                 }
 
                 ui.horizontal(|ui| {
-                    if ui.button(strings.apply.as_str()).clicked() {
+                    if ui.button(strings.apply.as_str()).clicked() || confirm {
                         match self.application.segments_from_silence(self.silence_options) {
                             Ok(count) => {
                                 log::info!("created {count} segments from silence");
@@ -674,6 +809,7 @@ impl RossresscutApp {
         let mut open = self.random_dialog_open;
         let mut create = false;
         let mut close_requested = false;
+        let confirm = self.dialog_enter(context, DialogWindow::Random);
 
         egui::Window::new(strings.random_segment.as_str())
             .id(egui::Id::unique("random_window"))
@@ -691,7 +827,7 @@ impl RossresscutApp {
                     ui.colored_label(ui.visuals().error_fg_color, error.as_str());
                 }
                 ui.horizontal(|ui| {
-                    if ui.button(strings.create.as_str()).clicked() {
+                    if ui.button(strings.create.as_str()).clicked() || confirm {
                         create = true;
                     }
                     if ui.button(strings.cancel.as_str()).clicked() {
@@ -778,7 +914,6 @@ impl RossresscutApp {
                 ui.heading("rossresscut");
                 ui.label(strings.about_description.as_str());
                 ui.label(fill(&strings.about_version, &[env!("CARGO_PKG_VERSION")]));
-                ui.label(fill(&strings.about_commit, &[env!("GIT_COMMIT")]));
             });
 
         self.about_open = open;
@@ -791,6 +926,7 @@ impl RossresscutApp {
         };
         let strings = self.strings();
         let mut cancel = false;
+        let confirm = self.dialog_enter(context, DialogWindow::ClosePrompt);
 
         egui::Window::new(strings.unsaved_changes.as_str())
             .id(egui::Id::unique("close_prompt_window"))
@@ -803,7 +939,7 @@ impl RossresscutApp {
                     ui.colored_label(ui.visuals().error_fg_color, error.as_str());
                 }
                 ui.horizontal(|ui| {
-                    if ui.button(strings.save.as_str()).clicked() {
+                    if ui.button(strings.save.as_str()).clicked() || confirm {
                         self.finish_close(intent, true, ui.ctx());
                     }
                     if ui.button(strings.discard.as_str()).clicked() {

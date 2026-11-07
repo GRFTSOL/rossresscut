@@ -10,7 +10,7 @@
 # this package outside this machine.
 
 pkgname=rossresscut
-pkgver=0.4.0
+pkgver=0.4.1
 pkgrel=1
 pkgdesc='Native lossless media cutting tool built with Rust and egui'
 arch=('x86_64')
@@ -55,8 +55,8 @@ package() {
   install -Dm755 target/release/rossresscut "$pkgdir/usr/bin/rossresscut"
   install -Dm644 packaging/rossresscut.desktop \
     "$pkgdir/usr/share/applications/rossresscut.desktop"
-  install -Dm644 packaging/rossresscut.svg \
-    "$pkgdir/usr/share/icons/hicolor/scalable/apps/rossresscut.svg"
+  install -Dm644 assets/img/icon.png \
+    "$pkgdir/usr/share/pixmaps/rossresscut.png"
   install -Dm644 ATTRIBUTION.md "$pkgdir/usr/share/licenses/$pkgname/ATTRIBUTION.md"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

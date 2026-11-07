@@ -164,7 +164,7 @@ ExportRequest
 - 预览音频输出（libmpv `ao`）
 - 关键帧索引（外部 ffprobe 读取 packet flags，不输入解码）
 - 文本字幕提取、裁剪与重新 mux（`media/subtitle.rs`）
-- 场景检测（`media/scene.rs`，外部 FFmpeg 只输出时间戳）
+- 场景检测（`media/scene.rs`，外部 FFmpeg 流式输出进度与切点时间戳）
 - 导出结果合并（`media/export/merge.rs`，只 remux）
 
 Phase 4B 修订后的预览边界（ADR 0010）：
@@ -418,7 +418,8 @@ docs/decisions/
 
 - 波形、关键帧索引、场景检测与静音检测结果都是派生数据，不进入项目文件。
 - 波形：外部 FFmpeg 解码为 `s16le`，折叠为 min/max peak（ADR 0011）。
-- 场景检测：外部 FFmpeg `select=gt(scene,N),showinfo`，只解析时间戳。
+- 场景检测：外部 FFmpeg `showinfo@progress,select=gt(scene,N),showinfo@cuts`，
+  流式解析解码进度与切点时间戳；进度只在百分比增加时上报。
 - 静音切分：复用波形 peak，在静音区间中点分割。
 - 所有派生数据都在后台线程生成，UI 只轮询结果。
 
@@ -573,7 +574,7 @@ UI 布局：
 
 ```text
 顶部：菜单栏（File / View / Help）、设置按钮、当前媒体标题（不含扩展名）
-中央：视频预览（点击切换播放 / 暂停，滚轮按关键帧步进）
+中央：视频预览（点击切换播放 / 暂停，滚轮按固定时长步进）
 右侧：播放信息（mpv Tab 风格）在上；Segment 列表（输出顺序，添加切点 / 删除切点 / 上移 / 下移 / 分割）在下
 底部：时间轴单独一行；下方是播放控制（13 个控制按钮 + 音量按钮 + 片段起止时间输入框）；右下角为 Export 按钮
 ```
@@ -582,21 +583,30 @@ UI 布局：
 
 ```text
 常规：主题、界面语言、字体与缩放、波形 / 保留被截断字幕等
+预览：滚轮跳转步长
 导出：输出目录、章节开关、智能裁切与码率
-快捷键：可分组折叠、可录制、可为空
+快捷键：两列成对排列，点击录制，录制时 Backspace 清空
 ```
 
 主题、语言与 egui memory（流折叠状态、窗口尺寸）通过 eframe storage 持久化。
 
-时间轴滚轮步进：
+时间轴与预览区滚轮步进：
 
 ```text
-上滚 → 上一个关键帧
-下滚 → 下一个关键帧
-mod + 滚轮 → ±10 秒
+上滚 → 后退一个步长
+下滚 → 前进一个步长
+mod + 滚轮 → 每格 ±10 秒
 ```
 
-关键帧索引在后台生成；索引未完成时滚轮回退为 ±1 秒。
+步长在“设置 → 预览 → 跳转步长”中配置，单位为秒，保存到
+`config.toml` 的 `[preview] seek_step_micros`（整数微秒）。默认
+`6_666_667` 微秒，即 30 fps 下的 200 帧。作为参考，LosslessCut 的滚轮行为在
+`src/renderer/src/timelineWheel.ts`（master，查阅于 2026-11-07）：无修饰键时
+`amount = delta * wheelSensitivity * 0.2` 秒，`wheelSensitivity` 默认 `0.2`
+（`src/main/configStore.ts`）；Windows 一格滚轮约 100 px，因此约 4 秒。
+Shift+滚轮为关键帧步进，Alt+滚轮为单帧步进。本项目的默认步长比 LosslessCut
+的默认值更大。关键帧步进保留在控制按钮与 `previous_keyframe` /
+`next_keyframe` 快捷键上。
 
 滚轮交互占用了 command / ctrl 修饰键，因此 egui 的 ctrl+滚轮界面缩放被显式关闭（`InputOptions::zoom_modifier = Modifiers::NONE`）。
 

@@ -216,6 +216,15 @@ pub(super) fn config_directory() -> Option<PathBuf> {
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
 }
 
+/// Default wheel seek step: 200 frames at 30 fps.
+///
+/// The wheel step is a user setting; this value is only used when
+/// `config.toml` has no `[preview] seek_step_micros` yet.
+pub(super) const DEFAULT_PREVIEW_SEEK_MICROS: i64 = 6_666_667;
+/// Accepted wheel step range; a hand-edited config outside it is clamped.
+const MIN_PREVIEW_SEEK_MICROS: i64 = 100_000;
+const MAX_PREVIEW_SEEK_MICROS: i64 = 600_000_000;
+
 /// UI settings used by the application.
 ///
 /// The on-disk layout splits these into `[general]` and `[export]` so
@@ -231,6 +240,7 @@ pub(super) struct UiSettings {
     pub(super) font_index: u32,
     pub(super) shortcuts: BTreeMap<String, String>,
     pub(super) volume: u8,
+    pub(super) preview_seek_micros: i64,
     pub(super) autosave_projects: bool,
     pub(super) subtitle_keep_partial: bool,
     pub(super) project_to_source_dir: bool,
@@ -245,8 +255,10 @@ pub(super) struct UiSettings {
 
 /// `config.toml` layout.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub(super) struct SettingsFile {
     general: GeneralSettings,
+    preview: PreviewSettings,
     export: ExportSettings,
 }
 
@@ -288,6 +300,21 @@ impl Default for GeneralSettings {
     }
 }
 
+/// Preview preferences (`[preview]`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub(super) struct PreviewSettings {
+    seek_step_micros: i64,
+}
+
+impl Default for PreviewSettings {
+    fn default() -> Self {
+        Self {
+            seek_step_micros: UiSettings::default().preview_seek_micros,
+        }
+    }
+}
+
 /// Export preferences (`[export]`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -317,6 +344,7 @@ impl Default for ExportSettings {
 impl From<SettingsFile> for UiSettings {
     fn from(file: SettingsFile) -> Self {
         let general = file.general;
+        let preview = file.preview;
         let export = file.export;
         let mut shortcuts = general.shortcuts;
         migrate_legacy_shortcut_defaults(&mut shortcuts);
@@ -330,6 +358,9 @@ impl From<SettingsFile> for UiSettings {
             font_index: general.font_index,
             shortcuts,
             volume: general.volume,
+            preview_seek_micros: preview
+                .seek_step_micros
+                .clamp(MIN_PREVIEW_SEEK_MICROS, MAX_PREVIEW_SEEK_MICROS),
             autosave_projects: general.autosave_projects,
             subtitle_keep_partial: general.subtitle_keep_partial,
             project_to_source_dir: general.project_to_source_dir,
@@ -360,6 +391,9 @@ impl From<&UiSettings> for SettingsFile {
                 project_directory: settings.project_directory.clone(),
                 shortcuts: settings.shortcuts.clone(),
                 volume: settings.volume,
+            },
+            preview: PreviewSettings {
+                seek_step_micros: settings.preview_seek_micros,
             },
             export: ExportSettings {
                 chapters: settings.export_chapters,
@@ -420,6 +454,7 @@ impl From<LegacySettings> for UiSettings {
             font_index: legacy.font_index,
             shortcuts,
             volume: 100,
+            preview_seek_micros: DEFAULT_PREVIEW_SEEK_MICROS,
             autosave_projects: true,
             subtitle_keep_partial: false,
             project_to_source_dir: true,
@@ -514,6 +549,7 @@ impl Default for UiSettings {
             font_index: 0,
             shortcuts: default_shortcuts(),
             volume: 100,
+            preview_seek_micros: DEFAULT_PREVIEW_SEEK_MICROS,
             autosave_projects: true,
             subtitle_keep_partial: false,
             project_to_source_dir: true,
@@ -560,7 +596,10 @@ pub(super) fn load_settings() -> UiSettings {
 pub(super) fn parse_settings(text: &str) -> Option<UiSettings> {
     let value: toml::Value = toml::from_str(text).ok()?;
     let table = value.as_table()?;
-    if table.contains_key("general") || table.contains_key("export") {
+    if table.contains_key("general")
+        || table.contains_key("preview")
+        || table.contains_key("export")
+    {
         return toml::from_str::<SettingsFile>(text)
             .ok()
             .map(UiSettings::from);
@@ -641,6 +680,40 @@ mod tests {
                 .smart_cut_bit_rate_kbps,
             0
         );
+    }
+
+    #[test]
+    fn round_trips_the_preview_seek_step() {
+        let settings = UiSettings {
+            preview_seek_micros: 2_500_000,
+            ..Default::default()
+        };
+        let text = toml::to_string_pretty(&SettingsFile::from(&settings)).expect("serialize");
+        assert!(text.contains("[preview]"));
+        assert_eq!(
+            parse_settings(&text).expect("parse").preview_seek_micros,
+            2_500_000
+        );
+
+        // Config files written before the key existed fall back to the default.
+        assert_eq!(
+            parse_settings("[general]\n[export]\n")
+                .expect("parse")
+                .preview_seek_micros,
+            DEFAULT_PREVIEW_SEEK_MICROS
+        );
+    }
+
+    #[test]
+    fn clamps_a_hand_edited_preview_seek_step() {
+        let too_small = parse_settings("[general]\n[preview]\nseek_step_micros = 0\n[export]\n")
+            .expect("parse");
+        assert_eq!(too_small.preview_seek_micros, MIN_PREVIEW_SEEK_MICROS);
+
+        let too_large =
+            parse_settings("[general]\n[preview]\nseek_step_micros = 999999999999\n[export]\n")
+                .expect("parse");
+        assert_eq!(too_large.preview_seek_micros, MAX_PREVIEW_SEEK_MICROS);
     }
 
     #[test]

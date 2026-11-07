@@ -17,6 +17,11 @@ pub(super) enum ShortcutAction {
     ClearMarkers,
     CloseMedia,
     OpenSettings,
+    OpenMedia,
+    ExportProject,
+    ImportProject,
+    RebindSource,
+    Quit,
     GoToStart,
     PreviousSegment,
     SegmentStart,
@@ -40,10 +45,17 @@ pub(super) enum ShortcutAction {
     InvertSegments,
     ClearSegments,
     ShowLastCommand,
+    AutoCutSilence,
+    SceneDetection,
+    Fullscreen,
+    ResetFontSize,
+    IncreaseFontSize,
+    DecreaseFontSize,
+    About,
 }
 
 impl ShortcutAction {
-    pub(super) const ALL: [Self; 31] = [
+    pub(super) const ALL: [Self; 43] = [
         Self::PlayPause,
         Self::AddCut,
         Self::RemoveCut,
@@ -52,6 +64,11 @@ impl ShortcutAction {
         Self::ClearMarkers,
         Self::CloseMedia,
         Self::OpenSettings,
+        Self::OpenMedia,
+        Self::ExportProject,
+        Self::ImportProject,
+        Self::RebindSource,
+        Self::Quit,
         Self::GoToStart,
         Self::PreviousSegment,
         Self::SegmentStart,
@@ -75,6 +92,13 @@ impl ShortcutAction {
         Self::InvertSegments,
         Self::ClearSegments,
         Self::ShowLastCommand,
+        Self::AutoCutSilence,
+        Self::SceneDetection,
+        Self::Fullscreen,
+        Self::ResetFontSize,
+        Self::IncreaseFontSize,
+        Self::DecreaseFontSize,
+        Self::About,
     ];
 
     pub(super) const fn key(self) -> &'static str {
@@ -87,6 +111,11 @@ impl ShortcutAction {
             Self::ClearMarkers => "clear_markers",
             Self::CloseMedia => "close_media",
             Self::OpenSettings => "open_settings",
+            Self::OpenMedia => "open_media",
+            Self::ExportProject => "export_project",
+            Self::ImportProject => "import_project",
+            Self::RebindSource => "rebind_source",
+            Self::Quit => "quit",
             Self::GoToStart => "go_to_start",
             Self::PreviousSegment => "previous_segment",
             Self::SegmentStart => "segment_start",
@@ -110,6 +139,13 @@ impl ShortcutAction {
             Self::InvertSegments => "invert_segments",
             Self::ClearSegments => "clear_segments",
             Self::ShowLastCommand => "last_ffmpeg_command",
+            Self::AutoCutSilence => "auto_cut_silence",
+            Self::SceneDetection => "scene_detection",
+            Self::Fullscreen => "fullscreen",
+            Self::ResetFontSize => "reset_font_size",
+            Self::IncreaseFontSize => "increase_font_size",
+            Self::DecreaseFontSize => "decrease_font_size",
+            Self::About => "about",
         }
     }
 
@@ -123,6 +159,11 @@ impl ShortcutAction {
             Self::ClearMarkers => strings.clear_markers.clone(),
             Self::CloseMedia => strings.close_media.clone(),
             Self::OpenSettings => strings.settings.clone(),
+            Self::OpenMedia => strings.open.clone(),
+            Self::ExportProject => strings.export_project.clone(),
+            Self::ImportProject => strings.import_project.clone(),
+            Self::RebindSource => strings.rebind_source.clone(),
+            Self::Quit => strings.quit.clone(),
             Self::GoToStart => strings.go_to_start.clone(),
             Self::PreviousSegment => strings.select_previous_segment.clone(),
             Self::SegmentStart => strings.go_to_segment_start.clone(),
@@ -146,6 +187,13 @@ impl ShortcutAction {
             Self::InvertSegments => strings.invert_segments.clone(),
             Self::ClearSegments => strings.clear_segments.clone(),
             Self::ShowLastCommand => strings.last_ffmpeg_command.clone(),
+            Self::AutoCutSilence => strings.auto_cut_silence.clone(),
+            Self::SceneDetection => strings.scene_detection.clone(),
+            Self::Fullscreen => strings.fullscreen.clone(),
+            Self::ResetFontSize => strings.reset_font_size.clone(),
+            Self::IncreaseFontSize => strings.increase_font_size.clone(),
+            Self::DecreaseFontSize => strings.decrease_font_size.clone(),
+            Self::About => strings.about.clone(),
         }
     }
 
@@ -163,25 +211,37 @@ impl ShortcutAction {
             Self::NextSegment => "ArrowDown",
             Self::PreviousKeyframe => "Alt+Left",
             Self::NextKeyframe => "Alt+Right",
-            Self::GoToStart
-            | Self::SegmentStart
-            | Self::PreviousFrame
-            | Self::NextFrame
-            | Self::SegmentEnd
-            | Self::GoToEnd => "",
+            Self::AutoCutSilence => "Alt+S",
             Self::Undo => "Ctrl+Z",
             Self::Redo => "Ctrl+Shift+Z",
             Self::Cut => "Ctrl+X",
             Self::Copy => "Ctrl+C",
             Self::Paste => "Ctrl+V",
             Self::SelectAll => "Ctrl+A",
-            Self::RandomSegment
+            Self::OpenMedia
+            | Self::ExportProject
+            | Self::ImportProject
+            | Self::RebindSource
+            | Self::Quit
+            | Self::GoToStart
+            | Self::SegmentStart
+            | Self::PreviousFrame
+            | Self::NextFrame
+            | Self::SegmentEnd
+            | Self::GoToEnd
+            | Self::RandomSegment
             | Self::SortSegments
             | Self::ShuffleSegments
             | Self::MergeOverlapping
             | Self::InvertSegments
             | Self::ClearSegments
-            | Self::ShowLastCommand => "",
+            | Self::ShowLastCommand
+            | Self::SceneDetection
+            | Self::Fullscreen
+            | Self::ResetFontSize
+            | Self::IncreaseFontSize
+            | Self::DecreaseFontSize
+            | Self::About => "",
         }
     }
 }
@@ -264,6 +324,18 @@ pub(super) fn is_modifier_key(key: egui::Key) -> bool {
     )
 }
 
+/// Keys that should not become a shortcut while recording.
+///
+/// Besides modifiers, lock keys only change keyboard state and would otherwise
+/// replace a binding by accident.
+pub(super) fn is_recording_ignored_key(key: egui::Key) -> bool {
+    is_modifier_key(key)
+        || matches!(
+            key,
+            egui::Key::CapsLock | egui::Key::NumLock | egui::Key::ScrollLock
+        )
+}
+
 pub(super) fn key_label(key: egui::Key) -> &'static str {
     match key {
         // `Key::name` calls this key "Comma"; the punctuation form is what
@@ -278,4 +350,113 @@ pub(super) fn default_shortcuts() -> BTreeMap<String, String> {
         .iter()
         .map(|action| (action.key().to_owned(), action.default_binding().to_owned()))
         .collect()
+}
+
+/// Settings-page layout: each row holds two related actions side by side.
+///
+/// Related bindings stay next to each other (cut start / end, previous / next
+/// keyframe) so the two-column list reads as pairs instead of a long sequence.
+pub(super) const SETTINGS_ROWS: &[[Option<ShortcutAction>; 2]] = &[
+    [
+        Some(ShortcutAction::PlayPause),
+        Some(ShortcutAction::ClearMarkers),
+    ],
+    [
+        Some(ShortcutAction::AddCut),
+        Some(ShortcutAction::RemoveCut),
+    ],
+    [
+        Some(ShortcutAction::SegmentStart),
+        Some(ShortcutAction::SegmentEnd),
+    ],
+    [
+        Some(ShortcutAction::PreviousKeyframe),
+        Some(ShortcutAction::NextKeyframe),
+    ],
+    [
+        Some(ShortcutAction::PreviousFrame),
+        Some(ShortcutAction::NextFrame),
+    ],
+    [
+        Some(ShortcutAction::PreviousSegment),
+        Some(ShortcutAction::NextSegment),
+    ],
+    [
+        Some(ShortcutAction::GoToStart),
+        Some(ShortcutAction::GoToEnd),
+    ],
+    [
+        Some(ShortcutAction::DeleteSegment),
+        Some(ShortcutAction::Split),
+    ],
+    [Some(ShortcutAction::Undo), Some(ShortcutAction::Redo)],
+    [Some(ShortcutAction::Cut), Some(ShortcutAction::Copy)],
+    [Some(ShortcutAction::Paste), Some(ShortcutAction::SelectAll)],
+    [
+        Some(ShortcutAction::AutoCutSilence),
+        Some(ShortcutAction::SceneDetection),
+    ],
+    [
+        Some(ShortcutAction::RandomSegment),
+        Some(ShortcutAction::ShowLastCommand),
+    ],
+    [
+        Some(ShortcutAction::SortSegments),
+        Some(ShortcutAction::ShuffleSegments),
+    ],
+    [
+        Some(ShortcutAction::MergeOverlapping),
+        Some(ShortcutAction::InvertSegments),
+    ],
+    [Some(ShortcutAction::ClearSegments), None],
+    [
+        Some(ShortcutAction::OpenSettings),
+        Some(ShortcutAction::About),
+    ],
+    [
+        Some(ShortcutAction::OpenMedia),
+        Some(ShortcutAction::CloseMedia),
+    ],
+    [
+        Some(ShortcutAction::ExportProject),
+        Some(ShortcutAction::ImportProject),
+    ],
+    [
+        Some(ShortcutAction::RebindSource),
+        Some(ShortcutAction::Quit),
+    ],
+    [
+        Some(ShortcutAction::Fullscreen),
+        Some(ShortcutAction::ResetFontSize),
+    ],
+    [
+        Some(ShortcutAction::IncreaseFontSize),
+        Some(ShortcutAction::DecreaseFontSize),
+    ],
+];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_layout_covers_every_action_once() {
+        let layout: Vec<ShortcutAction> =
+            SETTINGS_ROWS.iter().flatten().flatten().copied().collect();
+
+        assert_eq!(layout.len(), ShortcutAction::ALL.len());
+        for action in ShortcutAction::ALL {
+            assert_eq!(
+                layout.iter().filter(|entry| **entry == action).count(),
+                1,
+                "{action:?} must appear exactly once in the settings layout"
+            );
+        }
+    }
+
+    #[test]
+    fn silence_cut_has_a_default_binding() {
+        assert_eq!(ShortcutAction::AutoCutSilence.default_binding(), "Alt+S");
+        assert_eq!(default_shortcuts()["auto_cut_silence"], "Alt+S");
+    }
 }

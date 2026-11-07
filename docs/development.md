@@ -14,6 +14,15 @@ cargo clippy --no-default-features --all-targets -- -D warnings
 cargo fmt --all --check
 ```
 
+## 构建输入
+
+- `assets/img/icon.png` 是窗口图标源图，`assets/img/icon.ico` 是 Windows 的多尺寸
+  可执行文件图标；`build.rs` 读取两者，删除或改名会让构建失败。
+- `build.rs` 的依赖只用于构建：`image`（把 PNG 缩放到窗口图标尺寸）与
+  Windows 上的 `winresource`（嵌入 ico 与版本字符串）。两者都不进入运行时。
+- 窗口图标尺寸由 `build.rs` 的 `WINDOW_ICON_SIZE` 决定，`src/ui/mod.rs` 从
+  `OUT_DIR/window-icon.rgba` 读取；改动尺寸时两处必须同步。
+
 ## 规则
 
 - 提交前上述命令必须全部通过。
@@ -223,9 +232,11 @@ pacfiles -x '.*/libav(codec|format)\.so'
 
 ---
 
-## UI 检查（AT-SPI）
+## UI 检查（AT-SPI，仅 Linux）
 
 `scripts/ui_a11y.py` 通过 AT-SPI 读取或点击正在运行的 `rossresscut` 窗口。
+Windows 没有 AT-SPI，只能用截图配合 `keybd_event` / 鼠标事件注入，例如
+`target/` 下的一次性 PowerShell 脚本。
 它用于开发与代理验证，不进入产品运行时。
 
 前提：
@@ -294,17 +305,8 @@ pacfiles -x '.*/libav(codec|format)\.so'
 
 ## Git 与提交
 
-不要自动：
-
-- commit
-- push
-- reset
-- rebase
-- 修改历史
-
-除非用户明确要求。
-
-保持修改范围清晰。
+不自动 commit、push、reset、rebase 或修改历史，除非用户明确要求（同
+`AGENTS.md`）。保持修改范围清晰。
 
 不要把以下内容混在一个修改中：
 
@@ -318,21 +320,13 @@ pacfiles -x '.*/libav(codec|format)\.so'
 
 ## 红线清单
 
-以下行为直接视为未完成：
+必须遵守 `AGENTS.md` 的硬约束（原生 Rust、无 `unsafe`、整数时间、UI 帧内不阻塞、
+只经 Application 命令修改状态、禁止 shell 拼接、禁止静默重编码、禁止 `unwrap`
+处理外部输入）。开发流程上额外视为未完成的行为：
 
-- ❌ 引入 `Electron` / `Tauri` / `WebView` / JS UI 框架 / `Node.js` 运行时。
-- ❌ 在 egui 帧回调中同步执行 FFmpeg、FFprobe、解码或大量文件 I/O。
-- ❌ 用 `f32` / `f64` 秒作为媒体时间的唯一表示。
-- ❌ 在项目代码中使用 `unsafe`、FFI、裸指针、`transmute`、`union`、`MaybeUninit`、`ManuallyDrop` 或 `static mut`。
-- ❌ 让 `mpv-engine` / `wgpu` 的裸指针、FFI 类型或底层句柄越过 `media::preview` 与 UI 渲染适配层。
-- ❌ 同时让 mpv 与 cpal 输出音频。
-- ❌ 静默把 `stream copy` 降级为重新编码，或把重编码结果标记为无损。
-- ❌ 通过 shell 拼接命令执行 FFmpeg。
-- ❌ 用 `unwrap()` / `expect()` 处理用户输入或外部进程输出。
-- ❌ 让 `serde_json::Value` 越过 FFprobe 解析边界继续传播。
-- ❌ 在命令回调之外直接修改领域状态。
 - ❌ 提交带 warning 或 `cargo fmt --check` 不通过的代码。
-- ❌ 未经实际运行就声称"已经测试通过"。
+- ❌ 未经实际运行就声称“已经测试通过”。
+- ❌ 用 `fuck-u-code` 的分数替代实际测试。
 
 ---
 

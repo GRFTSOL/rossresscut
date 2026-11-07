@@ -1,6 +1,8 @@
 //! Background scene-change scanning.
 
 use std::fmt;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, TryRecvError};
 use std::thread;
 
@@ -12,12 +14,20 @@ use super::{Application, SceneJob};
 /// State of the scene scan started from the UI.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SceneScan {
-    /// FFmpeg is still decoding the video.
-    Running,
+    /// FFmpeg is still decoding the video; the value is a 0-99 percentage.
+    Running(u8),
     /// Detection finished; timestamps are normalized to the media timeline.
     Ready(Vec<Timestamp>),
     /// Detection failed with a user-facing message.
     Failed(String),
+}
+
+/// Messages sent from the scene-scan worker.
+pub(super) enum SceneEvent {
+    /// Decode progress in percent, monotonic and capped at 99.
+    Progress(u8),
+    /// The worker finished; the result is the detected cuts.
+    Finished(Result<Vec<Timestamp>, scene::SceneError>),
 }
 
 /// Errors produced when turning scene changes into segments.
@@ -62,17 +72,35 @@ impl Application {
             return false;
         }
 
+        // Restarting must abort the previous FFmpeg process, not just drop its
+        // result channel.
         let path = media.path.clone();
         let start_time = media.start_time;
+        let duration = media.duration;
+        self.cancel_scene_job();
+
         let (sender, receiver) = mpsc::channel();
-        self.scene_scan = Some(SceneScan::Running);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let worker_cancel = Arc::clone(&cancel);
+        self.scene_scan = Some(SceneScan::Running(0));
         self.scene_job = None;
 
         let spawn_result = thread::Builder::new()
             .name("scene-scan".to_owned())
             .spawn(move || {
-                let result = scene::detect(&path, threshold, start_time);
-                if sender.send(result).is_err() {
+                let result = scene::detect(
+                    &path,
+                    threshold,
+                    start_time,
+                    duration,
+                    &worker_cancel,
+                    |percent| {
+                        let _ = sender.send(SceneEvent::Progress(percent));
+                    },
+                );
+                if !worker_cancel.load(Ordering::Relaxed)
+                    && sender.send(SceneEvent::Finished(result)).is_err()
+                {
                     log::debug!(
                         "discarding scene scan for {}: the request was superseded",
                         path.display()
@@ -82,7 +110,7 @@ impl Application {
 
         match spawn_result {
             Ok(_handle) => {
-                self.scene_job = Some(SceneJob { receiver });
+                self.scene_job = Some(SceneJob { receiver, cancel });
                 true
             }
             Err(error) => {
@@ -98,32 +126,66 @@ impl Application {
         self.scene_scan.as_ref()
     }
 
-    /// Drops any scan state.
+    /// Drops any scan state and stops the running FFmpeg process.
     pub fn reset_scene_scan(&mut self) {
+        self.cancel_scene_scan();
+    }
+
+    /// Cancels a running scan and clears its state.
+    ///
+    /// The worker observes the flag between decoded frames and kills FFmpeg;
+    /// dropping only the result channel would leave the process running.
+    pub fn cancel_scene_scan(&mut self) {
+        self.cancel_scene_job();
         self.scene_scan = None;
-        self.scene_job = None;
+    }
+
+    fn cancel_scene_job(&mut self) {
+        if let Some(job) = self.scene_job.take() {
+            job.cancel.store(true, Ordering::Relaxed);
+        }
     }
 
     /// Polls the scan worker without blocking.
-    pub(super) fn poll_scene_scan(&mut self) {
+    ///
+    /// Returns whether the visible scan state changed, so the UI repaints while
+    /// the percentage advances.
+    pub(super) fn poll_scene_scan(&mut self) -> bool {
         let Some(job) = self.scene_job.take() else {
-            return;
+            return false;
         };
+        let mut changed = false;
 
-        match job.receiver.try_recv() {
-            Ok(Ok(cuts)) => {
-                log::info!("detected {} scene changes", cuts.len());
-                self.scene_scan = Some(SceneScan::Ready(cuts));
-            }
-            Ok(Err(error)) => {
-                log::warn!("{error}");
-                self.scene_scan = Some(SceneScan::Failed(error.to_string()));
-            }
-            Err(TryRecvError::Empty) => self.scene_job = Some(job),
-            Err(TryRecvError::Disconnected) => {
-                self.scene_scan = Some(SceneScan::Failed(
-                    "the scene scan worker stopped without a result".to_owned(),
-                ));
+        loop {
+            match job.receiver.try_recv() {
+                Ok(SceneEvent::Progress(percent)) => {
+                    if let Some(SceneScan::Running(current)) = self.scene_scan.as_mut()
+                        && *current != percent
+                    {
+                        *current = percent;
+                        changed = true;
+                    }
+                }
+                Ok(SceneEvent::Finished(Ok(cuts))) => {
+                    log::info!("detected {} scene changes", cuts.len());
+                    self.scene_scan = Some(SceneScan::Ready(cuts));
+                    return true;
+                }
+                Ok(SceneEvent::Finished(Err(error))) => {
+                    log::warn!("{error}");
+                    self.scene_scan = Some(SceneScan::Failed(error.to_string()));
+                    return true;
+                }
+                Err(TryRecvError::Empty) => {
+                    self.scene_job = Some(job);
+                    return changed;
+                }
+                Err(TryRecvError::Disconnected) => {
+                    self.scene_scan = Some(SceneScan::Failed(
+                        "the scene scan worker stopped without a result".to_owned(),
+                    ));
+                    return true;
+                }
             }
         }
     }
@@ -241,12 +303,57 @@ mod tests {
     #[test]
     fn requires_a_finished_scan() {
         let mut application = application_with_video();
-        application.scene_scan = Some(SceneScan::Running);
+        application.scene_scan = Some(SceneScan::Running(0));
 
         let error = application
             .segments_from_scene_changes()
             .expect_err("still running");
 
         assert_eq!(error, SceneCutError::NotReady);
+    }
+
+    #[test]
+    fn updates_progress_and_finishes_from_the_worker_channel() {
+        let mut application = application_with_video();
+        let (sender, receiver) = mpsc::channel();
+        application.scene_scan = Some(SceneScan::Running(0));
+        application.scene_job = Some(SceneJob {
+            receiver,
+            cancel: Arc::new(AtomicBool::new(false)),
+        });
+
+        sender.send(SceneEvent::Progress(42)).expect("progress");
+        application.poll_scene_scan();
+        assert_eq!(application.scene_scan, Some(SceneScan::Running(42)));
+
+        sender
+            .send(SceneEvent::Finished(Ok(vec![Timestamp::from_micros(
+                2_000_000,
+            )])))
+            .expect("finished");
+        application.poll_scene_scan();
+        assert_eq!(
+            application.scene_scan,
+            Some(SceneScan::Ready(vec![Timestamp::from_micros(2_000_000)]))
+        );
+        assert!(application.scene_job.is_none());
+    }
+
+    #[test]
+    fn cancelling_signals_the_worker_and_clears_state() {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (_sender, receiver) = mpsc::channel();
+        let mut application = application_with_video();
+        application.scene_scan = Some(SceneScan::Running(10));
+        application.scene_job = Some(SceneJob {
+            receiver,
+            cancel: Arc::clone(&cancel),
+        });
+
+        application.cancel_scene_scan();
+
+        assert!(cancel.load(Ordering::Relaxed));
+        assert!(application.scene_job.is_none());
+        assert!(application.scene_scan.is_none());
     }
 }

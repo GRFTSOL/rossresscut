@@ -34,8 +34,6 @@ cargo build --release --locked
 ```
 
 至少验证窗口能启动、字体扫描正常、能打开一个本地媒体文件。
-`build.rs` 在构建时读取 `git rev-parse --short HEAD` 注入「关于」窗口；
-因此必须从 Git 工作树构建，而不是从解包后的源码目录构建。
 
 ## 3. 打包（Linux / pacman）
 
@@ -55,7 +53,7 @@ dist/rossresscut-<version>-<pkgrel>-x86_64.pkg.tar.zst
 安装与卸载：
 
 ```bash
-sudo pacman -U dist/rossresscut-0.4.0-1-x86_64.pkg.tar.zst
+sudo pacman -U dist/rossresscut-0.4.1-1-x86_64.pkg.tar.zst
 sudo pacman -R rossresscut
 ```
 
@@ -64,7 +62,7 @@ sudo pacman -R rossresscut
 ```text
 /usr/bin/rossresscut
 /usr/share/applications/rossresscut.desktop
-/usr/share/icons/hicolor/scalable/apps/rossresscut.svg
+/usr/share/pixmaps/rossresscut.png
 /usr/share/licenses/rossresscut/LICENSE
 /usr/share/licenses/rossresscut/ATTRIBUTION.md
 ```
@@ -146,7 +144,7 @@ Windows 已能原生构建并产出便携包；macOS 尚未开始。剩余项见
   `LICENSE`、`ATTRIBUTION.md` 与 `README-WINDOWS.txt`；包内说明由
   `packaging/README-WINDOWS.txt` 模板生成。
 
-验证状态（0.4.0）：
+验证状态（0.4.1）：
 
 - [x] 原生 MSVC 构建、`cargo test`、两轮 `cargo clippy` 通过。
 - [x] 预览（wgpu DX12 + libmpv 导出纹理）、波形、关键帧索引，NVIDIA `nvdec`。
@@ -154,19 +152,6 @@ Windows 已能原生构建并产出便携包；macOS 尚未开始。剩余项见
 - [x] 启动失败弹原生错误对话框（GUI 无控制台）。
 - [ ] 文件打开 / 保存对话框、拖放、高 DPI 的人工验收。
 - [ ] 导出路径选择、章节写入与多段 concat 的人工验收（自动化测试已通过）。
-
-历史方案（已不再维护）：在 Arch Linux 上用 mingw 交叉编译到
-`x86_64-pc-windows-gnu`。0.3.0 的测试包由该方式构建；0.4.0 起以原生 MSVC 为准，
-命令保留在这里仅作参考：
-
-```bash
-sudo pacman -S --needed mingw-w64-gcc
-rustup target add x86_64-pc-windows-gnu
-MPV_LIBRARY_DIR=/path/to/libmpv-import-lib \
-  cargo build --release --target x86_64-pc-windows-gnu
-```
-
-- 该方式需要 `libmpv.dll.a`（mpv 官方 `mpv-dev-*.7z`），且未在实机验证。
 
 macOS 至少需要 libmpv dylib、VideoToolbox 验证、签名与公证。
 

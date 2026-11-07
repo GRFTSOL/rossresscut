@@ -60,7 +60,8 @@ chapter_title = "Opening"
 `chapter_title` 是可选的导出章节标题。旧项目没有该字段时按“未设置”处理，
 因此格式版本保持 `version = 1`。
 
-设置文件同时改为两节：`[general]`（应用设置）与 `[export]`（导出设置）。
+设置文件按领域分节：`[general]`（应用设置）、`[preview]`（预览步长等）
+与 `[export]`（导出设置）。
 
 ## 决策理由
 
@@ -88,7 +89,8 @@ chapter_title = "Opening"
 
 ### 后续影响
 
-- 新增设置项必须同时更新 `GeneralSettings` / `ExportSettings` 的默认值。
+- 新增设置项必须同时更新对应设置节（`GeneralSettings` / `PreviewSettings` /
+  `ExportSettings`）的默认值。
 - 项目格式变更必须提升 `version` 并处理旧版本读取或明确拒绝；
   纯追加的可选字段（如 `chapter_title`）可以作为兼容变更保留版本号。
 

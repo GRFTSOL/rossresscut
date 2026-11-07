@@ -2,9 +2,12 @@
 
 use eframe::egui;
 
-use super::shortcuts::{Shortcut, is_modifier_key};
+use crate::application::OpenState;
+
+use super::dialogs::{FileDialogPurpose, ProjectDialogMode};
+use super::shortcuts::{Shortcut, is_recording_ignored_key};
 use super::timeline::parse_time_input;
-use super::{RossresscutApp, ShortcutAction};
+use super::{FILE_DIALOG_SUPPORTED, FONT_ZOOM_STEP, RossresscutApp, ShortcutAction};
 
 impl RossresscutApp {
     pub(super) fn sync_segment_inputs(&mut self) {
@@ -99,7 +102,7 @@ impl RossresscutApp {
                 .collect()
         });
         for action in actions {
-            self.run_shortcut(action);
+            self.run_shortcut(context, action);
         }
     }
 
@@ -139,6 +142,7 @@ impl RossresscutApp {
         }
         if self.scene_dialog_open {
             self.scene_dialog_open = false;
+            self.application.cancel_scene_scan();
             return true;
         }
         if self.silence_dialog_open {
@@ -153,7 +157,7 @@ impl RossresscutApp {
         false
     }
 
-    pub(super) fn run_shortcut(&mut self, action: ShortcutAction) {
+    pub(super) fn run_shortcut(&mut self, context: &egui::Context, action: ShortcutAction) {
         match action {
             ShortcutAction::PlayPause => self.application.toggle_playback(),
             ShortcutAction::AddCut => {
@@ -193,6 +197,31 @@ impl RossresscutApp {
             }
             ShortcutAction::CloseMedia => self.request_close_media(),
             ShortcutAction::OpenSettings => self.open_settings(),
+            ShortcutAction::OpenMedia => {
+                if FILE_DIALOG_SUPPORTED && self.file_dialog.is_none() {
+                    self.start_file_dialog(FileDialogPurpose::OpenMedia);
+                }
+            }
+            ShortcutAction::ExportProject => {
+                if self.application.timeline().source().is_some() {
+                    self.start_project_dialog(ProjectDialogMode::Save);
+                }
+            }
+            ShortcutAction::ImportProject => {
+                if FILE_DIALOG_SUPPORTED && self.project_dialog.is_none() {
+                    self.start_project_dialog(ProjectDialogMode::Open);
+                }
+            }
+            ShortcutAction::RebindSource => {
+                if FILE_DIALOG_SUPPORTED
+                    && self.file_dialog.is_none()
+                    && self.application.timeline().source().is_some()
+                    && matches!(self.application.state(), OpenState::Failed { .. })
+                {
+                    self.start_file_dialog(FileDialogPurpose::RebindSource);
+                }
+            }
+            ShortcutAction::Quit => context.send_viewport_cmd(egui::ViewportCommand::Close),
             ShortcutAction::GoToStart => self.application.seek_to_start(),
             ShortcutAction::PreviousSegment => self.application.select_previous_segment(),
             ShortcutAction::SegmentStart => self.application.seek_to_selected_segment_start(),
@@ -250,6 +279,29 @@ impl RossresscutApp {
                 self.segment_error = None;
             }
             ShortcutAction::ShowLastCommand => self.ffmpeg_command_open = true,
+            ShortcutAction::AutoCutSilence => {
+                if self.application.media().is_some() {
+                    self.open_silence_dialog();
+                }
+            }
+            ShortcutAction::SceneDetection => {
+                if self.application.media().is_some() {
+                    self.open_scene_dialog();
+                }
+            }
+            ShortcutAction::Fullscreen => {
+                let fullscreen =
+                    context.input(|input| input.viewport().fullscreen.unwrap_or(false));
+                context.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!fullscreen));
+            }
+            ShortcutAction::ResetFontSize => self.set_font_zoom(1.0),
+            ShortcutAction::IncreaseFontSize => {
+                self.set_font_zoom(self.settings.font_zoom + FONT_ZOOM_STEP);
+            }
+            ShortcutAction::DecreaseFontSize => {
+                self.set_font_zoom(self.settings.font_zoom - FONT_ZOOM_STEP);
+            }
+            ShortcutAction::About => self.about_open = true,
         }
     }
 
@@ -273,9 +325,23 @@ impl RossresscutApp {
                 .collect()
         });
         for (key, pressed, modifiers) in events {
-            // Modifier keys arrive as ordinary key events; they must not
-            // become the recorded key themselves.
-            if is_modifier_key(key) {
+            // Modifier and lock keys arrive as ordinary key events; they must
+            // not become the recorded key themselves.
+            if is_recording_ignored_key(key) {
+                continue;
+            }
+            // While recording, Backspace clears the binding instead of being
+            // recorded. The click that started recording is the confirmation
+            // gate, so this is not reachable from normal shortcuts.
+            if key == egui::Key::Backspace {
+                if pressed {
+                    self.settings
+                        .shortcuts
+                        .insert(action.key().to_owned(), String::new());
+                    self.recording_shortcut = None;
+                    self.recording_pending = None;
+                    return;
+                }
                 continue;
             }
             if pressed {

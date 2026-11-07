@@ -1,6 +1,6 @@
 [package]
 name = "rossresscut"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 rust-version = "1.99"
 description = "Native lossless media cutting tool built with Rust and egui."
@@ -34,3 +34,9 @@ rfd = { version = "0.17", default-features = false }
 
 [lints.rust]
 unsafe_code = "forbid"
+
+[build-dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"

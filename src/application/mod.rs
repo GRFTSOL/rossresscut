@@ -41,6 +41,7 @@ use export::{ExportJob, JobEvent};
 #[cfg(feature = "mpv-preview")]
 use playback::{fit_within, preview_video_stream};
 pub use project::{PROJECT_EXTENSION, ProjectError};
+use scene::SceneEvent;
 pub use scene::{SceneCutError, SceneScan};
 pub use silence::{SilenceError, SilenceOptions};
 
@@ -159,7 +160,8 @@ pub(super) struct WaveformJob {
 }
 
 pub(super) struct SceneJob {
-    receiver: Receiver<Result<Vec<Timestamp>, crate::media::scene::SceneError>>,
+    receiver: Receiver<SceneEvent>,
+    cancel: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Segments waiting to be applied once the project source is probed.
@@ -620,7 +622,7 @@ impl Application {
         let mut changed = self.poll_probe();
         self.poll_keyframes();
         self.poll_waveform();
-        self.poll_scene_scan();
+        changed |= self.poll_scene_scan();
         self.poll_batch();
         changed |= self.poll_export();
         let duration = self.duration();
