@@ -159,6 +159,7 @@ fn start_preview(path: &Path) -> MpvPreview {
             width: SIZE,
             height: SIZE,
             start_paused: true,
+            hwdec: "auto-safe",
         },
         || {},
         || {},

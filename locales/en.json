@@ -3,7 +3,6 @@
   "about_description": "A native lossless media cutter built with Rust and egui.",
   "about_license": "License",
   "about_third_party": "Third-party components",
-  "about_third_party_hint": "FFmpeg and libmpv are distributed as separate programs or system libraries under their own licenses. See ATTRIBUTION.md in the repository for the full list.",
   "about_version": "Version {}",
   "add_cut_point": "Add cut point",
   "add_cut_or_start": "Add cut point / set segment start",

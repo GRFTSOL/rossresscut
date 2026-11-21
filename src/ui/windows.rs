@@ -1065,13 +1065,6 @@ impl RossresscutApp {
                                     ui.end_row();
                                 }
                             });
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(strings.about_third_party_hint.as_str())
-                                    .small(),
-                            )
-                            .wrap(),
-                        );
                     });
             });
 

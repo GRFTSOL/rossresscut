@@ -56,6 +56,13 @@ impl RossresscutApp {
             };
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.spacing_mut().button_padding = egui::vec2(10.0, 3.0);
+                // The bar keeps its full height for dragging and for the caption
+                // buttons; the menu hover background is drawn shorter so it
+                // leaves a gap above and below instead of filling the bar.
+                #[cfg(target_os = "windows")]
+                {
+                    ui.spacing_mut().interact_size.y = super::titlebar::TITLE_BAR_HEIGHT - 8.0;
+                }
                 ui.menu_button(strings.menu_file.as_str(), |ui| {
                     let dialog_open = self.file_dialog.is_some();
                     let open_enabled = FILE_DIALOG_SUPPORTED && !dialog_open;

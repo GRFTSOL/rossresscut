@@ -456,6 +456,10 @@ impl RossresscutApp {
                         + ui.spacing().item_spacing.x
                         + tab_size(ui, strings.chapters.as_str());
                     let offset = ((ui.available_width() - tabs_width) * 0.5).max(0.0);
+                    // Leave the same gap above the tabs as the separator leaves
+                    // below them, so the selected background sits centred between
+                    // the panel edge and the divider.
+                    ui.add_space(4.0);
                     ui.horizontal(|ui| {
                         ui.add_space(offset);
                         ui.selectable_value(&mut self.info_tab, InfoTab::Segments, segment_label);
