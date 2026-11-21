@@ -1,6 +1,6 @@
 # 贡献指南
 
-本项目是自用 / 学习性质的个人项目：Issue、Discussions 与 PR 均不接受。
+本项目是自用 / 学习性质的个人项目：Issue、Discussions、Wiki 与 PR 均已关闭。
 本文件只记录维护者自己的开发流程与环境说明。
 
 先读 `AGENTS.md`。它列出不可违背的硬约束；具体规则在 `docs/` 中。

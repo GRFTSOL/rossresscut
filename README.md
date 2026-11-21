@@ -8,8 +8,8 @@ in-process, mark segments on the timeline, and export them without re-encoding.
 
 > **This is a vibe-coding project.** Nearly all of the code was written by AI coding agents from
 > short human instructions; the human side is requirements, design choices, and acceptance.
-> It is a personal project for learning and everyday use, so **issues, discussions and the wiki are
-> disabled, and pull requests are not accepted**. There is no support commitment and no roadmap.
+> It is a personal project for learning and everyday use, so **issues, discussions, the wiki and
+> pull requests are disabled**. There is no support commitment and no roadmap.
 > You are welcome to fork it under the GPL.
 
 ## Features

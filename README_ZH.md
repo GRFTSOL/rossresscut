@@ -7,8 +7,8 @@ Linux。工作流对齐 LosslessCut：打开媒体、进程内预览、在时间
 
 > **这是一个 vibe coding 项目。** 代码几乎全部由 AI coding agent 根据简短的人类指令生成，
 > 人负责需求、取舍与验收。
-> 它是自用与学习性质的个人项目，所以 **Issue、Discussions 和 Wiki 均已关闭，也不接受 Pull
-> Request**。没有支持承诺，也没有路线图。愿意的话可以在 GPL 下自行 fork。
+> 它是自用与学习性质的个人项目，所以 **Issue、Discussions、Wiki 与 Pull Request 均已关闭**。
+> 没有支持承诺，也没有路线图。愿意的话可以在 GPL 下自行 fork。
 
 ## 功能
 
