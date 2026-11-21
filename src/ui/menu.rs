@@ -28,6 +28,11 @@ impl RossresscutApp {
             #[cfg(target_os = "windows")]
             let row_height = {
                 let height = super::titlebar::TITLE_BAR_HEIGHT;
+                // The theme raises `interact_size` so ordinary buttons are easier
+                // to hit; `MenuBar` uses it as its own minimum height, which would
+                // make the merged bar taller than the Windows caption. Pin the row
+                // to the caption height instead.
+                ui.spacing_mut().interact_size.y = height;
                 let row = egui::Rect::from_min_size(
                     ui.cursor().min,
                     egui::vec2(ui.available_width(), height),

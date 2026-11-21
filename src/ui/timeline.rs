@@ -60,7 +60,14 @@ impl RossresscutApp {
         // smaller controls. A free `with_layout` would claim the panel's
         // remaining height and collapse the preview pane.
         let row_height = 36.0;
-        let estimated_row_width = 740.0 * ui.ctx().zoom_factor();
+        // The row is centred by its measured width. Widget widths depend on the
+        // font and the zoom factor, so a fixed estimate left the transport a
+        // few tens of pixels left of the window centre (and of the time code
+        // painted on that centre line). The previous frame's measurement is
+        // exact for the current style and self-corrects on a resize.
+        let width_id = ui.scope_id().with("transport_row_width");
+        let measured = ui.ctx().data(|data| data.get_temp::<f32>(width_id));
+        let estimated_row_width = measured.unwrap_or(740.0 * ui.ctx().zoom_factor());
         let padding = ((ui.available_width() - estimated_row_width) * 0.5).max(0.0);
         // The volume control is placed against the panel edge, so remember the
         // full row rect: `allocate_ui_with_layout` reports only the content
@@ -69,7 +76,7 @@ impl RossresscutApp {
             ui.available_rect_before_wrap().left_top(),
             egui::vec2(ui.available_width(), row_height),
         );
-        ui.allocate_ui_with_layout(
+        let inner = ui.allocate_ui_with_layout(
             egui::vec2(ui.available_width(), row_height),
             egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true),
             |ui| {
@@ -225,8 +232,13 @@ impl RossresscutApp {
                 ) {
                     self.application.seek_to_end();
                 }
+
+                ui.min_rect()
             },
         );
+        ui.ctx().data_mut(|data| {
+            data.insert_temp(width_id, (inner.inner.width() - padding).max(0.0));
+        });
 
         // The volume control sits at the far right of the control row, above
         // the export button. `put` keeps it aligned with the panel edge even
