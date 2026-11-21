@@ -2,11 +2,12 @@
 
 ## 当前阶段
 
-**Phase 8：Linux 发布（进行中）**
+**Phase 0–8 已全部完成。**
 
-- Linux：release 构建、`packaging/PKGBUILD` 与 pacman 包已完成（见 Phase 8）。
-- Windows：原生 MSVC 构建、测试与 clippy 已打通（进行中）。
-- Phase 0–7C 已完成；详细实现与验证记录归档在 `docs/history/completed-phases.md`。
+- 发布阶段（Phase 8）的收尾记录见下文；v0.4.2 起 Linux pacman 包由 GitHub Actions 在
+  `v*` tag 上构建并附加到同名 Release，Windows 便携包仍在本机打包。
+- 详细实现与验证记录归档在 `docs/history/completed-phases.md`。
+- 之后的工作是功能完善与缺陷修复，不再按 Phase 编号；涉及真实取舍时仍然写 ADR。
 - 未解决问题记录在 `docs/open-questions.md`。
 
 ## 已完成阶段摘要
@@ -38,7 +39,7 @@ LosslessCut 是产品行为、媒体语义和 FFmpeg 工作流的参考实现，
 
 ---
 
-# Phase 8：发布
+# Phase 8：发布（已完成）
 
 ## Linux
 
@@ -46,7 +47,7 @@ LosslessCut 是产品行为、媒体语义和 FFmpeg 工作流的参考实现，
 - [x] 发布包说明运行时依赖：`libmpv.so.2`、`ffmpeg` / `ffprobe`、XDG desktop portal、EGL / GBM
 - [x] 打包格式：pacman 包（`packaging/PKGBUILD`，`./scripts/package-linux.sh`
   输出 `dist/rossresscut-<version>-<pkgrel>-x86_64.pkg.tar.zst`）
-- [x] desktop entry 与 hicolor 图标随包安装
+- [x] desktop entry 与 pixmaps 图标随包安装
 - [x] 已在 Arch / Wayland 上实际验证：`./scripts/package-linux.sh` 产出
   `rossresscut-0.3.0-1-x86_64.pkg.tar.zst`，包内二进制可启动，
   Wayland app_id 为 `rossresscut`，与 desktop entry 一致
