@@ -12,6 +12,8 @@ in-process, mark segments on the timeline, and export them without re-encoding.
 > pull requests are disabled**. There is no support commitment and no roadmap.
 > You are welcome to fork it under the GPL.
 
+<img width="1679" height="979" alt="图片" src="https://github.com/user-attachments/assets/707ed9fc-7080-4c6e-b33c-b089e414e409" />
+
 ## Features
 
 ### Preview and navigation
