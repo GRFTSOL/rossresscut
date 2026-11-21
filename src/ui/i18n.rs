@@ -70,6 +70,9 @@ pub fn fill(template: &str, values: &[&str]) -> String {
 pub struct Strings {
     pub about: String,
     pub about_description: String,
+    pub about_license: String,
+    pub about_third_party: String,
+    pub about_third_party_hint: String,
     pub about_version: String,
     pub add_cut_point: String,
     pub add_cut_or_start: String,

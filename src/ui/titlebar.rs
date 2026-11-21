@@ -25,10 +25,13 @@ pub(super) fn draw_title_bar(ui: &mut egui::Ui, title: &str, main_window: bool) 
     }
 }
 
-/// Caption height on Windows 10 at 96 DPI (`SM_CYCAPTION`). egui points are
-/// scaled by the UI zoom, so this follows display scaling as well.
+/// Height of the merged title/menu bar and of the settings window title bar.
+///
+/// Windows 10's File Explorer draws its caption at 32 px on a 96 DPI display;
+/// matching that height keeps this window visually aligned with the shell.
+/// egui points are scaled by the UI zoom, so this follows display scaling too.
 #[cfg(target_os = "windows")]
-pub(super) const TITLE_BAR_HEIGHT: f32 = 23.0;
+pub(super) const TITLE_BAR_HEIGHT: f32 = 32.0;
 
 /// Frame used by the merged title/menu bar and the settings title bar.
 #[cfg(target_os = "windows")]

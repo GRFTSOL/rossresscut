@@ -436,11 +436,28 @@ impl RossresscutApp {
                         ui.separator();
                     }
 
+                    let segment_label = fill(
+                        &strings.segments,
+                        &[&self.application.timeline().len().to_string()],
+                    );
+                    // The tab row is centred in the panel. The labels are sized
+                    // by the current font, so they are measured instead of
+                    // offset by a constant that would drift with zoom.
+                    let tab_size = |ui: &egui::Ui, text: &str| -> f32 {
+                        let font = egui::TextStyle::Button.resolve(ui.style());
+                        let width = ui
+                            .painter()
+                            .layout_no_wrap(text.to_owned(), font, egui::Color32::WHITE)
+                            .size()
+                            .x;
+                        width + ui.spacing().button_padding.x * 2.0
+                    };
+                    let tabs_width = tab_size(ui, &segment_label)
+                        + ui.spacing().item_spacing.x
+                        + tab_size(ui, strings.chapters.as_str());
+                    let offset = ((ui.available_width() - tabs_width) * 0.5).max(0.0);
                     ui.horizontal(|ui| {
-                        let segment_label = fill(
-                            &strings.segments,
-                            &[&self.application.timeline().len().to_string()],
-                        );
+                        ui.add_space(offset);
                         ui.selectable_value(&mut self.info_tab, InfoTab::Segments, segment_label);
                         ui.selectable_value(
                             &mut self.info_tab,

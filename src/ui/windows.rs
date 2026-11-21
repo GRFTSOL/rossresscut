@@ -29,6 +29,23 @@ const SHORTCUT_CELL_WIDTH: f32 = SHORTCUT_LABEL_WIDTH + SHORTCUT_BUTTON_WIDTH + 
 /// Height of one shortcut row, matching the button height.
 const SHORTCUT_ROW_HEIGHT: f32 = 26.0;
 
+/// Third-party components shown in the About window.
+///
+/// Mirrors the short table in `ATTRIBUTION.md`; keep both in sync when a
+/// runtime dependency changes. `FFmpeg` and `libmpv` are not linked into this
+/// binary, but the packaged builds ship them next to the executable, so their
+/// licenses are relevant to distribution.
+const THIRD_PARTY_COMPONENTS: &[(&str, &str)] = &[
+    ("FFmpeg", "LGPL-2.1-or-later / GPL-2.0-or-later"),
+    ("libmpv", "GPL-2.0-or-later"),
+    ("egui / eframe", "MIT OR Apache-2.0"),
+    ("wgpu", "MIT OR Apache-2.0"),
+    ("cpal", "Apache-2.0"),
+    ("rfd / fontdb", "MIT"),
+    ("serde / serde_json / toml / log", "MIT OR Apache-2.0"),
+    ("JetBrains Mono NF", "OFL-1.1"),
+];
+
 /// Pages shown as tabs in the independent settings window.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum SettingsTab {
@@ -1029,6 +1046,33 @@ impl RossresscutApp {
                 ui.heading("rossresscut");
                 ui.label(strings.about_description.as_str());
                 ui.label(fill(&strings.about_version, &[env!("CARGO_PKG_VERSION")]));
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.label(strings.about_license.as_str());
+                    ui.monospace("GPL-3.0-or-later");
+                });
+                egui::CollapsingHeader::new(strings.about_third_party.as_str())
+                    .id_salt("about_third_party")
+                    .default_open(false)
+                    .show(ui, |ui| {
+                        egui::Grid::new("about_third_party_grid")
+                            .num_columns(2)
+                            .spacing([16.0, 4.0])
+                            .show(ui, |ui| {
+                                for (component, license) in THIRD_PARTY_COMPONENTS {
+                                    ui.monospace(*component);
+                                    ui.monospace(*license);
+                                    ui.end_row();
+                                }
+                            });
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(strings.about_third_party_hint.as_str())
+                                    .small(),
+                            )
+                            .wrap(),
+                        );
+                    });
             });
 
         self.about_open = open;

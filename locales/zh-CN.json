@@ -1,6 +1,9 @@
 {
   "about": "关于",
   "about_description": "基于 Rust 与 egui 的原生无损媒体剪切工具。",
+  "about_license": "许可证",
+  "about_third_party": "第三方组件",
+  "about_third_party_hint": "FFmpeg 与 libmpv 以独立程序或系统动态库分发，遵循各自的许可证；完整清单见仓库中的 ATTRIBUTION.md。",
   "about_version": "版本 {}",
   "add_cut_point": "添加切点",
   "add_cut_or_start": "添加切点 / 设置片段开始",

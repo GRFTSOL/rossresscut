@@ -576,7 +576,7 @@ egui 帧内不会执行 FFprobe、FFmpeg、mpv 命令或音频解码，也不会
 UI 布局：
 
 ```text
-顶部：Windows 下自绘标题栏与菜单栏合一（高度 23 px）：
+顶部：Windows 下自绘标题栏与菜单栏合一（高度 32 px）：
      左侧菜单（File / Edit / Segments / Tools / View / Help），右侧只有最小化 / 最大化 / 关闭
 中央：视频预览（点击切换播放 / 暂停，滚轮按固定时长步进）
 右侧：可选的播放信息与批处理队列；下方 Segments / Chapters 两个 tab（默认 Segments）
