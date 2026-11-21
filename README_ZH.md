@@ -10,6 +10,8 @@ Linux。工作流对齐 LosslessCut：打开媒体、进程内预览、在时间
 > 它是自用与学习性质的个人项目，所以 **Issue、Discussions、Wiki 与 Pull Request 均已关闭**。
 > 没有支持承诺，也没有路线图。愿意的话可以在 GPL 下自行 fork。
 
+<img width="1679" height="979" alt="图片" src="https://github.com/user-attachments/assets/eee4e2b2-f37e-4201-8171-d8ec87a25ba8" />
+
 ## 功能
 
 ### 预览与导航
