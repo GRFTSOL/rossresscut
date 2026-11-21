@@ -27,6 +27,7 @@ fn start(name: &str, start_paused: bool) -> MpvPreview {
             width: 160,
             height: 120,
             start_paused,
+            hwdec: "auto-safe",
         },
         || {},
         || {},

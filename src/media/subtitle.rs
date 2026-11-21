@@ -84,7 +84,7 @@ pub struct Cue {
 ///
 /// This blocks until FFmpeg finishes and must run outside the UI thread.
 pub fn extract(path: &Path, stream_index: usize) -> Result<String, SubtitleError> {
-    let output = process::command("ffmpeg")
+    let output = process::command("ffmpeg", process::CommandPurpose::Subtitle)
         .arg("-nostdin")
         .arg("-hide_banner")
         .arg("-loglevel")

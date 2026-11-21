@@ -9,7 +9,7 @@
 use std::collections::VecDeque;
 use std::io::{self, Read};
 use std::path::Path;
-use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStderr, ChildStdout, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
@@ -292,8 +292,13 @@ fn build_stream(
         })
 }
 
-fn command_for(path: &Path, start: Timestamp, channels: u16, sample_rate: u32) -> Command {
-    let mut command = process::command("ffmpeg");
+fn command_for(
+    path: &Path,
+    start: Timestamp,
+    channels: u16,
+    sample_rate: u32,
+) -> process::LoggedCommand {
+    let mut command = process::command("ffmpeg", process::CommandPurpose::Preview);
     command
         .arg("-nostdin")
         .arg("-loglevel")

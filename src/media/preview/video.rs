@@ -2,7 +2,7 @@
 
 use std::io::{self, Read};
 use std::path::PathBuf;
-use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStderr, ChildStdout, Stdio};
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::thread::{self, JoinHandle};
@@ -267,8 +267,8 @@ impl Drop for PreviewVideo {
     }
 }
 
-fn command_for(config: &PreviewVideoConfig, width: u32, height: u32) -> Command {
-    let mut command = process::command("ffmpeg");
+fn command_for(config: &PreviewVideoConfig, width: u32, height: u32) -> process::LoggedCommand {
+    let mut command = process::command("ffmpeg", process::CommandPurpose::Preview);
     command
         .arg("-nostdin")
         .arg("-loglevel")

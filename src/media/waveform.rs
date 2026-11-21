@@ -7,7 +7,7 @@
 use std::fmt;
 use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::thread;
 
@@ -221,8 +221,8 @@ pub fn extract(
     })
 }
 
-fn command_for(path: &Path, stream_index: usize) -> Command {
-    let mut command = process::command("ffmpeg");
+fn command_for(path: &Path, stream_index: usize) -> process::LoggedCommand {
+    let mut command = process::command("ffmpeg", process::CommandPurpose::Waveform);
     command
         .arg("-nostdin")
         .arg("-loglevel")

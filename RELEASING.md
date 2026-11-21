@@ -122,9 +122,9 @@ git push origin v0.4.2
   `LICENSE` 与 `ATTRIBUTION.md`。
 - 不再使用 `license=('custom')`；决策见 `docs/decisions/0015-project-license.md`。
 
-## 6. Windows / macOS
+## 6. Windows
 
-Windows 已能原生构建并产出便携包；macOS 尚未开始。剩余项见 `PLANS.md`。
+Windows 已能原生构建并产出便携包。剩余项见 `PLANS.md`。
 
 ### Windows
 
@@ -172,8 +172,6 @@ Windows 已能原生构建并产出便携包；macOS 尚未开始。剩余项见
 - [x] 启动失败弹原生错误对话框（GUI 无控制台）。
 - [ ] 文件打开 / 保存对话框、拖放、高 DPI 的人工验收。
 - [ ] 导出路径选择、章节写入与多段 concat 的人工验收（自动化测试已通过）。
-
-macOS 至少需要 libmpv dylib、VideoToolbox 验证、签名与公证。
 
 ## 7. 对外发布
 

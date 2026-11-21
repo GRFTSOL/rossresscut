@@ -25,6 +25,8 @@ pub struct MpvPreviewConfig {
     pub height: u32,
     /// Start paused after loading; used when opening media before the first play.
     pub start_paused: bool,
+    /// libmpv `hwdec` value (`auto-safe`, `d3d11va`, `nvdec`, ...).
+    pub hwdec: &'static str,
 }
 
 /// Project-owned playback events drained from mpv.
@@ -173,10 +175,10 @@ impl MpvPreview {
             // otherwise fall back to the slow external FFmpeg path.
             .property("keep-open", "yes")
             .property("hr-seek", "yes")
-            // `auto-safe` picks the platform media engine (VAAPI on Linux,
-            // D3D11VA on Windows, VideoToolbox on macOS) and falls back to
-            // software when no device is available.
-            .property("hwdec", "auto-safe")
+            // The settings select a specific decoder; `auto-safe` picks the
+            // platform media engine and falls back to software when no device
+            // is available.
+            .property("hwdec", config.hwdec)
             .property("pause", if config.start_paused { "yes" } else { "no" })
             .build()
             .map_err(|error| MpvPreviewError::Engine {
@@ -389,6 +391,7 @@ mod tests {
                 width: 0,
                 height: 720,
                 start_paused: true,
+                hwdec: "auto-safe",
             },
             || {},
             || {},

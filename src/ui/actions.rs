@@ -225,10 +225,10 @@ impl RossresscutApp {
             ShortcutAction::GoToStart => self.application.seek_to_start(),
             ShortcutAction::PreviousSegment => self.application.select_previous_segment(),
             ShortcutAction::SegmentStart => self.application.seek_to_selected_segment_start(),
-            ShortcutAction::PreviousKeyframe => self.application.step_keyframe(false),
+            ShortcutAction::PreviousSecond => self.application.step_second(false),
+            ShortcutAction::NextSecond => self.application.step_second(true),
             ShortcutAction::PreviousFrame => self.application.step_frame(false),
             ShortcutAction::NextFrame => self.application.step_frame(true),
-            ShortcutAction::NextKeyframe => self.application.step_keyframe(true),
             ShortcutAction::SegmentEnd => self.application.seek_to_selected_segment_end(),
             ShortcutAction::NextSegment => self.application.select_next_segment(),
             ShortcutAction::GoToEnd => self.application.seek_to_end(),
@@ -305,7 +305,7 @@ impl RossresscutApp {
         }
     }
 
-    fn capture_shortcut(&mut self, context: &egui::Context) {
+    pub(super) fn capture_shortcut(&mut self, context: &egui::Context) {
         let Some(action) = self.recording_shortcut else {
             return;
         };

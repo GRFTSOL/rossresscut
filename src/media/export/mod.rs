@@ -245,7 +245,7 @@ impl ExportProcess {
         metadata: Option<TempMetadata>,
         subtitle: Option<TempSubtitle>,
     ) -> Result<Self, ExportError> {
-        let mut child = process::command(FFMPEG)
+        let mut child = process::command(FFMPEG, process::CommandPurpose::Export)
             .args(&args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())

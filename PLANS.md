@@ -5,7 +5,7 @@
 **Phase 8：Linux 发布（进行中）**
 
 - Linux：release 构建、`packaging/PKGBUILD` 与 pacman 包已完成（见 Phase 8）。
-- Windows：原生 MSVC 构建、测试与 clippy 已打通（进行中）；macOS 未开始。
+- Windows：原生 MSVC 构建、测试与 clippy 已打通（进行中）。
 - Phase 0–7C 已完成；详细实现与验证记录归档在 `docs/history/completed-phases.md`。
 - 未解决问题记录在 `docs/open-questions.md`。
 
@@ -81,15 +81,9 @@ LosslessCut 是产品行为、媒体语义和 FFmpeg 工作流的参考实现，
 - [x] Windows 包自动化：`scripts/mpv-import-lib.sh` 生成 `mpv.lib`，
   `scripts/package-windows.sh` 打 zip
 - [x] 运行期失败可见性：panic 写入 `crash.log`（`logging::install_panic_hook`）
-- [ ] 应用图标（窗口 / 任务栏）尚未设置
+- [x] 应用图标（窗口 / 任务栏）由 `assets/img/icon.ico` 与 `icon.png` 生成
 - [x] 交叉编译不再是主路径：Windows 版改为原生 MSVC 构建；mingw 交叉编译
   方案保留在 git 历史中，不再维护
-
-## macOS
-
-- [ ] libmpv dylib 分发与签名
-- [ ] VideoToolbox 硬件解码验证
-- [ ] 公证与安装包
 
 ## 通用
 

@@ -7,7 +7,7 @@
 use std::fmt;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::domain::time::{Duration, Timestamp};
@@ -175,9 +175,9 @@ pub fn detect<F: FnMut(u8)>(
     Ok(cuts)
 }
 
-fn command_for(path: &Path, threshold: f32) -> Command {
+fn command_for(path: &Path, threshold: f32) -> process::LoggedCommand {
     let threshold = threshold.clamp(0.01, 1.0);
-    let mut command = process::command("ffmpeg");
+    let mut command = process::command("ffmpeg", process::CommandPurpose::SceneDetection);
     command
         .arg("-nostdin")
         .arg("-hide_banner")

@@ -4,7 +4,6 @@
 //! derives each part's usable length from the first and last packet timestamps.
 
 use std::path::Path;
-use std::process::Command;
 
 use crate::domain::time::{Duration, Timestamp};
 use crate::media::process;
@@ -65,7 +64,7 @@ pub fn probe_average_bit_rate(
     }
     let seconds = |time: Timestamp| format!("{:.6}", time.micros() as f64 / 1_000_000.0);
     let interval = format!("{}%{}", seconds(start), seconds(end));
-    let output = process::command("ffprobe")
+    let output = process::command("ffprobe", process::CommandPurpose::Probe)
         .arg("-v")
         .arg("error")
         .arg("-select_streams")
@@ -141,7 +140,7 @@ pub fn probe_frame_duration(
     );
     let seconds = |time: Timestamp| format!("{:.6}", time.micros() as f64 / 1_000_000.0);
     let interval = format!("{}%{}", seconds(start), seconds(end));
-    let output = process::command("ffprobe")
+    let output = process::command("ffprobe", process::CommandPurpose::Probe)
         .arg("-v")
         .arg("error")
         .arg("-select_streams")
@@ -187,8 +186,8 @@ fn parse_frame_duration(output: &str) -> Option<Duration> {
         .max()
 }
 
-fn command_for(path: &Path, selector: &str) -> Command {
-    let mut command = process::command("ffprobe");
+fn command_for(path: &Path, selector: &str) -> process::LoggedCommand {
+    let mut command = process::command("ffprobe", process::CommandPurpose::Probe);
     command
         .arg("-v")
         .arg("error")

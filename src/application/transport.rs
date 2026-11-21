@@ -52,38 +52,18 @@ impl Application {
         self.playback.scrub(target, media);
     }
 
-    /// Pauses playback and moves to the previous or next keyframe.
+    /// Pauses playback and moves by one second.
     ///
-    /// The keyframe index is built in the background. Until it is available,
-    /// this falls back to a one-second step so navigation still responds.
-    /// Nothing happens when there is no keyframe in the requested direction.
-    pub fn step_keyframe(&mut self, forward: bool) {
-        let Some(duration) = self.media.as_ref().map(|media| media.duration) else {
-            return;
-        };
-        let Some(index) = self.keyframes.as_ref() else {
-            self.skip(if forward { 1_000_000 } else { -1_000_000 });
-            return;
-        };
-
-        let position = self.playback.position;
-        let target = if forward {
-            index.next(position)
-        } else {
-            index.previous(position)
-        };
-        let Some(target) = target else {
-            return;
-        };
-        let target = clamp_position(target, duration);
-
+    /// The target is clamped to the media; the keyframe index is no longer used
+    /// for interactive stepping. The position is captured before pausing so the
+    /// elapsed time since the last frame is not added to the step.
+    pub fn step_second(&mut self, forward: bool) {
+        let base = self.playback.position;
         if self.playback.playing {
             self.pause();
         }
-        let Some(media) = self.media.as_ref() else {
-            return;
-        };
-        self.playback.seek(target, media);
+        self.playback.position = base;
+        self.skip(if forward { 1_000_000 } else { -1_000_000 });
     }
 
     /// Seeks to the start of the media.

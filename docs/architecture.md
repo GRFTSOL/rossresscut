@@ -155,7 +155,9 @@ ExportRequest
 - FFprobe
 - FFmpeg
 - 进程管理
-- 外部进程统一构造（`media/process.rs`，Windows 上设置 `CREATE_NO_WINDOW`）
+- 外部进程统一构造（`media/process.rs`，Windows 上设置 `CREATE_NO_WINDOW`）；
+  同一入口记录本会话执行过的 FFmpeg 命令与用途（导出 / 场景 / 波形 / 字幕 /
+  合并 / 探测），预览解码不记录，历史上限 500 条。
 - 参数构建
 - 进度解析
 - 取消
@@ -204,11 +206,12 @@ media::preview 导入为 wgpu::Texture
 
 `cpal` 只在外部 FFmpeg 回退路径负责音频 PCM 输出；主路径音频由 libmpv `ao` 输出。
 
-预览解码设备选择委托给 libmpv：主路径使用 `hwdec=auto-safe`，Linux 上 mpv 提供
-`--vaapi-device`（默认 `/dev/dri/renderD128`）。项目不枚举 GPU，也不在 UI 中
-暴露设备选择；需要指定设备时属于后续功能，不在当前范围内。Windows 上预览走
-`vo=libmpv` + OpenGL，实测 `auto-safe` 解析为 `nvdec`（`d3d11va` 要求
-`gpu-context=d3d11`，该路径不可用）；D3D11 适配器选择仍未实现，当前不承诺。
+预览解码设备选择：默认 `hwdec=auto-safe`；设置页可切换为 `auto`、`d3d11va`、
+`nvdec`、`cuda`、`vaapi` 或 `no`（仅列出当前平台可用的项），
+也可以切换到外部 FFmpeg 后端。Linux 上 mpv 提供 `--vaapi-device`（默认
+`/dev/dri/renderD128`），项目不枚举 GPU。Windows 上预览走 `vo=libmpv` + OpenGL，
+所以默认 `auto-safe` 实测解析为 `nvdec`（`d3d11va` 要求 `gpu-context=d3d11`，
+该路径不可用）；切换到 `d3d11va` 时以 mpv 报告的结果为准。
 
 ---
 
@@ -573,17 +576,20 @@ egui 帧内不会执行 FFprobe、FFmpeg、mpv 命令或音频解码，也不会
 UI 布局：
 
 ```text
-顶部：菜单栏（File / View / Help）、设置按钮、当前媒体标题（不含扩展名）
+顶部：Windows 下自绘标题栏与菜单栏合一（高度 23 px）：
+     左侧菜单（File / Edit / Segments / Tools / View / Help），右侧只有最小化 / 最大化 / 关闭
 中央：视频预览（点击切换播放 / 暂停，滚轮按固定时长步进）
-右侧：播放信息（mpv Tab 风格）在上；Segment 列表（输出顺序，添加切点 / 删除切点 / 上移 / 下移 / 分割）在下
-底部：时间轴单独一行；下方是播放控制（13 个控制按钮 + 音量按钮 + 片段起止时间输入框）；右下角为 Export 按钮
+右侧：可选的播放信息与批处理队列；下方 Segments / Chapters 两个 tab（默认 Segments）
+底部：时间轴单独一行；下方是播放控制（11 个控制按钮 + 音量按钮 + 片段起止时间输入框）；
+     最底行左侧当前文件名，中间时间码，右侧 Export 按钮
 ```
 
-设置页：
+设置窗口：
 
 ```text
-常规：主题、界面语言、字体与缩放、波形 / 保留被截断字幕等
-预览：滚轮跳转步长
+独立操作系统窗口（第二个 egui viewport），内部按 tab 切换：
+常规：主题、界面语言、字体与缩放、项目保存等
+预览：解码后端（libmpv 各 hwdec / FFmpeg）、滚轮跳转步长
 导出：输出目录、章节开关、智能裁切与码率
 快捷键：两列成对排列，点击录制，录制时 Backspace 清空
 ```
@@ -605,8 +611,9 @@ mod + 滚轮 → 每格 ±10 秒
 `amount = delta * wheelSensitivity * 0.2` 秒，`wheelSensitivity` 默认 `0.2`
 （`src/main/configStore.ts`）；Windows 一格滚轮约 100 px，因此约 4 秒。
 Shift+滚轮为关键帧步进，Alt+滚轮为单帧步进。本项目的默认步长比 LosslessCut
-的默认值更大。关键帧步进保留在控制按钮与 `previous_keyframe` /
-`next_keyframe` 快捷键上。
+的默认值更大。控制按钮中的上一秒 / 下一秒对应 `previous_second` /
+`next_second`（默认 Alt+Left / Alt+Right）；单帧步进只有快捷键 `previous_frame` /
+`next_frame`（默认 `,` / `.`），没有按钮。
 
 滚轮交互占用了 command / ctrl 修饰键，因此 egui 的 ctrl+滚轮界面缩放被显式关闭（`InputOptions::zoom_modifier = Modifiers::NONE`）。
 

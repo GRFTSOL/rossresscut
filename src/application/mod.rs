@@ -19,7 +19,9 @@ use crate::media::export::{
     StreamSelection, SubtitlePlan,
 };
 use crate::media::ffprobe::ProbeError;
-use crate::media::preview::{HardwareAcceleration, PreviewAudio, PreviewVideo, VideoFrame};
+use crate::media::preview::{
+    HardwareAcceleration, PreviewAudio, PreviewBackend, PreviewVideo, VideoFrame,
+};
 
 mod batch;
 mod chapters;
@@ -131,7 +133,6 @@ pub struct Application {
     history: Vec<TimelineSnapshot>,
     redo_stack: Vec<TimelineSnapshot>,
     rng_state: u64,
-    last_ffmpeg_commands: Vec<String>,
     export: Option<ExportJob>,
     export_status: ExportStatus,
     pending_project: Option<PendingProject>,
@@ -443,6 +444,28 @@ impl Application {
         self.playback.hardware = hardware;
     }
 
+    /// Selects the preview decoder backend and rebuilds the preview in place.
+    ///
+    /// The current position and play state are restored after the new backend
+    /// starts, so changing the setting does not look like a seek to zero.
+    pub fn set_preview_backend(&mut self, backend: PreviewBackend) {
+        if self.playback.backend == backend {
+            return;
+        }
+        self.playback.backend = backend;
+        let Some(media) = self.media.clone() else {
+            return;
+        };
+        let position = self.playback.position;
+        let playing = self.playback.playing;
+        self.playback.reset();
+        self.playback.load(&media);
+        self.playback.seek(position, &media);
+        if playing {
+            self.play();
+        }
+    }
+
     /// Playback volume in percent.
     pub fn volume(&self) -> u8 {
         self.playback.volume
@@ -610,9 +633,19 @@ impl Application {
         }
     }
 
-    /// Returns the FFmpeg command lines produced by the latest export.
-    pub fn last_ffmpeg_commands(&self) -> &[String] {
-        &self.last_ffmpeg_commands
+    /// Returns every FFmpeg command executed in this session, newest first.
+    pub(crate) fn executed_ffmpeg_commands(&self) -> Vec<crate::media::process::ExecutedCommand> {
+        crate::media::process::history()
+    }
+
+    /// Returns the executed FFmpeg command lines, newest first.
+    ///
+    /// Integration tests use this without exposing the internal purpose type.
+    pub fn executed_ffmpeg_command_lines(&self) -> Vec<String> {
+        self.executed_ffmpeg_commands()
+            .into_iter()
+            .map(|entry| entry.command_line)
+            .collect()
     }
 
     /// Polls background work and advances playback without blocking.
@@ -634,7 +667,6 @@ impl Application {
         let mut changed = false;
         let mut progress = None;
         let mut finished = None;
-        let mut commands = Vec::new();
 
         if let Some(job) = self.export.as_mut() {
             loop {
@@ -654,11 +686,6 @@ impl Application {
                     }
                 }
             }
-            commands = job.commands();
-        }
-
-        if !commands.is_empty() {
-            self.last_ffmpeg_commands = commands;
         }
 
         if let Some((output, out_time, duration, stage)) = progress {
@@ -719,6 +746,7 @@ struct Playback {
     audio: Option<PreviewAudio>,
     warning: Option<String>,
     hardware: HardwareAcceleration,
+    backend: PreviewBackend,
     volume: u8,
     #[cfg(feature = "mpv-preview")]
     mpv: Option<MpvPreview>,
@@ -756,6 +784,7 @@ impl Default for Playback {
             audio: None,
             warning: None,
             hardware: HardwareAcceleration::default_for_platform(),
+            backend: PreviewBackend::default(),
             volume: 100,
             #[cfg(feature = "mpv-preview")]
             mpv: None,

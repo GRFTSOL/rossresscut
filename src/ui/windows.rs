@@ -10,6 +10,8 @@ use crate::application::{
 use crate::domain::media::MediaStream;
 use crate::domain::time::Duration;
 use crate::media::export::StreamSelection;
+use crate::media::preview::PreviewBackend;
+use crate::media::process::CommandPurpose;
 
 use super::dialogs::DirectoryTarget;
 use super::i18n::{Language, fill};
@@ -27,6 +29,33 @@ const SHORTCUT_CELL_WIDTH: f32 = SHORTCUT_LABEL_WIDTH + SHORTCUT_BUTTON_WIDTH + 
 /// Height of one shortcut row, matching the button height.
 const SHORTCUT_ROW_HEIGHT: f32 = 26.0;
 
+/// Pages shown as tabs in the independent settings window.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum SettingsTab {
+    /// Theme, language, fonts and project saving.
+    #[default]
+    General,
+    /// Decoder backend and wheel step.
+    Preview,
+    /// Output directory, chapters and encoding.
+    Export,
+    /// Keyboard bindings.
+    Shortcuts,
+}
+
+impl SettingsTab {
+    const ALL: [Self; 4] = [Self::General, Self::Preview, Self::Export, Self::Shortcuts];
+
+    fn label(self, strings: &Strings) -> &str {
+        match self {
+            Self::General => strings.general.as_str(),
+            Self::Preview => strings.preview.as_str(),
+            Self::Export => strings.export.as_str(),
+            Self::Shortcuts => strings.shortcuts.as_str(),
+        }
+    }
+}
+
 /// Floating windows that can be the topmost dialog for keyboard input.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DialogWindow {
@@ -38,6 +67,20 @@ enum DialogWindow {
     Export,
     FfmpegCommand,
     About,
+}
+
+/// Localized purpose for one command-history entry.
+fn command_purpose_label(strings: &Strings, purpose: CommandPurpose) -> &str {
+    match purpose {
+        CommandPurpose::Export => strings.ffmpeg_purpose_export.as_str(),
+        CommandPurpose::SceneDetection => strings.ffmpeg_purpose_scene.as_str(),
+        CommandPurpose::Waveform => strings.ffmpeg_purpose_waveform.as_str(),
+        CommandPurpose::Subtitle => strings.ffmpeg_purpose_subtitle.as_str(),
+        CommandPurpose::Merge => strings.ffmpeg_purpose_merge.as_str(),
+        CommandPurpose::Probe => strings.ffmpeg_purpose_probe.as_str(),
+        CommandPurpose::Keyframes => strings.ffmpeg_purpose_keyframes.as_str(),
+        CommandPurpose::Preview => strings.ffmpeg_purpose_other.as_str(),
+    }
 }
 
 impl RossresscutApp {
@@ -271,32 +314,54 @@ impl RossresscutApp {
         }
         let strings = self.strings();
         let mut open = self.ffmpeg_command_open;
-        let commands = self.application.last_ffmpeg_commands().to_vec();
+        let commands = self.application.executed_ffmpeg_commands();
 
-        egui::Window::new(strings.last_ffmpeg_command.as_str())
+        egui::Window::new(strings.executed_ffmpeg_commands.as_str())
             .id(egui::Id::unique("ffmpeg_command_window"))
             .open(&mut open)
             .resizable(true)
             .collapsible(false)
-            .default_size(egui::vec2(720.0, 360.0))
+            .default_size(egui::vec2(760.0, 420.0))
             .show(context, |ui| {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(strings.command_history_hint.as_str()).small(),
+                    )
+                    .wrap(),
+                );
                 if commands.is_empty() {
                     ui.label(strings.no_ffmpeg_command.as_str());
                     return;
                 }
                 if ui.button(strings.copy_command.as_str()).clicked() {
-                    ui.ctx().copy_text(commands.join("\n\n"));
+                    let text = commands
+                        .iter()
+                        .map(|entry| entry.command_line.as_str())
+                        .collect::<Vec<_>>()
+                        .join("\n\n");
+                    ui.ctx().copy_text(text);
                 }
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    for command in &commands {
-                        ui.add(
-                            egui::Label::new(egui::RichText::new(command).monospace())
+                ui.separator();
+                egui::ScrollArea::vertical()
+                    .id_salt("ffmpeg_command_history")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        for entry in &commands {
+                            ui.label(
+                                egui::RichText::new(command_purpose_label(strings, entry.purpose))
+                                    .small()
+                                    .weak(),
+                            );
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(entry.command_line.as_str()).monospace(),
+                                )
                                 .wrap()
                                 .selectable(true),
-                        );
-                        ui.separator();
-                    }
-                });
+                            );
+                            ui.separator();
+                        }
+                    });
             });
         self.ffmpeg_command_open = open;
     }
@@ -306,263 +371,303 @@ impl RossresscutApp {
             return;
         }
         let strings = self.strings();
-        let mut open = self.settings_open;
+        let mut open = true;
+        let builder = egui::ViewportBuilder::default()
+            .with_title(strings.settings.as_str())
+            .with_inner_size([760.0, 620.0])
+            .with_min_inner_size([560.0, 400.0])
+            .with_decorations(!cfg!(target_os = "windows"))
+            .with_icon(super::window_icon());
+        context.show_viewport_immediate(
+            egui::ViewportId::from_hash_of("settings_window"),
+            builder,
+            |ui, _class| {
+                // The immediate viewport starts from a fresh Ui; re-apply the
+                // theme and font zoom so it matches the main window.
+                self.apply_theme(ui.ctx());
+                self.window_resize_edges(ui.ctx());
+                if self.settings_viewport(ui, strings) {
+                    open = false;
+                }
+                if ui.ctx().input(|input| input.viewport().close_requested()) {
+                    open = false;
+                }
+            },
+        );
 
-        egui::Window::new(strings.settings.as_str())
-            .id(egui::Id::unique("settings_window"))
-            .open(&mut open)
-            .resizable(true)
-            .collapsible(false)
-            .min_width(360.0)
-            .max_width(720.0)
-            .min_height(240.0)
-            .default_size(egui::vec2(660.0, 700.0))
-            .show(context, |ui| {
-                egui::ScrollArea::vertical()
-                    .id_salt("settings_scroll")
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        self.general_settings_ui(ui, strings);
-                        self.preview_settings_ui(ui, strings);
-                        self.export_settings_ui(ui, strings);
-                        self.shortcut_settings_ui(ui, strings);
-                    });
-            });
-
-        self.settings_open = open;
-        // `eframe` only calls `App::save` when persistence is configured, so
-        // settings are written when the window is closed instead.
         if !open {
+            self.settings_open = false;
+            // `eframe` only calls `App::save` when persistence is configured, so
+            // settings are written when the window is closed instead.
             save_settings(&self.settings);
         }
     }
 
+    fn settings_viewport(&mut self, ui: &mut egui::Ui, strings: &'static Strings) -> bool {
+        // The root Ui of an immediate viewport has no background of its own;
+        // the central-panel frame supplies the theme fill instead of the
+        // backend's black clear colour.
+        let close = super::titlebar::draw_title_bar(ui, strings.settings.as_str(), false);
+        egui::Frame::central_panel(ui.style()).show(ui, |ui| {
+            self.settings_viewport_contents(ui, strings);
+        });
+        close
+    }
+
+    fn settings_viewport_contents(&mut self, ui: &mut egui::Ui, strings: &'static Strings) {
+        // Seven backends fit without scrolling in the preview tab.
+        ui.spacing_mut().combo_height = 320.0;
+        // Key recording happens in this viewport: when the settings window has
+        // focus, the main window receives no key events.
+        if self.recording_shortcut.is_some() {
+            self.capture_shortcut(ui.ctx());
+        }
+        #[cfg(not(target_os = "windows"))]
+        ui.horizontal(|ui| {
+            ui.heading(strings.settings.as_str());
+        });
+        ui.separator();
+        ui.horizontal(|ui| {
+            for tab in SettingsTab::ALL {
+                ui.selectable_value(&mut self.settings_tab, tab, tab.label(strings));
+            }
+        });
+        ui.separator();
+
+        egui::ScrollArea::vertical()
+            .id_salt("settings_scroll")
+            .auto_shrink([false, false])
+            .show(ui, |ui| match self.settings_tab {
+                SettingsTab::General => self.general_settings_ui(ui, strings),
+                SettingsTab::Preview => self.preview_settings_ui(ui, strings),
+                SettingsTab::Export => self.export_settings_ui(ui, strings),
+                SettingsTab::Shortcuts => self.shortcut_settings_ui(ui, strings),
+            });
+    }
+
     fn general_settings_ui(&mut self, ui: &mut egui::Ui, strings: &Strings) {
-        egui::CollapsingHeader::new(strings.general.as_str())
-            .default_open(true)
-            .show(ui, |ui| {
-                let follow = ui
-                    .checkbox(
-                        &mut self.settings.follow_system_theme,
-                        strings.follow_system_theme.as_str(),
-                    )
-                    .on_hover_text(strings.follow_system_theme.as_str());
-                if follow.changed() {
-                    // Re-detect immediately instead of reusing the value captured
-                    // at startup.
-                    self.detected_theme = detect_system_theme();
-                }
-                ui.add_enabled_ui(!self.settings.follow_system_theme, |ui| {
-                    egui::ComboBox::from_label(strings.theme.as_str())
-                        .selected_text(theme_label(strings, self.settings.theme))
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(
-                                &mut self.settings.theme,
-                                ThemeChoice::Dark,
-                                strings.theme_dark.as_str(),
-                            );
-                            ui.selectable_value(
-                                &mut self.settings.theme,
-                                ThemeChoice::Light,
-                                strings.theme_light.as_str(),
-                            );
-                        });
-                });
-
-                ui.horizontal(|ui| {
-                    ui.label(strings.language.as_str());
-                    egui::ComboBox::from_id_salt("language")
-                        .selected_text(self.settings.language.label())
-                        .show_ui(ui, |ui| {
-                            for language in Language::ALL {
-                                ui.selectable_value(
-                                    &mut self.settings.language,
-                                    language,
-                                    language.label(),
-                                );
-                            }
-                        });
-                });
-
-                ui.separator();
-                ui.horizontal(|ui| {
-                    ui.label(strings.font_size.as_str());
-                    let slider = ui.add(
-                        egui::Slider::new(&mut self.font_zoom_draft, MIN_FONT_ZOOM..=MAX_FONT_ZOOM)
-                            .step_by(f64::from(FONT_ZOOM_STEP))
-                            .fixed_decimals(2),
+        let follow = ui
+            .checkbox(
+                &mut self.settings.follow_system_theme,
+                strings.follow_system_theme.as_str(),
+            )
+            .on_hover_text(strings.follow_system_theme.as_str());
+        if follow.changed() {
+            // Re-detect immediately instead of reusing the value captured at
+            // startup.
+            self.detected_theme = detect_system_theme();
+        }
+        ui.add_enabled_ui(!self.settings.follow_system_theme, |ui| {
+            egui::ComboBox::from_label(strings.theme.as_str())
+                .selected_text(theme_label(strings, self.settings.theme))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut self.settings.theme,
+                        ThemeChoice::Dark,
+                        strings.theme_dark.as_str(),
                     );
-                    // The preview only follows a released slider; this avoids
-                    // rebuilding the font atlas on every drag frame.
-                    if slider.drag_stopped() || (slider.changed() && !slider.dragged()) {
-                        self.settings.font_zoom =
-                            self.font_zoom_draft.clamp(MIN_FONT_ZOOM, MAX_FONT_ZOOM);
+                    ui.selectable_value(
+                        &mut self.settings.theme,
+                        ThemeChoice::Light,
+                        strings.theme_light.as_str(),
+                    );
+                });
+        });
+
+        ui.horizontal(|ui| {
+            ui.label(strings.language.as_str());
+            egui::ComboBox::from_id_salt("language")
+                .selected_text(self.settings.language.label())
+                .show_ui(ui, |ui| {
+                    for language in Language::ALL {
+                        ui.selectable_value(
+                            &mut self.settings.language,
+                            language,
+                            language.label(),
+                        );
                     }
+                });
+        });
+
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.label(strings.font_size.as_str());
+            let slider = ui.add(
+                egui::Slider::new(&mut self.font_zoom_draft, MIN_FONT_ZOOM..=MAX_FONT_ZOOM)
+                    .step_by(f64::from(FONT_ZOOM_STEP))
+                    .fixed_decimals(2),
+            );
+            // The preview only follows a released slider; this avoids rebuilding
+            // the font atlas on every drag frame.
+            if slider.drag_stopped() || (slider.changed() && !slider.dragged()) {
+                self.settings.font_zoom = self.font_zoom_draft.clamp(MIN_FONT_ZOOM, MAX_FONT_ZOOM);
+            }
+            if ui
+                .button(strings.reset_font_size.as_str())
+                .on_hover_text(strings.reset_font_size.as_str())
+                .clicked()
+            {
+                self.set_font_zoom(1.0);
+            }
+        });
+        self.font_family_ui(ui, strings);
+
+        ui.separator();
+        ui.checkbox(
+            &mut self.settings.subtitle_keep_partial,
+            strings.subtitle_keep_partial.as_str(),
+        )
+        .on_hover_text(strings.subtitle_keep_partial_hint.as_str());
+        ui.checkbox(
+            &mut self.settings.autosave_projects,
+            strings.autosave_projects.as_str(),
+        )
+        .on_hover_text(strings.autosave_projects_hint.as_str());
+        ui.add_enabled_ui(self.settings.autosave_projects, |ui| {
+            ui.checkbox(
+                &mut self.settings.project_to_source_dir,
+                strings.project_to_source_dir.as_str(),
+            )
+            .on_hover_text(strings.project_to_source_dir.as_str());
+            ui.add_enabled_ui(!self.settings.project_to_source_dir, |ui| {
+                ui.horizontal(|ui| {
                     if ui
-                        .button(strings.reset_font_size.as_str())
-                        .on_hover_text(strings.reset_font_size.as_str())
+                        .button(strings.choose_project_directory.as_str())
                         .clicked()
                     {
-                        self.set_font_zoom(1.0);
+                        self.start_directory_dialog(DirectoryTarget::Project);
                     }
-                });
-                self.font_family_ui(ui, strings);
-
-                ui.separator();
-                ui.checkbox(
-                    &mut self.settings.subtitle_keep_partial,
-                    strings.subtitle_keep_partial.as_str(),
-                )
-                .on_hover_text(strings.subtitle_keep_partial_hint.as_str());
-                ui.checkbox(
-                    &mut self.settings.autosave_projects,
-                    strings.autosave_projects.as_str(),
-                )
-                .on_hover_text(strings.autosave_projects_hint.as_str());
-                ui.add_enabled_ui(self.settings.autosave_projects, |ui| {
-                    ui.checkbox(
-                        &mut self.settings.project_to_source_dir,
-                        strings.project_to_source_dir.as_str(),
-                    )
-                    .on_hover_text(strings.project_to_source_dir.as_str());
-                    ui.add_enabled_ui(!self.settings.project_to_source_dir, |ui| {
-                        ui.horizontal(|ui| {
-                            if ui
-                                .button(strings.choose_project_directory.as_str())
-                                .clicked()
-                            {
-                                self.start_directory_dialog(DirectoryTarget::Project);
-                            }
-                            ui.add(
-                                egui::TextEdit::singleline(&mut self.settings.project_directory)
-                                    .desired_width(360.0)
-                                    .hint_text(strings.project_directory.as_str()),
-                            );
-                        });
-                    });
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.settings.project_directory)
+                            .desired_width(360.0)
+                            .hint_text(strings.project_directory.as_str()),
+                    );
                 });
             });
+        });
     }
 
     fn preview_settings_ui(&mut self, ui: &mut egui::Ui, strings: &Strings) {
-        egui::CollapsingHeader::new(strings.preview.as_str())
-            .default_open(true)
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(strings.preview_seek_step.as_str());
-                    let mut seconds = self.settings.preview_seek_micros as f64 / 1_000_000.0;
-                    let response = ui.add(
-                        egui::DragValue::new(&mut seconds)
-                            .range(0.1..=600.0)
-                            .speed(0.1)
-                            .fixed_decimals(2)
-                            .suffix(" s"),
-                    );
-                    let response = response.on_hover_text(strings.preview_seek_step_hint.as_str());
-                    if response.changed() {
-                        self.settings.preview_seek_micros = (seconds * 1_000_000.0).round() as i64;
+        ui.horizontal(|ui| {
+            ui.label(strings.preview_backend.as_str());
+            let mut backend = self.settings.preview_backend;
+            egui::ComboBox::from_id_salt("preview_backend")
+                .selected_text(backend.label())
+                .show_ui(ui, |ui| {
+                    for candidate in PreviewBackend::available() {
+                        ui.selectable_value(&mut backend, *candidate, candidate.label());
                     }
                 });
-            });
+            if backend != self.settings.preview_backend {
+                self.settings.preview_backend = backend;
+                self.application.set_preview_backend(backend);
+            }
+        })
+        .response
+        .on_hover_text(strings.preview_backend_hint.as_str());
+
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            ui.label(strings.preview_seek_step.as_str());
+            let mut seconds = self.settings.preview_seek_micros as f64 / 1_000_000.0;
+            let response = ui.add(
+                egui::DragValue::new(&mut seconds)
+                    .range(0.1..=600.0)
+                    .speed(0.1)
+                    .fixed_decimals(2)
+                    .suffix(" s"),
+            );
+            let response = response.on_hover_text(strings.preview_seek_step_hint.as_str());
+            if response.changed() {
+                self.settings.preview_seek_micros = (seconds * 1_000_000.0).round() as i64;
+            }
+        });
     }
 
     fn export_settings_ui(&mut self, ui: &mut egui::Ui, strings: &Strings) {
-        egui::CollapsingHeader::new(strings.export.as_str())
-            .default_open(true)
-            .show(ui, |ui| {
-                ui.checkbox(
-                    &mut self.settings.export_chapters,
-                    strings.export_chapters.as_str(),
-                )
-                .on_hover_text(strings.export_chapters_hint.as_str());
-                self.export_directory_ui(ui, strings);
+        ui.checkbox(
+            &mut self.settings.export_chapters,
+            strings.export_chapters.as_str(),
+        )
+        .on_hover_text(strings.export_chapters_hint.as_str());
+        self.export_directory_ui(ui, strings);
 
-                ui.separator();
-                ui.horizontal(|ui| {
-                    ui.label(strings.export_title.as_str());
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.settings.export_title)
-                            .desired_width(320.0),
-                    )
-                    .on_hover_text(strings.export_title_hint.as_str());
-                });
-                ui.checkbox(&mut self.settings.smart_cut, strings.smart_cut.as_str())
-                    .on_hover_text(strings.smart_cut_hint.as_str());
-                ui.add_enabled_ui(self.settings.smart_cut, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(strings.smart_cut_bit_rate.as_str());
-                        ui.add(
-                            egui::DragValue::new(&mut self.settings.smart_cut_bit_rate_kbps)
-                                .range(0..=1_000_000)
-                                .speed(50)
-                                .suffix(" kbps"),
-                        )
-                        .on_hover_text(strings.smart_cut_bit_rate_hint.as_str());
-                    });
-                });
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.label(strings.export_title.as_str());
+            ui.add(
+                egui::TextEdit::singleline(&mut self.settings.export_title).desired_width(320.0),
+            )
+            .on_hover_text(strings.export_title_hint.as_str());
+        });
+        ui.checkbox(&mut self.settings.smart_cut, strings.smart_cut.as_str())
+            .on_hover_text(strings.smart_cut_hint.as_str());
+        ui.add_enabled_ui(self.settings.smart_cut, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(strings.smart_cut_bit_rate.as_str());
                 ui.add(
-                    egui::Label::new(
-                        egui::RichText::new(strings.export_join_hint.as_str()).small(),
-                    )
-                    .wrap(),
-                );
+                    egui::DragValue::new(&mut self.settings.smart_cut_bit_rate_kbps)
+                        .range(0..=1_000_000)
+                        .speed(50)
+                        .suffix(" kbps"),
+                )
+                .on_hover_text(strings.smart_cut_bit_rate_hint.as_str());
             });
+        });
+        ui.add(
+            egui::Label::new(egui::RichText::new(strings.export_join_hint.as_str()).small()).wrap(),
+        );
     }
 
     fn shortcut_settings_ui(&mut self, ui: &mut egui::Ui, strings: &Strings) {
-        egui::CollapsingHeader::new(strings.shortcuts.as_str())
-            .default_open(false)
-            .show(ui, |ui| {
-                let row_width = ui.available_width();
-                ui.add(
-                    egui::Label::new(egui::RichText::new(strings.shortcut_hint.as_str()).small())
-                        .wrap(),
-                );
-                let clip_rect = ui.clip_rect();
-                let row_visible = |ui: &egui::Ui| {
-                    let top = ui.cursor().min.y;
-                    top + SHORTCUT_ROW_HEIGHT > clip_rect.top() && top < clip_rect.bottom()
-                };
-                let skip_row = |ui: &mut egui::Ui| {
-                    ui.allocate_space(egui::vec2(row_width, SHORTCUT_ROW_HEIGHT));
-                };
-                if row_width >= SHORTCUT_CELL_WIDTH * 2.0 {
-                    for row in SETTINGS_ROWS {
-                        if !row_visible(ui) {
-                            skip_row(ui);
-                            continue;
-                        }
-                        ui.allocate_ui_with_layout(
-                            egui::vec2(row_width, SHORTCUT_ROW_HEIGHT),
-                            egui::Layout::left_to_right(egui::Align::Center),
-                            |ui| {
-                                for action in row {
-                                    match action {
-                                        Some(action) => {
-                                            self.shortcut_editor(ui, *action, strings);
-                                        }
-                                        None => {
-                                            ui.add_space(SHORTCUT_CELL_WIDTH);
-                                        }
-                                    }
-                                }
-                            },
-                        );
-                    }
-                } else {
-                    for action in SETTINGS_ROWS.iter().flatten().flatten() {
-                        if !row_visible(ui) {
-                            skip_row(ui);
-                            continue;
-                        }
-                        ui.allocate_ui_with_layout(
-                            egui::vec2(row_width, SHORTCUT_ROW_HEIGHT),
-                            egui::Layout::left_to_right(egui::Align::Center),
-                            |ui| self.shortcut_editor(ui, *action, strings),
-                        );
-                    }
+        let row_width = ui.available_width();
+        ui.add(
+            egui::Label::new(egui::RichText::new(strings.shortcut_hint.as_str()).small()).wrap(),
+        );
+        let clip_rect = ui.clip_rect();
+        let row_visible = |ui: &egui::Ui| {
+            let top = ui.cursor().min.y;
+            top + SHORTCUT_ROW_HEIGHT > clip_rect.top() && top < clip_rect.bottom()
+        };
+        let skip_row = |ui: &mut egui::Ui| {
+            ui.allocate_space(egui::vec2(row_width, SHORTCUT_ROW_HEIGHT));
+        };
+        if row_width >= SHORTCUT_CELL_WIDTH * 2.0 {
+            for row in SETTINGS_ROWS {
+                if !row_visible(ui) {
+                    skip_row(ui);
+                    continue;
                 }
-            });
+                ui.allocate_ui_with_layout(
+                    egui::vec2(row_width, SHORTCUT_ROW_HEIGHT),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        for action in row {
+                            match action {
+                                Some(action) => {
+                                    self.shortcut_editor(ui, *action, strings);
+                                }
+                                None => {
+                                    ui.add_space(SHORTCUT_CELL_WIDTH);
+                                }
+                            }
+                        }
+                    },
+                );
+            }
+        } else {
+            for action in SETTINGS_ROWS.iter().flatten().flatten() {
+                if !row_visible(ui) {
+                    skip_row(ui);
+                    continue;
+                }
+                ui.allocate_ui_with_layout(
+                    egui::vec2(row_width, SHORTCUT_ROW_HEIGHT),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| self.shortcut_editor(ui, *action, strings),
+                );
+            }
+        }
     }
 
     /// One shortcut cell: a label followed by its binding button.
@@ -706,16 +811,18 @@ impl RossresscutApp {
         self.silence_preview = Some(self.silence_preview_for(self.silence_options));
     }
 
-    fn silence_preview_for(&self, options: SilenceOptions) -> Result<usize, String> {
+    fn silence_preview_for(&self, options: SilenceOptions) -> Result<usize, SilenceError> {
+        self.application.count_silence_segments(options)
+    }
+
+    fn silence_error_text(&self, error: SilenceError) -> String {
         let strings = self.strings();
-        self.application
-            .count_silence_segments(options)
-            .map_err(|error| match error {
-                SilenceError::NoWaveform => strings.silence_no_waveform.clone(),
-                SilenceError::NoAudibleRange | SilenceError::NoDuration => {
-                    strings.silence_no_audible.clone()
-                }
-            })
+        match error {
+            SilenceError::NoWaveform => strings.silence_no_waveform.clone(),
+            SilenceError::NoAudibleRange | SilenceError::NoDuration => {
+                strings.silence_no_audible.clone()
+            }
+        }
     }
 
     pub(super) fn silence_window(&mut self, context: &egui::Context) {
@@ -726,6 +833,13 @@ impl RossresscutApp {
         let mut open = self.silence_dialog_open;
         let mut recompute = false;
         let mut close_requested = false;
+        // The dialog can be opened before the waveform worker finishes. Once the
+        // waveform arrives, replace the stale "no waveform" result.
+        if matches!(self.silence_preview, Some(Err(SilenceError::NoWaveform)))
+            && self.application.waveform().is_some()
+        {
+            recompute = true;
+        }
         let confirm = self.dialog_enter(context, DialogWindow::Silence);
 
         egui::Window::new(strings.silence_detection.as_str())
@@ -768,7 +882,8 @@ impl RossresscutApp {
                                 &[count.to_string().as_str()],
                             ));
                         }
-                        Err(message) => {
+                        Err(error) => {
+                            let message = self.silence_error_text(*error);
                             ui.colored_label(ui.visuals().error_fg_color, message);
                         }
                     }

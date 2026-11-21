@@ -151,29 +151,36 @@ fn application_scrubs_with_a_fast_preview() {
 }
 
 #[test]
-fn application_steps_between_keyframes() {
+fn application_steps_by_one_second() {
     let mut application = Application::new();
     application.open_media(fixture("sample-keyframes.mp4"));
     wait_until_ready(&mut application);
 
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while application.keyframes().is_none() && Instant::now() < deadline {
-        application.update();
-        thread::sleep(Duration::from_millis(10));
-    }
-    assert!(
-        application.keyframes().is_some(),
-        "keyframe index did not become available"
-    );
-
-    application.step_keyframe(true);
+    application.step_second(true);
     assert_eq!(application.position(), Timestamp::from_micros(1_000_000));
 
-    application.step_keyframe(true);
+    application.step_second(true);
     assert_eq!(application.position(), Timestamp::from_micros(2_000_000));
 
-    application.step_keyframe(false);
+    application.step_second(false);
     assert_eq!(application.position(), Timestamp::from_micros(1_000_000));
+}
+
+#[test]
+fn stepping_a_second_does_not_add_the_pause_delta() {
+    let mut application = Application::new();
+    application.open_media(fixture("sample-video-only.mp4"));
+    wait_until_ready(&mut application);
+
+    application.play();
+    thread::sleep(Duration::from_millis(80));
+    application.update();
+
+    let before = application.position();
+    application.step_second(true);
+    let after = application.position();
+
+    assert_eq!(after.micros() - before.micros(), 1_000_000);
 }
 
 #[test]

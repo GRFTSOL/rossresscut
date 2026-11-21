@@ -17,7 +17,6 @@ pub use seek::probe_seek_start;
 
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use crate::domain::media::{MediaFile, MediaStream};
 use crate::media::process;
@@ -210,7 +209,7 @@ fn probe_hdr_metadata(
     path: &Path,
     stream_index: usize,
 ) -> Option<(Option<String>, Option<String>)> {
-    let output = process::command("ffprobe")
+    let output = process::command("ffprobe", process::CommandPurpose::Probe)
         .arg("-v")
         .arg("error")
         .arg("-print_format")
@@ -235,8 +234,8 @@ fn probe_hdr_metadata(
     Some(parse::parse_hdr_side_data(&text))
 }
 
-fn command_for(path: &Path) -> Command {
-    let mut command = process::command("ffprobe");
+fn command_for(path: &Path) -> process::LoggedCommand {
+    let mut command = process::command("ffprobe", process::CommandPurpose::Probe);
     command
         .arg("-v")
         .arg("error")

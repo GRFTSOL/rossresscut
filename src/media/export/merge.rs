@@ -79,7 +79,7 @@ pub fn merge_files(inputs: &[PathBuf], output: &Path) -> Result<(), MergeError> 
     }
     fs::write(&list, text).map_err(|source| MergeError::List { source })?;
 
-    let result = process::command("ffmpeg")
+    let result = process::command("ffmpeg", process::CommandPurpose::Merge)
         .arg("-nostdin")
         .arg("-hide_banner")
         .arg("-loglevel")

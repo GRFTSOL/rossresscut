@@ -4,17 +4,53 @@ use eframe::egui;
 
 use crate::application::OpenState;
 
-use super::icons;
-
 use super::dialogs::{FileDialogPurpose, ProjectDialogMode};
 use super::{FILE_DIALOG_SUPPORTED, FONT_ZOOM_STEP, RossresscutApp, ShortcutAction};
 
 impl RossresscutApp {
     pub(super) fn menu_bar(&mut self, ui: &mut egui::Ui) {
         let strings = self.strings();
-        egui::Panel::top("menu_bar").show(ui, |ui| {
+        let frame = {
+            #[cfg(target_os = "windows")]
+            {
+                super::titlebar::bar_frame(ui.style())
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                egui::Frame::side_top_panel(ui.style())
+            }
+        };
+        egui::Panel::top("menu_bar").frame(frame).show(ui, |ui| {
+            // On Windows the menu bar is also the window title bar: dragging
+            // empty areas moves the window and double-clicking toggles
+            // maximize. Menus and buttons are registered afterwards and win
+            // interaction over this full-row drag widget.
+            #[cfg(target_os = "windows")]
+            let row_height = {
+                let height = super::titlebar::TITLE_BAR_HEIGHT;
+                let row = egui::Rect::from_min_size(
+                    ui.cursor().min,
+                    egui::vec2(ui.available_width(), height),
+                );
+                let maximized = ui
+                    .ctx()
+                    .input(|input| input.viewport().maximized.unwrap_or(false));
+                let drag = ui.interact(
+                    row,
+                    ui.scope_id().with("title_menu_drag"),
+                    egui::Sense::click_and_drag(),
+                );
+                if drag.drag_started() {
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                }
+                if drag.double_clicked() {
+                    ui.ctx()
+                        .send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+                }
+                height
+            };
             egui::MenuBar::new().ui(ui, |ui| {
-                ui.spacing_mut().button_padding = egui::vec2(10.0, 6.0);
+                ui.spacing_mut().button_padding = egui::vec2(10.0, 3.0);
                 ui.menu_button(strings.menu_file.as_str(), |ui| {
                     let dialog_open = self.file_dialog.is_some();
                     let open_enabled = FILE_DIALOG_SUPPORTED && !dialog_open;
@@ -262,21 +298,37 @@ impl RossresscutApp {
 
                 ui.menu_button(strings.menu_tools.as_str(), |ui| {
                     let command_tooltip = self.shortcut_tooltip(
-                        strings.last_ffmpeg_command.as_str(),
+                        strings.executed_ffmpeg_commands.as_str(),
                         ShortcutAction::ShowLastCommand,
                     );
                     if menu_button(
                         ui,
-                        strings.last_ffmpeg_command.as_str(),
+                        strings.executed_ffmpeg_commands.as_str(),
                         &command_tooltip,
                         true,
                     ) {
                         self.run_shortcut(ui.ctx(), ShortcutAction::ShowLastCommand);
                         ui.close();
                     }
+                    ui.separator();
+                    let settings_tooltip = self
+                        .shortcut_tooltip(strings.settings.as_str(), ShortcutAction::OpenSettings);
+                    if menu_button(ui, strings.settings.as_str(), &settings_tooltip, true) {
+                        self.open_settings();
+                        ui.close();
+                    }
                 });
 
                 ui.menu_button(strings.menu_view.as_str(), |ui| {
+                    ui.checkbox(
+                        &mut self.batch_panel_open,
+                        strings.show_batch_panel.as_str(),
+                    );
+                    ui.checkbox(
+                        &mut self.playback_info_open,
+                        strings.show_playback_info.as_str(),
+                    );
+                    ui.separator();
                     let fullscreen = ui
                         .ctx()
                         .input(|input| input.viewport().fullscreen.unwrap_or(false));
@@ -334,28 +386,12 @@ impl RossresscutApp {
                     }
                 });
 
+                #[cfg(target_os = "windows")]
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .add(egui::Button::new(icons::SETTINGS).min_size(egui::vec2(36.0, 30.0)))
-                        .on_hover_text(self.shortcut_tooltip(
-                            strings.settings.as_str(),
-                            ShortcutAction::OpenSettings,
-                        ))
-                        .clicked()
-                    {
-                        self.open_settings();
-                    }
-                    if ui
-                        .add(egui::Button::new(icons::BATCH).min_size(egui::vec2(36.0, 30.0)))
-                        .on_hover_text(strings.batch_export.as_str())
-                        .clicked()
-                    {
-                        self.batch_panel_open = !self.batch_panel_open;
-                    }
-                    let title = self
-                        .media_title()
-                        .unwrap_or_else(|| strings.no_media.clone());
-                    ui.add(egui::Label::new(title).truncate());
+                    let maximized = ui
+                        .ctx()
+                        .input(|input| input.viewport().maximized.unwrap_or(false));
+                    super::titlebar::caption_buttons(ui, row_height, maximized);
                 });
             });
         });

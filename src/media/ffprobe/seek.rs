@@ -23,7 +23,7 @@ pub fn probe_seek_start(
     stream_index: usize,
     position: Timestamp,
 ) -> Result<Option<Timestamp>, ProbeError> {
-    let mut ffmpeg = process::command("ffmpeg");
+    let mut ffmpeg = process::command("ffmpeg", process::CommandPurpose::Probe);
     ffmpeg
         .arg("-nostdin")
         .arg("-hide_banner")
@@ -55,7 +55,7 @@ pub fn probe_seek_start(
         return Ok(None);
     };
 
-    let output = process::command("ffprobe")
+    let output = process::command("ffprobe", process::CommandPurpose::Probe)
         .args([
             "-v",
             "error",

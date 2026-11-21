@@ -133,25 +133,14 @@ impl RossresscutApp {
 
                 if symbol_button(
                     ui,
-                    icons::PREVIOUS_KEYFRAME,
+                    icons::PREVIOUS_SECOND,
                     has_media,
                     &self.shortcut_tooltip(
-                        strings.previous_keyframe.as_str(),
-                        ShortcutAction::PreviousKeyframe,
+                        strings.previous_second.as_str(),
+                        ShortcutAction::PreviousSecond,
                     ),
                 ) {
-                    self.application.step_keyframe(false);
-                }
-                if symbol_button(
-                    ui,
-                    icons::PREVIOUS_FRAME,
-                    has_media,
-                    &self.shortcut_tooltip(
-                        strings.previous_frame.as_str(),
-                        ShortcutAction::PreviousFrame,
-                    ),
-                ) {
-                    self.application.step_frame(false);
+                    self.application.step_second(false);
                 }
 
                 let (play_label, play_tooltip) = if self.application.is_playing() {
@@ -174,22 +163,12 @@ impl RossresscutApp {
 
                 if symbol_button(
                     ui,
-                    icons::NEXT_FRAME,
+                    icons::NEXT_SECOND,
                     has_media,
-                    &self.shortcut_tooltip(strings.next_frame.as_str(), ShortcutAction::NextFrame),
+                    &self
+                        .shortcut_tooltip(strings.next_second.as_str(), ShortcutAction::NextSecond),
                 ) {
-                    self.application.step_frame(true);
-                }
-                if symbol_button(
-                    ui,
-                    icons::NEXT_KEYFRAME,
-                    has_media,
-                    &self.shortcut_tooltip(
-                        strings.next_keyframe.as_str(),
-                        ShortcutAction::NextKeyframe,
-                    ),
-                ) {
-                    self.application.step_keyframe(true);
+                    self.application.step_second(true);
                 }
 
                 let end_response = ui
@@ -266,12 +245,30 @@ impl RossresscutApp {
             1..=49 => icons::VOLUME_LOW,
             _ => icons::VOLUME_HIGH,
         };
-        let volume_response = ui
-            .put(
-                volume_rect,
-                egui::Button::new(volume_icon).min_size(volume_size),
-            )
-            .on_hover_text(format!("{} {}%", strings.volume, volume));
+        // Paint the button ourselves so the icon glyph width cannot change the
+        // button size (and the popup anchor) when the level crosses 50%.
+        let volume_response = ui.interact(
+            volume_rect,
+            ui.scope_id().with("volume_button"),
+            egui::Sense::click(),
+        );
+        let visuals = *ui.style().interact(&volume_response);
+        ui.painter().rect(
+            volume_rect,
+            visuals.corner_radius,
+            visuals.weak_bg_fill,
+            visuals.bg_stroke,
+            egui::StrokeKind::Inside,
+        );
+        ui.painter().text(
+            volume_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            volume_icon,
+            egui::TextStyle::Button.resolve(ui.style()),
+            visuals.fg_stroke.color,
+        );
+        let volume_response =
+            volume_response.on_hover_text(format!("{} {}%", strings.volume, volume));
         if volume_response.clicked() {
             self.volume_popup_open = !self.volume_popup_open;
             if !self.volume_popup_open {
@@ -299,7 +296,7 @@ impl RossresscutApp {
         egui::Popup::from_response(anchor)
             .open_bool(&mut self.volume_popup_open)
             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-            .align(egui::RectAlign::TOP_END)
+            .align(egui::RectAlign::TOP)
             .frame(frame)
             .gap(6.0)
             .show(|ui| {

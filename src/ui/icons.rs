@@ -12,18 +12,14 @@ pub(super) const PREVIOUS_SEGMENT: &str = "\u{f062}";
 pub(super) const SEGMENT_START: &str = "\u{f104}";
 /// Set the selected segment start from the playhead (start flag).
 pub(super) const SET_START: &str = "\u{f024}";
-/// Jump to the previous keyframe.
-pub(super) const PREVIOUS_KEYFRAME: &str = "\u{f049}";
-/// Step one frame back.
-pub(super) const PREVIOUS_FRAME: &str = "\u{f048}";
+/// Jump to the previous second.
+pub(super) const PREVIOUS_SECOND: &str = "\u{f049}";
 /// Start playback.
 pub(super) const PLAY: &str = "\u{f04b}";
 /// Pause playback.
 pub(super) const PAUSE: &str = "\u{f04c}";
-/// Step one frame forward.
-pub(super) const NEXT_FRAME: &str = "\u{f051}";
-/// Jump to the next keyframe.
-pub(super) const NEXT_KEYFRAME: &str = "\u{f050}";
+/// Jump to the next second.
+pub(super) const NEXT_SECOND: &str = "\u{f050}";
 /// Set the selected segment end from the playhead (finish flag).
 pub(super) const SET_END: &str = "\u{f11e}";
 /// Jump to the selected segment end.
@@ -38,10 +34,6 @@ pub(super) const VOLUME_HIGH: &str = "\u{f028}";
 pub(super) const VOLUME_LOW: &str = "\u{f027}";
 /// Playback volume is muted.
 pub(super) const VOLUME_MUTED: &str = "\u{f026}";
-/// Open the settings window.
-pub(super) const SETTINGS: &str = "\u{f013}";
-/// Toggle the batch panel.
-pub(super) const BATCH: &str = "\u{f0ae}";
 /// Add a cut point.
 pub(super) const ADD_CUT: &str = "\u{f067}";
 /// Remove the pending cut point.

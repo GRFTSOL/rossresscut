@@ -680,10 +680,11 @@ fn smart_cut_uses_the_fast_preset_and_manual_bit_rate() {
         application.export_status()
     );
 
+    let source_text = source.to_string_lossy();
     let encoded = application
-        .last_ffmpeg_commands()
-        .iter()
-        .find(|command| command.contains("-c:v"))
+        .executed_ffmpeg_command_lines()
+        .into_iter()
+        .find(|command| command.contains(source_text.as_ref()) && command.contains("-c:v"))
         .expect("an encoded piece");
     assert!(
         encoded.contains("-preset faster"),

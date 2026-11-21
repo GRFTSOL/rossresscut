@@ -74,15 +74,16 @@ FFmpeg
 - 拖动时间轴使用 `hr-seek=no`（落在前一个关键帧）提供视觉反馈；松开时使用指针最终位置并切换 `hr-seek=yes` 做精确 seek。
 - `PlaybackRestart` 事件缺失时，精确 seek 以 `position()` 落点兜底，容差为 100 ms。
 - 快速 scrub 的位置是近似值，不得用于 Segment 边界、编辑结果或导出。
-- 硬件解码由 libmpv 自动选择（`hwdec=auto-safe`）；设备不可用时自动回退软件。
-  预览走 `vo=libmpv` + OpenGL 渲染 API，因此 Windows 上 `d3d11va` 不可用
-  （该 hwdec 要求 `gpu-context=d3d11`）。NVIDIA 机器上实测 `hwdec-current`
-  为 `nvdec`，这是 `auto-safe` 在该渲染路径下的正常取值，不是 `hwdec=auto`
-  或显式指定 `nvdec`。
+- 硬件解码默认由 libmpv 选择（`hwdec=auto-safe`）；设备不可用时自动回退软件。
+  设置页的“预览后端”可以指定 `auto` / `d3d11va` / `nvdec` / `cuda` / `vaapi` /
+  `no`（只列出当前平台可用的项），或切换到外部 FFmpeg。
+  预览走 `vo=libmpv` + OpenGL 渲染 API，因此 Windows 上 `d3d11va` 通常不可用
+  （该 hwdec 要求 `gpu-context=d3d11`）。默认 `auto-safe` 在 NVIDIA 机器上实测
+  `hwdec-current` 为 `nvdec`，这是该渲染路径下的正常取值。
 - 预览导出尺寸按预览窗格大小与源宽高比等比适配，按物理像素下发，且不得超过源分辨率（不放大）。
 - 解码失败或 mpv 启动失败必须可见；播放信息显示 `mpv (<hwdec-current>)`，
   例如 `mpv (vaapi)`、`mpv (vaapi-copy)`、`mpv (no)`；外部回退路径显示 `ffmpeg (...)`。
-- 预览区点击切换播放 / 暂停；滚轮按固定步长步进（上滚后退，下滚前进，默认 6.67 秒），按住 mod 键时每格步进 10 秒。步长可在“设置 → 预览 → 跳转步长”中调整。关键帧步进使用控制按钮或 `previous_keyframe` / `next_keyframe` 快捷键。
+- 预览区点击切换播放 / 暂停；滚轮按固定步长步进（上滚后退，下滚前进，默认 6.67 秒），按住 mod 键时每格步进 10 秒。步长可在“设置 → 预览 → 跳转步长”中调整。上一秒 / 下一秒按钮对应 `Alt+Left` / `Alt+Right`；单帧步进只有 `,` / `.` 快捷键，没有按钮。
 - 预览不保证帧精确；导出与编辑不得依赖预览时间。
 - 精确 seek 在目标纹理到达前由 `Application` 门控，不发布旧位置纹理；UI 不因此
   清空预览，继续绘制上一张已发布纹理，避免每次 seek 都闪一次加载状态。

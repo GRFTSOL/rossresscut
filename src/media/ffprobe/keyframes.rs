@@ -5,7 +5,6 @@
 //! with positions produced by the preview and seek paths.
 
 use std::path::Path;
-use std::process::Command;
 
 use crate::domain::media::KeyframeIndex;
 use crate::domain::time::Timestamp;
@@ -47,8 +46,8 @@ pub fn probe_keyframes(
     Ok(KeyframeIndex::new(parse_keyframes(&stdout, start_time)))
 }
 
-fn command_for(path: &Path, stream_index: usize) -> Command {
-    let mut command = process::command("ffprobe");
+fn command_for(path: &Path, stream_index: usize) -> process::LoggedCommand {
+    let mut command = process::command("ffprobe", process::CommandPurpose::Keyframes);
     command
         .arg("-v")
         .arg("error")

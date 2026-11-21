@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 
+use crate::media::preview::PreviewBackend;
+
 use super::fonts::{font_definitions, install_icon_font};
 use super::i18n::{Language, Strings};
 use super::shortcuts::default_shortcuts;
@@ -241,6 +243,7 @@ pub(super) struct UiSettings {
     pub(super) shortcuts: BTreeMap<String, String>,
     pub(super) volume: u8,
     pub(super) preview_seek_micros: i64,
+    pub(super) preview_backend: PreviewBackend,
     pub(super) autosave_projects: bool,
     pub(super) subtitle_keep_partial: bool,
     pub(super) project_to_source_dir: bool,
@@ -305,12 +308,14 @@ impl Default for GeneralSettings {
 #[serde(default)]
 pub(super) struct PreviewSettings {
     seek_step_micros: i64,
+    backend: String,
 }
 
 impl Default for PreviewSettings {
     fn default() -> Self {
         Self {
             seek_step_micros: UiSettings::default().preview_seek_micros,
+            backend: PreviewBackend::default().key().to_owned(),
         }
     }
 }
@@ -361,6 +366,7 @@ impl From<SettingsFile> for UiSettings {
             preview_seek_micros: preview
                 .seek_step_micros
                 .clamp(MIN_PREVIEW_SEEK_MICROS, MAX_PREVIEW_SEEK_MICROS),
+            preview_backend: PreviewBackend::from_key(&preview.backend).unwrap_or_default(),
             autosave_projects: general.autosave_projects,
             subtitle_keep_partial: general.subtitle_keep_partial,
             project_to_source_dir: general.project_to_source_dir,
@@ -394,6 +400,7 @@ impl From<&UiSettings> for SettingsFile {
             },
             preview: PreviewSettings {
                 seek_step_micros: settings.preview_seek_micros,
+                backend: settings.preview_backend.key().to_owned(),
             },
             export: ExportSettings {
                 chapters: settings.export_chapters,
@@ -455,6 +462,7 @@ impl From<LegacySettings> for UiSettings {
             shortcuts,
             volume: 100,
             preview_seek_micros: DEFAULT_PREVIEW_SEEK_MICROS,
+            preview_backend: PreviewBackend::default(),
             autosave_projects: true,
             subtitle_keep_partial: false,
             project_to_source_dir: true,
@@ -495,13 +503,25 @@ fn migrate_legacy_shortcut_defaults(shortcuts: &mut BTreeMap<String, String>) {
         shortcuts.insert(ShortcutAction::Split.key().to_owned(), "Alt+B".to_owned());
     }
 
+    // The keyframe step became a one-second step; keep the user's binding.
+    for (old, new) in [
+        ("previous_keyframe", "previous_second"),
+        ("next_keyframe", "next_second"),
+    ] {
+        if let Some(value) = shortcuts.remove(old) {
+            shortcuts.entry(new.to_owned()).or_insert(value);
+        }
+    }
+
     // These actions were unbound in older builds; fill only empty values so a
     // binding the user set stays untouched.
     for (key, binding) in [
         ("previous_segment", "ArrowUp"),
         ("next_segment", "ArrowDown"),
-        ("previous_keyframe", "Alt+Left"),
-        ("next_keyframe", "Alt+Right"),
+        ("previous_second", "Alt+Left"),
+        ("next_second", "Alt+Right"),
+        ("previous_frame", ","),
+        ("next_frame", "."),
     ] {
         if shortcuts.get(key).is_some_and(String::is_empty) {
             shortcuts.insert(key.to_owned(), binding.to_owned());
@@ -550,6 +570,7 @@ impl Default for UiSettings {
             shortcuts: default_shortcuts(),
             volume: 100,
             preview_seek_micros: DEFAULT_PREVIEW_SEEK_MICROS,
+            preview_backend: PreviewBackend::default(),
             autosave_projects: true,
             subtitle_keep_partial: false,
             project_to_source_dir: true,
@@ -665,6 +686,25 @@ mod tests {
     }
 
     #[test]
+    fn migrates_keyframe_steps_to_one_second_steps() {
+        let mut shortcuts = legacy_shortcuts();
+        shortcuts.remove("previous_second");
+        shortcuts.remove("next_second");
+        shortcuts.insert("previous_keyframe".to_owned(), "Alt+Left".to_owned());
+        shortcuts.insert("next_keyframe".to_owned(), "Alt+Right".to_owned());
+        shortcuts.insert("previous_frame".to_owned(), String::new());
+        shortcuts.insert("next_frame".to_owned(), String::new());
+        migrate_legacy_shortcut_defaults(&mut shortcuts);
+
+        assert_eq!(shortcuts["previous_second"], "Alt+Left");
+        assert_eq!(shortcuts["next_second"], "Alt+Right");
+        assert_eq!(shortcuts["previous_frame"], ",");
+        assert_eq!(shortcuts["next_frame"], ".");
+        assert!(!shortcuts.contains_key("previous_keyframe"));
+        assert!(!shortcuts.contains_key("next_keyframe"));
+    }
+
+    #[test]
     fn round_trips_the_smart_cut_bit_rate() {
         let settings = UiSettings {
             smart_cut_bit_rate_kbps: 2_500,
@@ -679,6 +719,28 @@ mod tests {
                 .expect("parse")
                 .smart_cut_bit_rate_kbps,
             0
+        );
+    }
+
+    #[test]
+    fn round_trips_the_preview_backend() {
+        let settings = UiSettings {
+            preview_backend: PreviewBackend::MpvNvdec,
+            ..Default::default()
+        };
+        let text = toml::to_string_pretty(&SettingsFile::from(&settings)).expect("serialize");
+        assert!(text.contains("backend = \"mpv-nvdec\""), "{text}");
+        assert_eq!(
+            parse_settings(&text).expect("parse").preview_backend,
+            PreviewBackend::MpvNvdec
+        );
+
+        // Unknown or old values fall back to the default backend.
+        assert_eq!(
+            parse_settings("[general]\n[preview]\nbackend = \"bogus\"\n")
+                .expect("parse")
+                .preview_backend,
+            PreviewBackend::MpvAutoSafe
         );
     }
 

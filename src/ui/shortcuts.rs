@@ -25,10 +25,10 @@ pub(super) enum ShortcutAction {
     GoToStart,
     PreviousSegment,
     SegmentStart,
-    PreviousKeyframe,
+    PreviousSecond,
     PreviousFrame,
     NextFrame,
-    NextKeyframe,
+    NextSecond,
     SegmentEnd,
     NextSegment,
     GoToEnd,
@@ -72,10 +72,10 @@ impl ShortcutAction {
         Self::GoToStart,
         Self::PreviousSegment,
         Self::SegmentStart,
-        Self::PreviousKeyframe,
+        Self::PreviousSecond,
         Self::PreviousFrame,
         Self::NextFrame,
-        Self::NextKeyframe,
+        Self::NextSecond,
         Self::SegmentEnd,
         Self::NextSegment,
         Self::GoToEnd,
@@ -119,10 +119,10 @@ impl ShortcutAction {
             Self::GoToStart => "go_to_start",
             Self::PreviousSegment => "previous_segment",
             Self::SegmentStart => "segment_start",
-            Self::PreviousKeyframe => "previous_keyframe",
+            Self::PreviousSecond => "previous_second",
             Self::PreviousFrame => "previous_frame",
             Self::NextFrame => "next_frame",
-            Self::NextKeyframe => "next_keyframe",
+            Self::NextSecond => "next_second",
             Self::SegmentEnd => "segment_end",
             Self::NextSegment => "next_segment",
             Self::GoToEnd => "go_to_end",
@@ -167,10 +167,10 @@ impl ShortcutAction {
             Self::GoToStart => strings.go_to_start.clone(),
             Self::PreviousSegment => strings.select_previous_segment.clone(),
             Self::SegmentStart => strings.go_to_segment_start.clone(),
-            Self::PreviousKeyframe => strings.previous_keyframe.clone(),
+            Self::PreviousSecond => strings.previous_second.clone(),
             Self::PreviousFrame => strings.previous_frame.clone(),
             Self::NextFrame => strings.next_frame.clone(),
-            Self::NextKeyframe => strings.next_keyframe.clone(),
+            Self::NextSecond => strings.next_second.clone(),
             Self::SegmentEnd => strings.go_to_segment_end.clone(),
             Self::NextSegment => strings.select_next_segment.clone(),
             Self::GoToEnd => strings.go_to_end.clone(),
@@ -186,7 +186,7 @@ impl ShortcutAction {
             Self::MergeOverlapping => strings.merge_overlapping.clone(),
             Self::InvertSegments => strings.invert_segments.clone(),
             Self::ClearSegments => strings.clear_segments.clone(),
-            Self::ShowLastCommand => strings.last_ffmpeg_command.clone(),
+            Self::ShowLastCommand => strings.executed_ffmpeg_commands.clone(),
             Self::AutoCutSilence => strings.auto_cut_silence.clone(),
             Self::SceneDetection => strings.scene_detection.clone(),
             Self::Fullscreen => strings.fullscreen.clone(),
@@ -209,8 +209,10 @@ impl ShortcutAction {
             Self::OpenSettings => "Ctrl+,",
             Self::PreviousSegment => "ArrowUp",
             Self::NextSegment => "ArrowDown",
-            Self::PreviousKeyframe => "Alt+Left",
-            Self::NextKeyframe => "Alt+Right",
+            Self::PreviousSecond => "Alt+Left",
+            Self::NextSecond => "Alt+Right",
+            Self::PreviousFrame => ",",
+            Self::NextFrame => ".",
             Self::AutoCutSilence => "Alt+S",
             Self::Undo => "Ctrl+Z",
             Self::Redo => "Ctrl+Shift+Z",
@@ -225,8 +227,6 @@ impl ShortcutAction {
             | Self::Quit
             | Self::GoToStart
             | Self::SegmentStart
-            | Self::PreviousFrame
-            | Self::NextFrame
             | Self::SegmentEnd
             | Self::GoToEnd
             | Self::RandomSegment
@@ -272,7 +272,7 @@ impl Shortcut {
                 "shift" => shift = true,
                 "alt" | "option" => alt = true,
                 _ => {
-                    key = Some(egui::Key::from_name(part)?);
+                    key = Some(key_from_name(part)?);
                 }
             }
         }
@@ -345,6 +345,14 @@ pub(super) fn key_label(key: egui::Key) -> &'static str {
     }
 }
 
+fn key_from_name(name: &str) -> Option<egui::Key> {
+    match name {
+        "," => Some(egui::Key::Comma),
+        "." => Some(egui::Key::Period),
+        other => egui::Key::from_name(other),
+    }
+}
+
 pub(super) fn default_shortcuts() -> BTreeMap<String, String> {
     ShortcutAction::ALL
         .iter()
@@ -370,8 +378,8 @@ pub(super) const SETTINGS_ROWS: &[[Option<ShortcutAction>; 2]] = &[
         Some(ShortcutAction::SegmentEnd),
     ],
     [
-        Some(ShortcutAction::PreviousKeyframe),
-        Some(ShortcutAction::NextKeyframe),
+        Some(ShortcutAction::PreviousSecond),
+        Some(ShortcutAction::NextSecond),
     ],
     [
         Some(ShortcutAction::PreviousFrame),
@@ -458,5 +466,20 @@ mod tests {
     fn silence_cut_has_a_default_binding() {
         assert_eq!(ShortcutAction::AutoCutSilence.default_binding(), "Alt+S");
         assert_eq!(default_shortcuts()["auto_cut_silence"], "Alt+S");
+    }
+
+    #[test]
+    fn parses_punctuation_and_frame_defaults() {
+        assert_eq!(
+            Shortcut::parse(",").map(|shortcut| shortcut.key),
+            Some(egui::Key::Comma)
+        );
+        assert_eq!(
+            Shortcut::parse(".").map(|shortcut| shortcut.key),
+            Some(egui::Key::Period)
+        );
+        assert_eq!(ShortcutAction::PreviousFrame.default_binding(), ",");
+        assert_eq!(ShortcutAction::NextFrame.default_binding(), ".");
+        assert_eq!(ShortcutAction::PreviousSecond.default_binding(), "Alt+Left");
     }
 }

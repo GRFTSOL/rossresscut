@@ -442,6 +442,7 @@ fn single_segment_chapter_uses_the_actual_output_duration() {
     let mut application = Application::new();
     application.open_media(source);
     wait_for_ready(&mut application);
+    let history_before = application.executed_ffmpeg_command_lines().len();
 
     // The fixture has a one-second GOP, so a 1.5s start falls back to 1.0s and
     // the output is longer than the requested 4.5s.
@@ -480,10 +481,10 @@ fn single_segment_chapter_uses_the_actual_output_duration() {
         "chapter end {} should follow the output duration {duration}",
         ends[0]
     );
-    assert_eq!(
-        application.last_ffmpeg_commands().len(),
-        2,
-        "cutting and concatenating are separate processes"
+    let history_after = application.executed_ffmpeg_command_lines().len();
+    assert!(
+        history_after >= history_before + 2,
+        "cutting and concatenating are separate processes ({history_before} -> {history_after})"
     );
 
     if let Err(error) = fs::remove_dir_all(&directory) {

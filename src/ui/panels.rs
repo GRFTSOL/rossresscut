@@ -16,6 +16,16 @@ use super::icons;
 use super::timeline::segment_color;
 use super::{FILE_DIALOG_SUPPORTED, RossresscutApp, ShortcutAction, Strings};
 
+/// Tabs in the right-hand information panel.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum InfoTab {
+    /// Timeline segments, the primary editing view.
+    #[default]
+    Segments,
+    /// Chapter titles derived from enabled segments.
+    Chapters,
+}
+
 impl RossresscutApp {
     pub(super) fn media_title(&self) -> Option<String> {
         let path = match self.application.state() {
@@ -36,44 +46,79 @@ impl RossresscutApp {
             || strings.duration_unavailable.clone(),
             |value| value.to_string(),
         );
-        ui.horizontal(|ui| {
-            ui.monospace(format!("{position} / {duration}"));
-            if let Some(progress) = self.application.waveform_progress() {
-                ui.separator();
-                ui.label(strings.waveform_generating.as_str());
-                let bar = if progress.determinate() {
-                    egui::ProgressBar::new(progress.fraction())
-                        .desired_width(140.0)
-                        .show_percentage()
-                } else {
-                    egui::ProgressBar::new(0.0)
-                        .desired_width(140.0)
-                        .animate(true)
-                };
-                ui.add(bar);
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let has_enabled_segment = self
-                    .application
-                    .timeline()
-                    .segments()
-                    .iter()
-                    .any(|segment| segment.enabled());
-                let exporting = self.application.export_status().is_running();
-                let enabled = FILE_DIALOG_SUPPORTED && has_enabled_segment && !exporting;
-                if ui
-                    .add_enabled(
-                        enabled,
-                        egui::Button::new(format!("{}…", strings.export))
-                            .min_size(egui::vec2(120.0, 30.0)),
-                    )
-                    .on_hover_text(strings.export_segment.as_str())
-                    .clicked()
-                {
-                    self.export_panel_open = true;
-                }
-            });
-        });
+        let time = format!("{position} / {duration}");
+        let title = self
+            .media_title()
+            .unwrap_or_else(|| strings.no_media.clone());
+        let waveform = self
+            .application
+            .waveform_progress()
+            .map(|progress| (progress.determinate(), progress.fraction()));
+        let has_enabled_segment = self
+            .application
+            .timeline()
+            .segments()
+            .iter()
+            .any(|segment| segment.enabled());
+        let exporting = self.application.export_status().is_running();
+        let enabled = FILE_DIALOG_SUPPORTED && has_enabled_segment && !exporting;
+
+        let row_height = 30.0;
+        let row = egui::Rect::from_min_size(
+            ui.cursor().min,
+            egui::vec2(ui.available_width(), row_height),
+        );
+        // The time is painted so it stays exactly on the window centre line,
+        // the same axis as the play button above it.
+        ui.painter().text(
+            row.center(),
+            egui::Align2::CENTER_CENTER,
+            time,
+            egui::TextStyle::Monospace.resolve(ui.style()),
+            ui.visuals().text_color(),
+        );
+        ui.allocate_ui_with_layout(
+            row.size(),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.columns(3, |columns| {
+                    columns[0].with_layout(
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            ui.add(egui::Label::new(title).truncate());
+                            if let Some((determinate, fraction)) = waveform {
+                                let bar = if determinate {
+                                    egui::ProgressBar::new(fraction)
+                                        .desired_width(90.0)
+                                        .show_percentage()
+                                } else {
+                                    egui::ProgressBar::new(0.0)
+                                        .desired_width(90.0)
+                                        .animate(true)
+                                };
+                                ui.add(bar);
+                            }
+                        },
+                    );
+                    columns[2].with_layout(
+                        egui::Layout::right_to_left(egui::Align::Center),
+                        |ui| {
+                            if ui
+                                .add_enabled(
+                                    enabled,
+                                    egui::Button::new(format!("{}…", strings.export))
+                                        .min_size(egui::vec2(120.0, 30.0)),
+                                )
+                                .on_hover_text(strings.export_segment.as_str())
+                                .clicked()
+                            {
+                                self.export_panel_open = true;
+                            }
+                        },
+                    );
+                });
+            },
+        );
     }
 
     pub(super) fn export_status(&mut self, ui: &mut egui::Ui) {
@@ -158,16 +203,13 @@ impl RossresscutApp {
                 total.checked_add(segment.duration()).unwrap_or(total)
             });
         ui.horizontal(|ui| {
-            ui.heading(fill(
-                &strings.segments,
-                &[&self.application.timeline().len().to_string()],
-            ));
-            ui.label(format!("{} {total}", strings.total_duration));
+            if let Some(in_point) = self.application.in_point() {
+                ui.label(format!("{}: {in_point}", strings.segment_start));
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(format!("{} {total}", strings.total_duration));
+            });
         });
-
-        if let Some(in_point) = self.application.in_point() {
-            ui.label(format!("{}: {in_point}", strings.segment_start));
-        }
 
         let segments: Vec<(usize, Segment)> = self
             .application
@@ -338,7 +380,6 @@ impl RossresscutApp {
             .filter(|segment| segment.enabled())
             .collect();
 
-        ui.heading(strings.chapters.as_str());
         if enabled.is_empty() {
             ui.label(strings.chapters_empty.as_str());
             return;
@@ -389,13 +430,29 @@ impl RossresscutApp {
                         ui.separator();
                     }
 
-                    ui.heading(strings.playback.as_str());
-                    render_playback_info(ui, &self.application, strings);
-                    ui.separator();
+                    if self.playback_info_open {
+                        ui.heading(strings.playback.as_str());
+                        render_playback_info(ui, &self.application, strings);
+                        ui.separator();
+                    }
 
-                    self.segments_panel(ui, strings);
+                    ui.horizontal(|ui| {
+                        let segment_label = fill(
+                            &strings.segments,
+                            &[&self.application.timeline().len().to_string()],
+                        );
+                        ui.selectable_value(&mut self.info_tab, InfoTab::Segments, segment_label);
+                        ui.selectable_value(
+                            &mut self.info_tab,
+                            InfoTab::Chapters,
+                            strings.chapters.as_str(),
+                        );
+                    });
                     ui.separator();
-                    self.chapters_panel(ui, strings);
+                    match self.info_tab {
+                        InfoTab::Segments => self.segments_panel(ui, strings),
+                        InfoTab::Chapters => self.chapters_panel(ui, strings),
+                    }
                 });
             });
     }

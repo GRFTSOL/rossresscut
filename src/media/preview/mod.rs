@@ -28,6 +28,159 @@ pub use video::{
 
 use crate::domain::time::Timestamp;
 
+/// Decoder backend selected in the settings.
+///
+/// libmpv is the primary path; its `hwdec` value is passed through so users can
+/// pick a specific hardware decoder or compare it against the external FFmpeg
+/// fallback.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PreviewBackend {
+    /// libmpv picks a safe hardware decoder and falls back to software.
+    #[default]
+    MpvAutoSafe,
+    /// libmpv tries any hardware decoder, including unsafe ones.
+    MpvAuto,
+    /// libmpv with D3D11VA (Windows).
+    MpvD3d11va,
+    /// libmpv with NVDEC.
+    MpvNvdec,
+    /// libmpv with CUDA.
+    MpvCuda,
+    /// libmpv with VAAPI (Linux).
+    MpvVaapi,
+    /// libmpv with VideoToolbox (macOS).
+    MpvVideotoolbox,
+    /// libmpv with software decoding.
+    MpvSoftware,
+    /// External FFmpeg preview decoder.
+    Ffmpeg,
+}
+
+impl PreviewBackend {
+    /// Backends offered on this platform.
+    pub fn available() -> &'static [Self] {
+        #[cfg(target_os = "windows")]
+        const WINDOWS: &[PreviewBackend] = &[
+            PreviewBackend::MpvAutoSafe,
+            PreviewBackend::MpvAuto,
+            PreviewBackend::MpvD3d11va,
+            PreviewBackend::MpvNvdec,
+            PreviewBackend::MpvCuda,
+            PreviewBackend::MpvSoftware,
+            PreviewBackend::Ffmpeg,
+        ];
+        #[cfg(target_os = "linux")]
+        const LINUX: &[PreviewBackend] = &[
+            PreviewBackend::MpvAutoSafe,
+            PreviewBackend::MpvAuto,
+            PreviewBackend::MpvVaapi,
+            PreviewBackend::MpvNvdec,
+            PreviewBackend::MpvCuda,
+            PreviewBackend::MpvSoftware,
+            PreviewBackend::Ffmpeg,
+        ];
+        #[cfg(target_os = "macos")]
+        const MACOS: &[PreviewBackend] = &[
+            PreviewBackend::MpvAutoSafe,
+            PreviewBackend::MpvAuto,
+            PreviewBackend::MpvVideotoolbox,
+            PreviewBackend::MpvNvdec,
+            PreviewBackend::MpvSoftware,
+            PreviewBackend::Ffmpeg,
+        ];
+        #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+        const OTHER: &[PreviewBackend] = &[
+            PreviewBackend::MpvAutoSafe,
+            PreviewBackend::MpvAuto,
+            PreviewBackend::MpvSoftware,
+            PreviewBackend::Ffmpeg,
+        ];
+
+        #[cfg(target_os = "windows")]
+        {
+            WINDOWS
+        }
+        #[cfg(target_os = "linux")]
+        {
+            LINUX
+        }
+        #[cfg(target_os = "macos")]
+        {
+            MACOS
+        }
+        #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+        {
+            OTHER
+        }
+    }
+
+    /// Stable `config.toml` value.
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::MpvAutoSafe => "mpv-auto-safe",
+            Self::MpvAuto => "mpv-auto",
+            Self::MpvD3d11va => "mpv-d3d11va",
+            Self::MpvNvdec => "mpv-nvdec",
+            Self::MpvCuda => "mpv-cuda",
+            Self::MpvVaapi => "mpv-vaapi",
+            Self::MpvVideotoolbox => "mpv-videotoolbox",
+            Self::MpvSoftware => "mpv-software",
+            Self::Ffmpeg => "ffmpeg",
+        }
+    }
+
+    /// Parses a `config.toml` value.
+    pub fn from_key(key: &str) -> Option<Self> {
+        Some(match key {
+            "mpv-auto-safe" => Self::MpvAutoSafe,
+            "mpv-auto" => Self::MpvAuto,
+            "mpv-d3d11va" => Self::MpvD3d11va,
+            "mpv-nvdec" => Self::MpvNvdec,
+            "mpv-cuda" => Self::MpvCuda,
+            "mpv-vaapi" => Self::MpvVaapi,
+            "mpv-videotoolbox" => Self::MpvVideotoolbox,
+            "mpv-software" => Self::MpvSoftware,
+            "ffmpeg" => Self::Ffmpeg,
+            _ => return None,
+        })
+    }
+
+    /// Label shown in the settings dropdown.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::MpvAutoSafe => "libmpv (auto-safe)",
+            Self::MpvAuto => "libmpv (auto)",
+            Self::MpvD3d11va => "libmpv (d3d11va)",
+            Self::MpvNvdec => "libmpv (nvdec)",
+            Self::MpvCuda => "libmpv (cuda)",
+            Self::MpvVaapi => "libmpv (vaapi)",
+            Self::MpvVideotoolbox => "libmpv (videotoolbox)",
+            Self::MpvSoftware => "libmpv (software)",
+            Self::Ffmpeg => "FFmpeg",
+        }
+    }
+
+    /// libmpv `hwdec` value, or `None` when FFmpeg should be used.
+    pub const fn hwdec(self) -> Option<&'static str> {
+        match self {
+            Self::MpvAutoSafe => Some("auto-safe"),
+            Self::MpvAuto => Some("auto"),
+            Self::MpvD3d11va => Some("d3d11va"),
+            Self::MpvNvdec => Some("nvdec"),
+            Self::MpvCuda => Some("cuda"),
+            Self::MpvVaapi => Some("vaapi"),
+            Self::MpvVideotoolbox => Some("videotoolbox"),
+            Self::MpvSoftware => Some("no"),
+            Self::Ffmpeg => None,
+        }
+    }
+
+    /// Whether this backend is libmpv.
+    pub const fn uses_mpv(self) -> bool {
+        !matches!(self, Self::Ffmpeg)
+    }
+}
+
 /// Errors produced by preview processes.
 #[derive(Debug)]
 pub enum PreviewError {

@@ -96,7 +96,7 @@ cargo fmt --all --check
 
 - **libmpv 导入库**：`mpv-engine` 需要 MSVC 导入库 `mpv.lib`，官方 Windows
   构建只提供 `libmpv-2.dll`。用脚本生成（Windows 走 `dumpbin` + `lib`，
-  Linux / macOS 走 LLVM 的 `llvm-readobj` + `llvm-dlltool`）：
+  Linux 走 LLVM 的 `llvm-readobj` + `llvm-dlltool`）：
 
   ```bash
   ./scripts/mpv-import-lib.sh /path/to/libmpv-2.dll
@@ -112,7 +112,7 @@ cargo fmt --all --check
 - **打包**：从干净工作树运行 `./scripts/package-windows.sh`，产出
   `dist/rossresscut-<version>-windows-x64.zip` 与 `.sha256`。
 - **崩溃日志**：未捕获的 panic 追加到 `%LOCALAPPDATA%\rossresscut\crash.log`
-  （UTC 时间、版本与堆栈）；Linux / macOS 为
+  （UTC 时间、版本与堆栈）；Linux 为
   `$XDG_STATE_HOME/rossresscut/crash.log`（回退 `~/.local/state`）。
 
 - **运行时 DLL**：`libmpv-2.dll` 必须与 exe 同目录或位于 `PATH`。集成测试的
@@ -147,7 +147,7 @@ cargo fmt --all --check
 - 交互 shell 是 nushell，PowerShell 5.1 保留可用；脚本仍显式写 shebang，
   不依赖交互 shell 配置。
 
-产品支持平台仍以 `GOALS.md` 与 `PLANS.md` 中的 Linux / Windows / macOS 为准。本节描述的是当前开发机的验证环境，不能作为"只支持 Arch Linux"的依据。
+产品支持平台仍以 `GOALS.md` 与 `PLANS.md` 中的 Linux / Windows 为准。本节描述的是当前开发机的验证环境，不能作为"只支持 Arch Linux"的依据。
 
 ## 系统包与权限边界
 

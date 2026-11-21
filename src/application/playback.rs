@@ -63,7 +63,7 @@ impl Playback {
 
     #[cfg(feature = "mpv-preview")]
     fn start_mpv(&mut self, media: &MediaFile, start_paused: bool) -> bool {
-        if !self.mpv_enabled || self.mpv_failed {
+        if !self.mpv_enabled || self.mpv_failed || !self.backend.uses_mpv() {
             return false;
         }
         let Some(video) = preview_video_stream(media) else {
@@ -81,6 +81,7 @@ impl Playback {
             width,
             height,
             start_paused,
+            hwdec: self.backend.hwdec().unwrap_or("auto-safe"),
         };
         // The UI polls at 16/50 ms while mpv is active; no egui dependency is
         // allowed in this layer, so no repaint callback is installed here.

@@ -13,7 +13,7 @@ Phase 7 已完成：时间轴与片段编辑、单段与多段无损导出、章
 批处理与合并、场景检测与静音切分、字幕与流选择、智能裁切。
 
 Phase 8（发布）进行中：Linux 的 pacman 包与桌面集成已完成；Windows 原生
-MSVC 构建、测试与便携包已完成，macOS 未开始。详见 `PLANS.md` 与
+MSVC 构建、测试与便携包已完成。详见 `PLANS.md` 与
 `docs/open-questions.md`。
 
 ## 已知限制
