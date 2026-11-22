@@ -1,37 +1,37 @@
 # mpv-engine export + wgpu spike
 
-状态：`Linux 独立 wgpu、eframe、音频、scrub、resize 与 HDR 预览已实测；Windows / macOS 未验证`
+Status: `Linux standalone wgpu, eframe, audio, scrub, resize and HDR preview have been measured; Windows / macOS not verified`
 
-本文件只记录实际运行的命令与数据。结论中标注为“推断”的部分没有实测。
+This file records only commands that were actually run and the resulting data. Parts of the conclusions marked as "inferred" were not measured.
 
-## 目的
+## Purpose
 
-评估 `mpv-engine 0.2.1` 的 `export` + `wgpu` feature 能否替代或补充 ADR 0009 的
-“进程内 libav* + 平台 hwaccel + surface 导入”预览方案。
+Evaluate whether the `export` + `wgpu` feature of `mpv-engine 0.2.1` can replace or supplement the ADR 0009
+"in-process libav* + platform hwaccel + surface import" preview approach.
 
-重点回答：
+The key questions are:
 
-- Linux DMA-BUF → wgpu 导入是否真的零拷贝、生命周期是否安全。
-- 4K HEVC 在本机 AMD Vega 8 / RADV 上的实际吞吐与资源占用。
-- 暂停 seek 后能否按需产出新帧，位置是否可用。
-- 接入 eframe 0.37 的具体风险。
+- Whether Linux DMA-BUF → wgpu import is truly zero-copy, and whether object lifetimes are safe.
+- The actual throughput and resource usage of 4K HEVC on this machine's AMD Vega 8 / RADV.
+- Whether new frames can be produced on demand after a paused seek, and whether the position is usable.
+- The concrete risks of integrating with eframe 0.37.
 
-## 环境
+## Environment
 
-| 项 | 值 |
+| Item | Value |
 | --- | --- |
-| OS | Arch Linux，Wayland（niri） |
-| GPU | AMD Radeon Vega 8（RADV / radeonsi） |
-| 渲染节点 | `/dev/dri/renderD128` |
+| OS | Arch Linux, Wayland (niri) |
+| GPU | AMD Radeon Vega 8 (RADV / radeonsi) |
+| Render node | `/dev/dri/renderD128` |
 | FFmpeg | `n9.0.2` |
-| mpv | `1:0.41.0-6`（包 SPDX：`GPL-2.0-or-later AND LGPL-2.1-or-later`） |
+| mpv | `1:0.41.0-6` (package SPDX: `GPL-2.0-or-later AND LGPL-2.1-or-later`) |
 | libmpv | `pkg-config --modversion mpv` = `2.5.0` |
 | EGL / GBM | `1.5` / `26.2.5-arch1.1` |
 | Rust / Cargo | `1.99.1` |
-| 测试素材 | `/home/chasel/videos/bilibili/Immich相册部署和使用教程.mp4`（HEVC 3840×2160，59.94 fps） |
-| spike 目录 | `target/spike/mpv-engine`（已被 `.gitignore` 忽略） |
+| Test asset | `/home/chasel/videos/bilibili/Immich相册部署和使用教程.mp4` (HEVC 3840×2160, 59.94 fps) |
+| spike directory | `target/spike/mpv-engine` (already ignored by `.gitignore`) |
 
-## 执行的命令
+## Commands executed
 
 ```bash
 git clone --depth 1 https://github.com/ophymx/mpv-engine target/spike/mpv-engine
@@ -44,12 +44,12 @@ cargo build --release --features wgpu --example spike_stats
 ./target/release/examples/spike_stats '/home/chasel/videos/bilibili/Immich相册部署和使用教程.mp4'
 ```
 
-`spike_stats` 是 `winit_player` 的本地副本，只增加帧计数、DMA-BUF 参数输出、
-`position()` 输出，以及一次暂停 + `seek_absolute(60.0)`。它不进入项目仓库。
+`spike_stats` is a local copy of `winit_player` that only adds frame counting, DMA-BUF parameter output,
+`position()` output, and one pause + `seek_absolute(60.0)`. It does not enter the project repository.
 
-## 结果
+## Results
 
-### 1. wgpu 导入测试
+### 1. wgpu import tests
 
 ```text
 running 3 tests
@@ -59,16 +59,16 @@ test continuous_import_recycles_buffers_and_stays_correct ... ok
 test result: ok. 3 passed; 0 failed; finished in 1.76s
 ```
 
-覆盖内容：
+What they cover:
 
-- 导出 buffer 经 `into_wgpu_texture` 后，通过 wgpu 读回的像素与 `copy_pixels()` 字节一致。
-- 纹理在 `detach_render()` 与 `drop(engine)` 之后仍可读，说明 wgpu 拥有底层内存。
-- 连续导入超过 pool 容量的帧，buffer 被回收复用且画面不串帧。
+- After the exported buffer goes through `into_wgpu_texture`, the pixels read back through wgpu match the bytes from `copy_pixels()`.
+- The texture is still readable after `detach_render()` and `drop(engine)`, which shows that wgpu owns the underlying memory.
+- When more frames than the pool capacity are imported continuously, buffers are recycled and reused and no frame content is mixed up.
 
-本机没有出现 “adapter lacks `VULKAN_EXTERNAL_MEMORY_DMA_BUF`” 的跳过提示，说明 RADV
-暴露了该 feature，且 wgpu 成功启用了它。
+This machine did not print the "adapter lacks `VULKAN_EXTERNAL_MEMORY_DMA_BUF`" skip message, which means RADV
+exposes that feature and wgpu enabled it successfully.
 
-### 2. 4K HEVC 播放
+### 2. 4K HEVC playback
 
 ```text
 spike: frame 2017x1508 fourcc=0x34325241 stride=8192 modifier=0x0
@@ -77,13 +77,13 @@ spike: t=4.0s frames=118 fps=29.2 paused=false time-pos=3.754
 spike: t=6.1s frames=183 fps=30.2 paused=false time-pos=5.756
 ```
 
-- `fourcc=0x34325241` 是 `AR24`；`modifier=0x0` 是 linear modifier。
-- 导出尺寸 `2017x1508` 是窗口尺寸，mpv 在 GPU 内完成缩放与 letterbox。
-- 播放稳定在约 29–30 fps。
-- 12 秒时 `ps` 采样：`%CPU 18.5`、`RSS 275452 KB`（约 269 MiB）。
-- `Cannot load libcuda.so.1` 来自 wgpu 枚举 NVIDIA 后端，不影响 Vulkan 路径。
+- `fourcc=0x34325241` is `AR24`; `modifier=0x0` is the linear modifier.
+- The export size `2017x1508` is the window size; mpv performs scaling and letterboxing inside the GPU.
+- Playback stays stable at about 29–30 fps.
+- `ps` sample at 12 seconds: `%CPU 18.5`, `RSS 275452 KB` (about 269 MiB).
+- `Cannot load libcuda.so.1` comes from wgpu enumerating the NVIDIA backend and does not affect the Vulkan path.
 
-### 3. 暂停 + seek
+### 3. Pause + seek
 
 ```text
 spike: paused + seek 60.0 at frames=183
@@ -91,12 +91,12 @@ spike: paused-after-seek frames_delta=4 time-pos=60.010
 spike: t=17.0s frames=200 fps=11.7 paused=false time-pos=62.012
 ```
 
-- 暂停状态下 `seek_absolute(60.0)` 后仍产出了新帧（`frames_delta=4`）。
-- `position()`（`time-pos`）为 `60.010`，与目标相差 10 ms。
-- 恢复播放后继续正常推进。
-- `fps` 字段是“总帧数 / 总墙钟”，暂停期间被拉低，不是瞬时帧率。
+- Even in the paused state, `seek_absolute(60.0)` still produced new frames (`frames_delta=4`).
+- `position()` (`time-pos`) is `60.010`, 10 ms away from the target.
+- After resuming playback it keeps advancing normally.
+- The `fps` field is "total frames / total wall clock", so it is pulled down while paused; it is not an instantaneous frame rate.
 
-### 4. eframe 0.37 端到端
+### 4. eframe 0.37 end-to-end
 
 ```text
 cargo run --release --features wgpu --example eframe_spike -- red.mp4
@@ -105,26 +105,25 @@ screenshot 1707x960 center=(253, 0, 0, 255)
 spike: center pixel is red -> BGRA channel order OK
 ```
 
-- 窗口逻辑尺寸 1280x720；Wayland scale 下截图是 1707x960（物理像素）。
-- 纯红视频中心像素 `(253, 0, 0, 255)`：`Bgra8Unorm` 纹理可以直接交给
-  `register_native_texture`，颜色通道顺序正确。
-- 50% 灰视频中心像素 `(127, 128, 127, 255)`：未见明显 sRGB 亮度偏移。
-- eframe 的 device 通过 `WgpuSetupCreateNew.device_descriptor` 请求
-  `mpv_engine::REQUIRED_WGPU_FEATURES`，并把 `instance_descriptor.backends`
-  固定为 `mpv_engine::WGPU_BACKEND`（Linux 为 Vulkan）。
-- eframe 0.37 的 `App` trait 使用 `ui(&mut self, &mut Ui, &mut Frame)`，不是
-  `update`；这与项目当前 eframe 版本一致。
+- Window logical size 1280x720; under the Wayland scale the screenshot is 1707x960 (physical pixels).
+- Center pixel of the pure red video `(253, 0, 0, 255)`: a `Bgra8Unorm` texture can be handed directly to
+  `register_native_texture`, and the color channel order is correct.
+- Center pixel of the 50% gray video `(127, 128, 127, 255)`: no obvious sRGB brightness shift was observed.
+- eframe's device requests `mpv_engine::REQUIRED_WGPU_FEATURES` through `WgpuSetupCreateNew.device_descriptor`,
+  and pins `instance_descriptor.backends` to `mpv_engine::WGPU_BACKEND` (Vulkan on Linux).
+- eframe 0.37's `App` trait uses `ui(&mut self, &mut Ui, &mut Frame)`, not `update`; this matches the
+  project's current eframe version.
 
-### 5. 音频
+### 5. Audio
 
-命令：
+Command:
 
 ```bash
 cargo run --release --example audio_spike -- av.mp4
 ```
 
-素材：H.264 + AAC，44.1 kHz，单声道，10 秒。引擎为 `Engine::headless()`，
-默认 mpv 音频输出，音量 10。
+Asset: H.264 + AAC, 44.1 kHz, mono, 10 seconds. The engine is `Engine::headless()`,
+using mpv's default audio output with volume 10.
 
 ```text
 t=1.0s: pos=1.0 audio-pts=0.9659 device=auto format=floatp rate=44100 ch=1 vol=10
@@ -137,284 +136,306 @@ eframe + audio: pos=0.8 audio-pts=0.7208 format=floatp rate=44100 ch=1 vol=5
 eframe + 4K: audio 48000 Hz, 2 ch
 ```
 
-- 音频输出初始化成功：`audio-params/format=floatp`、`samplerate=44100`、
-  `channel-count=1`。`audio-device` 读回 `auto`，没有单独查询实际 AO。
-- 稳定播放时 `position()` 与 `audio-pts` 相差约 11–16 ms；0.8 秒时相差约
-  79 ms，属于启动/输出缓冲的瞬态。
-- 暂停、暂停中 seek、恢复、音量、静音均正常；`position()` 在暂停 seek 后为
-  目标值。
-- 无法由 agent 人工听音；以上依据是音频参数非空、`audio-pts` 持续推进、
-  `position()` 与音频 PTS 同步。
+- Audio output initialized successfully: `audio-params/format=floatp`, `samplerate=44100`,
+  `channel-count=1`. `audio-device` reads back `auto`; the actual AO was not queried separately.
+- During steady playback `position()` and `audio-pts` differ by about 11–16 ms; at 0.8 seconds the difference
+  is about 79 ms, a transient of startup / output buffering.
+- Pause, seek while paused, resume, volume and mute all work; after a paused seek `position()` equals the
+  target value.
+- The agent cannot listen to the audio by ear; the evidence above is that the audio parameters are non-empty,
+  `audio-pts` keeps advancing, and `position()` stays in sync with the audio PTS.
 
 ### 6. Scrub
 
-命令：
+Command:
 
 ```bash
 cargo run --release --example scrub_spike -- <4K HEVC>
 ```
 
-引擎为 `Engine::headless()`，`audio=no`，`hwdec=auto-safe`，目标是同一 4K HEVC
-素材。测量从 `seek_absolute` 发出到 `PlaybackRestart`（`hr-seek=no`）或
-`position()` 到达目标 ±0.05s（`hr-seek=yes`）的时间。
+The engine is `Engine::headless()` with `audio=no` and `hwdec=auto-safe`, targeting the same 4K HEVC
+asset. The measurement is the time from issuing `seek_absolute` until `PlaybackRestart` (`hr-seek=no`) or
+until `position()` reaches the target ±0.05s (`hr-seek=yes`).
 
-| 模式 | 状态 | 延迟 | 落点误差 |
+| Mode | State | Latency | Landing error |
 | --- | --- | --- | --- |
-| `hr-seek=no` | 播放中 | 132–193 ms | 4.87–4.98 s（前一个关键帧） |
-| `hr-seek=no` | 暂停 | 128–313 ms | 4.88–5.00 s（前一个关键帧） |
-| `hr-seek=yes` | 播放中 | 46–331 ms | 0.00 s |
-| `hr-seek=yes` | 暂停 | 0.4–305 ms | 0.00 s |
+| `hr-seek=no` | playing | 132–193 ms | 4.87–4.98 s (previous keyframe) |
+| `hr-seek=no` | paused | 128–313 ms | 4.88–5.00 s (previous keyframe) |
+| `hr-seek=yes` | playing | 46–331 ms | 0.00 s |
+| `hr-seek=yes` | paused | 0.4–305 ms | 0.00 s |
 
-- 该素材的关键帧间隔约 5 秒，因此 `hr-seek=no` 会回退到目标前约 5 秒的关键帧。
-  这是预期行为，UI 在拖动期间必须显示实际落点，而不是请求的目标时间。
-- `hr-seek=yes` 在 4K HEVC 上也只需约 200–330 ms（首次 46 ms），精确 seek
-  可以作为松手后的最终 seek。
-- `PlaybackRestart` 在 `hr-seek=no` 下会触发；在 `hr-seek=yes` 的 headless /
-  `vo=null` / `audio=no` 组合下没有在 20 秒内触发，但 `position()` 已到达目标。
-  实现不能只依赖该事件，需要用 `position()` 或观察 `time-pos` 兜底。
-- 真实 eframe 渲染 + 音频下复测：4K HEVC + AAC 48 kHz 2ch，`hr-seek=yes`
-  到 6.0 用时 365 ms，`position=6.039`，`audio-pts=6.015`，
-  `PlaybackRestart=true`；320x240 红片同路径用时 50 ms。
-- 4K eframe 截图的中心像素是 `(244,244,244)`，因为该素材 6 秒处不是纯红；
-  颜色正确性以 `red.mp4` 的 `(253,0,0)` 和 `gray.mp4` 的 `(127,128,127)` 为准。
+- The keyframe interval of this asset is about 5 seconds, so `hr-seek=no` falls back to the keyframe about
+  5 seconds before the target. This is expected behavior; while dragging, the UI must display the actual
+  landing point rather than the requested target time.
+- Even on 4K HEVC, `hr-seek=yes` only takes about 200–330 ms (46 ms the first time), so a precise seek can
+  serve as the final seek after the user releases the handle.
+- `PlaybackRestart` fires with `hr-seek=no`; with the headless / `vo=null` / `audio=no` combination and
+  `hr-seek=yes` it did not fire within 20 seconds, but `position()` had already reached the target.
+  The implementation cannot rely on that event alone and needs `position()` or observation of `time-pos`
+  as a fallback.
+- Re-measured with real eframe rendering + audio: for 4K HEVC + AAC 48 kHz 2ch, `hr-seek=yes` to 6.0 took
+  365 ms, `position=6.039`, `audio-pts=6.015`, `PlaybackRestart=true`; the same path took 50 ms on a
+  320x240 red clip.
+- The center pixel of the 4K eframe screenshot is `(244,244,244)`, because that asset is not pure red at
+  6 seconds; color correctness is judged by the `(253,0,0)` of `red.mp4` and the `(127,128,127)` of `gray.mp4`.
 
-### 7. GPU 引擎归属（2026-10-26）
+### 7. GPU engine attribution (2026-10-26)
 
-用户观察到预览时 GPU encode engine 有占用。`nvtop -s` 快照显示：
+The user observed GPU encode engine usage during preview. An `nvtop -s` snapshot shows:
 
 ```text
-benchmark 期间（4K HEVC 自动播放）:
+during the benchmark (4K HEVC autoplay):
   /usr/bin/sunshine          encode=35%  gpu_usage=null
   ./target/release/rossresscut encode=null  decode=72%  gpu_usage=77%
 
-空闲基线（未启动 rossresscut）:
+idle baseline (rossresscut not running):
   /usr/bin/sunshine          encode=40%
 ```
 
-- encode engine 的占用来自 **Sunshine 串流编码**，不是 rossresscut 预览。
-- rossresscut 的预览路径使用 **decode engine（VAAPI HEVC 解码）** 和
-  **GPU 3D/shader**；`encode` 为 `null`。
-- `960x540` 导出限制只影响 FBO 尺寸与 GPU 缩放/带宽，不触发视频编码。
-- 因此“不缩放直接播放源素材”不会省掉一个编码步骤；它只会把缩放从
-  mpv 的 export FBO 移到 egui 绘制阶段，并显著增加导出纹理的显存/带宽
-  （4K BGRA 约 33 MB/帧）。当前 8-bit 裁切预览保留 960x540 输出。
+- The encode engine usage comes from **Sunshine streaming encoding**, not from the rossresscut preview.
+- The rossresscut preview path uses the **decode engine (VAAPI HEVC decoding)** and the
+  **GPU 3D/shader**; `encode` is `null`.
+- The `960x540` export limit only affects the FBO size and GPU scaling/bandwidth; it does not trigger
+  video encoding.
+- Therefore "playing the source asset without scaling" would not save an encoding step; it would only move
+  scaling from mpv's export FBO to the egui drawing stage and significantly increase the VRAM/bandwidth of
+  the exported texture (4K BGRA is about 33 MB per frame). The current 8-bit cut preview keeps the
+  960x540 output.
 
-## 关键事实
+## Key facts
 
-- `ExportedFrame` 的公开 API **没有 PTS**。可用字段是 `width`、`height`、
-  `fourcc`、`stride`、`modifier`、`dma_buf_fd`（Linux）、`copy_pixels`。
-  播放位置只能通过 `Engine::position()` 读取 `time-pos`。
-- `Engine` 提供 `seek_absolute(f64)`、`seek_relative(f64)`、`set_paused`、
-  `load_paused`、`render_update`、`acquire_frame`、`position`。
-- mpv-engine 的 `wgpu` feature 与项目 eframe 0.37 都解析到 `wgpu 30.0.1` /
-  `wgpu-hal 30.0.1`，版本一致。
-- Linux 导入使用 `texture_from_raw` + `DropCallback` + `TextureMemory::External`，
-  避免 `texture_from_dmabuf_fd` 的 `drop_callback: None` 导致每帧重新分配。
-- 导出格式是 8-bit BGRA (`AR24`/`XR24`)，不是 10-bit/HDR。
-- mpv 自己输出音频时，`position()` 与 `audio-pts` 稳定相差约 11–16 ms；
-  音量、静音、暂停、暂停中 seek 都可用。
-- `hr-seek=no` 是快速关键帧 seek（约 5 秒粒度）；`hr-seek=yes` 是精确 seek，
-  在 4K HEVC 上约 200–330 ms。
-- `nvtop` 的 encode 占用可能来自 Sunshine 串流；判断预览负载要看
-  rossresscut 进程的 `decode` 与 `gpu_usage`，以及 `encode` 是否为 `null`。
+- The public API of `ExportedFrame` **has no PTS**. The available fields are `width`, `height`,
+  `fourcc`, `stride`, `modifier`, `dma_buf_fd` (Linux) and `copy_pixels`.
+  Playback position can only be read as `time-pos` through `Engine::position()`.
+- `Engine` provides `seek_absolute(f64)`, `seek_relative(f64)`, `set_paused`,
+  `load_paused`, `render_update`, `acquire_frame`, `position`.
+- mpv-engine's `wgpu` feature and the project's eframe 0.37 both resolve to `wgpu 30.0.1` /
+  `wgpu-hal 30.0.1`; the versions match.
+- The Linux import uses `texture_from_raw` + `DropCallback` + `TextureMemory::External`,
+  avoiding the per-frame reallocation that `texture_from_dmabuf_fd` causes with `drop_callback: None`.
+- The export format is 8-bit BGRA (`AR24`/`XR24`), not 10-bit/HDR.
+- When mpv outputs audio itself, `position()` and `audio-pts` consistently differ by about 11–16 ms;
+  volume, mute, pause and seek while paused all work.
+- `hr-seek=no` is a fast keyframe seek (about 5 second granularity); `hr-seek=yes` is a precise seek,
+  about 200–330 ms on 4K HEVC.
+- `nvtop` encode usage may come from Sunshine streaming; to judge the preview load look at the rossresscut
+  process's `decode` and `gpu_usage`, and at whether `encode` is `null`.
 
-## eframe 集成风险
+## eframe integration risks
 
-以下第 1–4 条已在 Linux 上做过端到端验证；其余仍是待验证项。
+Items 1–4 below have already been verified end-to-end on Linux; the rest are still to be verified.
 
-1. **device feature**：mpv-engine 的导入要求
-   `wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF`。eframe 的默认
-   `WgpuSetupCreateNew.device_descriptor` 不请求它，需要在
-   `NativeOptions.wgpu_options` 里替换 `device_descriptor`。
-   spike 已证明 RADV 支持该 feature。
-2. **版本一致性**：eframe 0.37 与 mpv-engine 都使用 wgpu 30.0.1；若项目后续升级
-   eframe，必须同步升级 mpv-engine，否则 `Device::as_hal` 的类型不匹配。
-3. **egui 纹理格式**：`register_native_texture` 的文档要求 `Rgba8Unorm`，而
-   `ExportedFrame::into_wgpu_texture` 返回 `Bgra8Unorm`。实测可以直接注册：
-   红色 `(253,0,0)`、灰色 `(127,128,127)` 都正确，不需要额外 blit。
-   这是当前 eframe/egui-wgpu 0.37 的行为；升级版本时需要回归这条测试。
-4. **色彩空间**：mpv 的 8-bit 输出是 SDR/BT.709（HDR 会被 tone map）。
-   50% 灰的截图值与输入一致，未见明显 sRGB 偏移；HDR 素材的对比见
-   2026-11-04 的 HDR 验证。
-5. **回退路径**：如果 device 没有 DMA-BUF feature、驱动拒绝导入、或平台不是
-   Vulkan/Metal/DX12，需要回退到 `render_sw`（CPU RGBA）或现有外部 FFmpeg 预览。
-   UI 的“解码后端”必须显示实际生效的路径。
+1. **device feature**: mpv-engine's import requires
+   `wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF`. eframe's default
+   `WgpuSetupCreateNew.device_descriptor` does not request it, so
+   `device_descriptor` must be replaced in `NativeOptions.wgpu_options`.
+   The spike already proved that RADV supports this feature.
+2. **version consistency**: eframe 0.37 and mpv-engine both use wgpu 30.0.1; if the project later upgrades
+   eframe, mpv-engine must be upgraded in step, otherwise the `Device::as_hal` types will not match.
+3. **egui texture format**: the `register_native_texture` documentation requires `Rgba8Unorm`, while
+   `ExportedFrame::into_wgpu_texture` returns `Bgra8Unorm`. In practice it can be registered directly:
+   red `(253,0,0)` and gray `(127,128,127)` are both correct, and no extra blit is needed.
+   This is the behavior of the current eframe/egui-wgpu 0.37; the test must be repeated as a regression
+   when upgrading versions.
+4. **color space**: mpv's 8-bit output is SDR/BT.709 (HDR is tone mapped).
+   The 50% gray screenshot values match the input, with no obvious sRGB shift; for HDR assets see the
+   HDR verification of 2026-11-04.
+5. **fallback path**: if the device lacks the DMA-BUF feature, the driver refuses the import, or the platform
+   is not Vulkan/Metal/DX12, it must fall back to `render_sw` (CPU RGBA) or the existing external FFmpeg
+   preview. The UI's "decode backend" must display the path that is actually in effect.
 
-## 许可证
+## Licensing
 
-- `mpv-engine` 代码：MIT OR Apache-2.0。
-- 它链接的 libmpv：mpv 默认构建是 GPLv2+；只有 `-Dgpl=false` 构建才是
-  LGPLv2.1+。Arch 包 SPDX 为 `GPL-2.0-or-later AND LGPL-2.1-or-later`，
-  分发前必须确认实际 libmpv 的构建选项。
-- 如果分发时带上 GPL 构建的 libmpv，整个组合作品按 GPLv2+ 分发；
-  如果不带、依赖用户系统库，动态链接 GPL 库仍可能被视为衍生作品。
-- 与外部 `ffmpeg` 进程不同：后者没有链接，不构成衍生作品。
+- `mpv-engine` code: MIT OR Apache-2.0.
+- The libmpv it links: mpv's default build is GPLv2+; only a `-Dgpl=false` build is
+  LGPLv2.1+. The Arch package SPDX is `GPL-2.0-or-later AND LGPL-2.1-or-later`, so
+  the actual libmpv build options must be confirmed before distribution.
+- If a GPL-built libmpv is shipped with distribution, the whole combined work is distributed under GPLv2+;
+  if it is not shipped and the user's system library is relied on instead, dynamically linking a GPL library
+  may still be considered a derivative work.
+- This differs from an external `ffmpeg` process: the latter is not linked and does not form a derivative work.
 
-## 未验证
+## Not verified
 
-- Windows D3D11VA / macOS VideoToolbox 的导出路径（本机无法验证）。
-- 更长时间（小时级）播放的内存稳定性。10 分钟复测稳定，见
-  `docs/investigations/playback-pipeline.md`。
+- The export paths for Windows D3D11VA / macOS VideoToolbox (cannot be verified on this machine).
+- Memory stability over longer (hour-scale) playback. The 10-minute re-test is stable, see
+  `docs/investigations/playback-pipeline.md`.
 
-## 2026-11-04 窗口缩放验证
+## 2026-11-04 window resize verification
 
-`set_export_size` 已改为按预览窗格物理像素等比适配，连续变化的尺寸等两次
-一致后才下发。验证结果：
+`set_export_size` has been changed to fit the preview pane's physical pixels proportionally, and a
+continuously changing size is only applied after two identical values. Verification results:
 
-- 自动化：`tests/mpv_gpu_regression.rs::resizing_the_export_updates_the_texture`
-  在暂停状态把导出从 64x64 改到 96x54、再到 32x32，断言新尺寸纹理可达且
-  中心像素仍为红色；全部 5 个 GPU 回归测试在 RADV 上通过。
-- 纯逻辑：`ui::tests::preview_resize_waits_for_a_repeated_size` 与
-  `ui::tests::preview_bounds_use_physical_pixels` 覆盖两帧去抖和逻辑点到
-  物理像素的换算。
-- 实机：1280x720 素材在 900x700 窗口下导出 640x360，在 1400x1000 窗口下
-  导出 1280x720；连续快速改变尺寸只按稳定后的尺寸重配，画面比例保持 16:9，
-  未超过源分辨率。
-- 发布门禁：GPU 回归与窗口缩放人工检查已写入 `RELEASING.md` 发布前检查；
-  CI runner 没有 DRM render node，因此不在 GitHub Actions 中执行。
+- Automated: `tests/mpv_gpu_regression.rs::resizing_the_export_updates_the_texture`
+  changes the export from 64x64 to 96x54 and then to 32x32 in the paused state, and asserts that a
+  texture of the new size is reachable and the center pixel is still red; all 5 GPU regression tests
+  pass on RADV.
+- Pure logic: `ui::tests::preview_resize_waits_for_a_repeated_size` and
+  `ui::tests::preview_bounds_use_physical_pixels` cover the two-frame debounce and the conversion from
+  logical points to physical pixels.
+- Real machine: a 1280x720 asset exports 640x360 in a 900x700 window and 1280x720 in a 1400x1000 window;
+  continuous rapid resizing only reconfigures with the stabilized size, the picture keeps its 16:9 ratio,
+  and the source resolution is never exceeded.
+- Release gate: the GPU regression and the manual window-resize check have been added to the pre-release
+  checks in `RELEASING.md`; the CI runner has no DRM render node, so they do not run in GitHub Actions.
 
-## 2026-11-04 音频切换与输出延迟
+## 2026-11-04 audio switching and output latency
 
-使用 `tests/fixtures/sample.mkv`（eng 440 Hz + jpn 880 Hz 两条音轨）与 mpv IPC
-实测：
+Measured with `tests/fixtures/sample.mkv` (eng 440 Hz + jpn 880 Hz, two audio tracks) and the mpv IPC:
 
-- 音轨：`aid` 从 1 切到 2，`track-list` 的 `selected` 随之从 eng 移到 jpn，
-  `audio-pts` 继续推进；不需要重新加载文件。
-- 设备：`audio-device` 从 `auto` 切到 `pulse/...`，`current-ao` 从 `pipewire`
-  变为 `pulse`；再切回 `pipewire/...` 后恢复。切换到不可用的
-  `alsa/sysdefault:CARD=Generic_1` 时 `current-ao` 与 `audio-params` 变为不可用，
-  后续 seek 失败，直到切回可用设备。设备选择必须处理打开失败，不能假定切换成功。
-- 延迟：PipeWire 下 `pactl` 的 Buffer/Sink Latency 报 0 usec，`pw-dump` 中 mpv
-  节点的 `Latency` 为 0，软件层面拿不到真实扬声器延迟。可测的是
-  `time-pos - audio-pts`：10 分钟复测稳定在约 +22 ms（见 OQ-9 的测量），
-  属于固定输出偏移，不随时间累积，也不影响 Segment 或导出。
+- Track: switching `aid` from 1 to 2 moves `selected` in `track-list` from eng to jpn, and
+  `audio-pts` keeps advancing; the file does not need to be reloaded.
+- Device: switching `audio-device` from `auto` to `pulse/...` changes `current-ao` from `pipewire`
+  to `pulse`; switching back to `pipewire/...` restores it. When switching to the unavailable
+  `alsa/sysdefault:CARD=Generic_1`, `current-ao` and `audio-params` become unavailable and subsequent
+  seeks fail until a usable device is selected again. Device selection must handle open failures and
+  must not assume the switch succeeded.
+- Latency: under PipeWire `pactl` reports Buffer/Sink Latency as 0 usec, and the mpv node's
+  `Latency` in `pw-dump` is 0, so the real speaker latency is not obtainable at the software level.
+  What can be measured is `time-pos - audio-pts`: the 10-minute re-test holds steady at about +22 ms
+  (see the measurement for OQ-9), which is a fixed output offset; it does not accumulate over time and
+  does not affect Segments or export.
 
-结论：音频主路径确定由 mpv 负责；项目当前使用默认音轨与默认设备，不提供
-切换 UI。多音轨与设备切换是产品功能缺口，不是未定的技术问题；需要时使用
-`aid` 与 `audio-device`，并处理设备打开失败。
+Conclusion: the main audio path is definitively owned by mpv; the project currently uses the default
+audio track and the default device and provides no switching UI. Multi-track and device switching are
+product feature gaps, not unresolved technical questions; when needed, use `aid` and `audio-device` and
+handle device open failures.
 
-## 2026-11-04 快速 scrub 与 frame-step
+## 2026-11-04 rapid scrub and frame-step
 
-- `frame-step` / `frame-back-step` 已改为 mpv 原生命令。暂停状态下在
-  `sample-keyframes.mp4` 上实测 0.5 → 0.6 → 0.7 → 0.8，再退回 0.5，落点与
-  源帧边界一致。外部 FFmpeg 回退仍按名义帧时长跳转，VFR 下是近似值。
-- `tests/mpv_preview.rs::frame_steps_use_source_frame_boundaries` 覆盖前后逐帧；
-  `rapid_scrub_with_audio_reaches_the_final_target` 播放带音频素材时连续 20 次
-  scrub，最后精确 seek 到 1.5 s，落点误差 ≤100 ms，且调用未被阻塞。
-- 真实 eframe + 音频：在 headless cage（Vulkan renderer）中运行
-  `ROSS_RESCUT_DIAG=1 ROSS_RESCUT_DIAG_SCRUB=1`，40 步 scrub 用时约 0.75 s，
-  完成时位置与目标 `09:54.000` 一致，恢复播放后 09:54.700，日志确认
-  `audio_clock=true`。该路径调用与指针拖动相同的 `scrub_to` / `finish_scrub`。
-- 预览位置仍不是源 PTS，不能用于 Segment 边界或导出。
+- `frame-step` / `frame-back-step` have been changed to native mpv commands. Measured in the paused state
+  on `sample-keyframes.mp4`: 0.5 → 0.6 → 0.7 → 0.8, then back to 0.5, with landing points matching the
+  source frame boundaries. The external FFmpeg fallback still jumps by nominal frame duration, which is an
+  approximation under VFR.
+- `tests/mpv_preview.rs::frame_steps_use_source_frame_boundaries` covers stepping forward and backward;
+  `rapid_scrub_with_audio_reaches_the_final_target` performs 20 consecutive scrubs while playing an asset
+  with audio, then a precise seek to 1.5 s, with a landing error ≤100 ms, and the calls are not blocked.
+- Real eframe + audio: running `ROSS_RESCUT_DIAG=1 ROSS_RESCUT_DIAG_SCRUB=1` in a headless cage (Vulkan
+  renderer), a 40-step scrub takes about 0.75 s, and on completion the position matches the target
+  `09:54.000`, `09:54.700` after resuming playback, with the log confirming `audio_clock=true`. This path
+  calls the same `scrub_to` / `finish_scrub` as pointer dragging.
+- The preview position is still not the source PTS and cannot be used for Segment boundaries or export.
 
-## 2026-11-04 HDR / 10-bit 验证
+## 2026-11-04 HDR / 10-bit verification
 
-素材：`/home/chasel/videos/movie/[盗梦空间] Inception (2010).mkv`，
-HEVC Main 10，1920x800，`yuv420p10le`，BT.2020 / SMPTE ST 2084，
+Asset: `/home/chasel/videos/movie/[盗梦空间] Inception (2010).mkv`,
+HEVC Main 10, 1920x800, `yuv420p10le`, BT.2020 / SMPTE ST 2084,
 Mastering display `R(34000,16000) G(13250,34500) B(7500,3000)
-WP(15635,16450) L(10000000,1)`，MaxCLL 1538 / MaxFALL 308。
+WP(15635,16450) L(10000000,1)`, MaxCLL 1538 / MaxFALL 308.
 
-- 预览：mpv-engine 导出 8-bit BGRA（`860x358`）并 tone map 到 SDR。
-  与 FFmpeg `zscale` + hable tone map 的同一帧相比，平均 RGB 接近
-  （预览 35.9/23.4/17.8，参考 35.6/21.8/17.0）；PSNR 21.4 dB，差异来自
-  两者的 tone curve，而不是通道错位或整体偏色。
-- 判定：SDR tone map 预览满足剪辑定位需要；不实施更高位深预览。预览颜色
-  不作为 HDR 母版或最终颜色参考。
-- 导出：stream copy 原样保留 10-bit/HDR。smart cut 重编码现在显式传递源
-  `-pix_fmt`、`-color_range`、`-colorspace`、`-color_trc`、`-color_primaries`；
-  FFmpeg 仍会把 Mastering display / Content light level 侧数据传给 libx265。
-- 测试：`tests/smart_cut_export.rs::smart_cut_preserves_10_bit_hdr_metadata`
-  生成 10-bit HDR10 素材，smart cut 后仍为 `yuv420p10le`、BT.2020/PQ，
-  且 Mastering display 与 Content light level 仍在。
-- 对真实素材的短片段验证：smart cut 输出为 HEVC Main 10、`yuv420p10le`、
-  `bt2020nc`/`smpte2084`/`bt2020`，侧数据保留。
+- Preview: mpv-engine exports 8-bit BGRA (`860x358`) and tone maps to SDR.
+  Compared with the same frame from FFmpeg `zscale` + hable tone map, the average RGB is close
+  (preview 35.9/23.4/17.8, reference 35.6/21.8/17.0); PSNR is 21.4 dB, and the difference comes from
+  the two tone curves rather than channel misalignment or an overall color cast.
+- Verdict: the SDR tone mapped preview meets the needs of editing and navigation; no higher bit depth
+  preview will be implemented. Preview color is not used as an HDR master or final color reference.
+- Export: stream copy preserves 10-bit/HDR as-is. Smart cut re-encoding now passes the source
+  `-pix_fmt`, `-color_range`, `-colorspace`, `-color_trc`, `-color_primaries` explicitly;
+  FFmpeg still passes the Mastering display / Content light level side data to libx265.
+- Test: `tests/smart_cut_export.rs::smart_cut_preserves_10_bit_hdr_metadata`
+  generates a 10-bit HDR10 asset; after the smart cut it is still `yuv420p10le`, BT.2020/PQ,
+  and the Mastering display and Content light level are still present.
+- Short-clip verification on a real asset: the smart cut output is HEVC Main 10, `yuv420p10le`,
+  `bt2020nc`/`smpte2084`/`bt2020`, with the side data preserved.
 
-结论：不需要更高位深预览或更高位深导出；stream copy 与 smart cut 都保留源
-10-bit/HDR 数据。HDR 调色审片仍需外部播放器。
+Conclusion: no higher bit depth preview or higher bit depth export is needed; both stream copy and
+smart cut preserve the source 10-bit/HDR data. HDR color grading review still requires an external player.
 
-## 2026-11-04 精确 seek 旧帧门控
+## 2026-11-04 precise seek stale-frame gating
 
-用红/绿/蓝各 1 秒的素材可以稳定复现旧帧问题：暂停在蓝段（2.5s）后精确
-seek 到红段（0.5s），mpv 在 `PlaybackRestart` 前后仍可能发布 seek 之前的帧；
-`time-pos` 也可能先到达目标，而目标纹理尚未发布。UI 如果在这段时间继续绘制
-上一张纹理，就会看到“seek 前的帧”。
+With an asset that is 1 second each of red/green/blue the stale-frame problem can be reproduced reliably:
+after pausing in the blue segment (2.5s) and precise seeking to the red segment (0.5s), mpv may still
+publish frames from before the seek around `PlaybackRestart`;
+`time-pos` may also reach the target before the target texture has been published. If the UI keeps drawing
+the previous texture during that window, the user sees "the frame from before the seek".
 
-现在的处理：
+Current handling:
 
-- 精确 seek 时在 `Application` 建立 `MpvSeekGate`，并丢弃 mpv 已发布的旧帧。
-- `is_preview_stale()` 为真时，`Application` 不发布新帧；UI 仍绘制上一张
-  已发布的纹理。
-- 门控在 `PlaybackRestart` 且位置接近目标时打开；没有该事件时，位置需要
-  连续 100 ms 保持在目标附近。打开后再等 50 ms 才接受纹理，避开
-  `PlaybackRestart` 与目标帧之间的短暂旧帧。
-- 5 秒超时会放弃门控并显示最新可用帧，避免 seek 失败时画面永久卡住。
-- 快速 scrub 不经过门控，仍按关键帧持续显示。
+- On a precise seek, `Application` establishes an `MpvSeekGate` and discards stale frames already
+  published by mpv.
+- While `is_preview_stale()` is true, `Application` publishes no new frame; the UI keeps drawing the last
+  published texture.
+- The gate opens on `PlaybackRestart` when the position is close to the target; without that event the
+  position must stay near the target for 100 consecutive ms. After opening it waits another 50 ms before
+  accepting textures, avoiding the brief stale frame between `PlaybackRestart` and the target frame.
+- A 5-second timeout abandons the gate and shows the newest available frame, so the picture does not stay
+  frozen forever when a seek fails.
+- Rapid scrub does not go through the gate and keeps showing keyframes.
 
-测试：`tests/mpv_gpu_regression.rs::precise_seek_hides_the_previous_texture_until_the_target_frame`
-断言 seek 后门控立刻生效、第一次取到的蓝帧和随后第一次取到的红帧都正确；
-完整 GPU 回归连续 10 次通过。
+Test: `tests/mpv_gpu_regression.rs::precise_seek_hides_the_previous_texture_until_the_target_frame`
+asserts that the gate takes effect immediately after the seek and that both the first blue frame obtained
+and the first red frame obtained afterwards are correct;
+the full GPU regression passed 10 times in a row.
 
-限制：导出帧没有 PTS，门控只能依赖位置/事件启发式；每次精确 seek 最多增加
-约 150 ms 的加载状态。预览位置仍不能用于 Segment 或导出。
+Limitation: exported frames have no PTS, so the gate can only rely on position/event heuristics; each
+precise seek adds up to about 150 ms of loading state. The preview position still cannot be used for
+Segments or export.
 
-## 2026-11-06 精确 seek 不清空预览（Windows 实测）
+## 2026-11-06 precise seek does not clear the preview (measured on Windows)
 
-Windows 上拖动 / 点击进度后，预览区会闪一下：门控期间 UI 把纹理当作不存在并
-改画居中的加载状态，即使门控只有 100–150 ms 也足够被看见。
+On Windows, after dragging / clicking the progress bar the preview area flashes: during the gating window
+the UI treats the texture as absent and draws a centered loading state instead, and even 100–150 ms of
+gating is long enough to be seen.
 
-现在的处理：
+Current handling:
 
-- 门控仍留在 `Application`：目标帧到达前不发布新纹理，旧帧不会被误当作目标帧。
-- 绘制路径不再因 `is_preview_stale()` 清空预览；有纹理就继续画上一张，只有完全
-  没有帧可用时才显示加载状态。
-- 超时回退不变（5 s），避免 seek 失败时画面永久停在旧帧。
+- The gate stays in `Application`: no new texture is published before the target frame arrives, so a stale
+  frame is never mistaken for the target frame.
+- The drawing path no longer clears the preview because of `is_preview_stale()`; if a texture exists it keeps
+  drawing the previous one, and only shows the loading state when no frame is available at all.
+- The timeout fallback is unchanged (5 s), so the picture does not stay forever on a stale frame when a seek
+  fails.
 
-代价：精确 seek 后最多约 150 ms 内画面落后于时间轴位置。这与主流剪辑软件的
-行为一致，且不会再出现闪烁。
+Cost: for up to about 150 ms after a precise seek the picture lags behind the timeline position. This matches
+the behavior of mainstream editing software and eliminates the flashing.
 
-## 对 ADR 0009 的影响
+## Impact on ADR 0009
 
-本 spike 证明 `mpv-engine` 的 Linux 路径可以做到 GPU-resident 的 DMA-BUF → wgpu 导入，
-4K HEVC 约 30 fps、CPU 约 18.5%、RSS 约 269 MiB。它满足 ADR 0009 的 zero-copy 目标，
-但底层是 libmpv，不是 libav*。
+This spike proves that the Linux path of `mpv-engine` can achieve GPU-resident DMA-BUF → wgpu import,
+with 4K HEVC at about 30 fps, CPU about 18.5% and RSS about 269 MiB. It satisfies ADR 0009's zero-copy goal,
+but the underlying layer is libmpv, not libav*.
 
-因此 ADR 0009 需要补充一条候选方案：
+ADR 0009 therefore needs one more candidate approach:
 
-> 方案 F：libmpv 隐藏 GL context 渲染 → DMA-BUF / IOSurface / shared D3D11 导出 →
-> wgpu 导入（mpv-engine）。
+> Option F: libmpv renders into a hidden GL context → DMA-BUF / IOSurface / shared D3D11 export →
+> wgpu import (mpv-engine).
 
-eframe 集成、mpv 音频输出、窗口缩放、HDR tone map 预览和快速/精确 scrub
-均已在 Linux 上验证。剩余阻断项只有 Windows/macOS 路径。
-如果采用，ADR 需要明确：
+eframe integration, mpv audio output, window resizing, HDR tone mapped preview and fast/precise scrub
+have all been verified on Linux. The only remaining blocker is the Windows/macOS path.
+If adopted, the ADR must state:
 
-- 预览音频由 mpv `ao` 输出，`position()` 作为 UI 时钟；ADR 0004 的 cpal 主时钟
-  被取代，现有 `PreviewAudio` 需要移除或改为非主时钟用途。
-- 拖动时 `hr-seek=no`，松手时 `hr-seek=yes`；拖动期间 UI 显示实际关键帧位置。
-- 不能把 `position()` 当作源帧 PTS；Segment 边界和导出仍使用 FFprobe / FFmpeg。
+- Preview audio is output by mpv `ao`, with `position()` as the UI clock; ADR 0004's cpal master clock
+  is superseded, and the existing `PreviewAudio` must be removed or repurposed as a non-master clock.
+- Use `hr-seek=no` while dragging and `hr-seek=yes` on release; during dragging the UI shows the actual
+  keyframe position.
+- `position()` must not be treated as the source frame PTS; Segment boundaries and export still use
+  FFprobe / FFmpeg.
 
-如果不采用，`src/export/wgpu_linux.rs` 的导入与生命周期设计仍可作为
-`media/platform` 的参考实现；不复制代码，只记录设计结论。
+If not adopted, the import and lifetime design of `src/export/wgpu_linux.rs` can still serve as a
+reference implementation for `media/platform`; do not copy the code, only record the design conclusions.
 
-## 2026-10-26 产品决策与待办
+## 2026-10-26 product decision and TODOs
 
-产品负责人确认：
+The product owner confirmed:
 
-- **许可证不是阻碍**。接受 GPLv2+；发布时按实际链接的 libmpv 许可证分发。
-- **第二套播放运行时不是阻碍**。预览与导出可以分开：libmpv 负责预览，外部 FFmpeg
-  负责 stream copy 导出。
+- **Licensing is not a blocker**. GPLv2+ is accepted; at release time distribute under the license of the
+  libmpv that is actually linked.
+- **A second playback runtime is not a blocker**. Preview and export can be separated: libmpv handles
+  preview, external FFmpeg handles stream copy export.
 
-因此方案 F 的剩余评估项不是许可证或“第二套栈”，而是：
+The remaining evaluation items for Option F are therefore not licensing or "a second stack", but:
 
-1. ~~eframe 0.37 端到端~~：已通过（红色/灰色、DMA-BUF feature、纹理生命周期、
-   窗口缩放与物理像素）；GPU 回归测试已列入 `RELEASING.md` 发布前检查。
-2. ~~音频~~：mpv `ao` 输出可用，`position()` 与 `audio-pts` 稳定相差约 11–16 ms；
-   音量/静音/暂停/seek 均正常。整合方向是 mpv 独占音频，取代 cpal 主时钟。
-   多音轨/设备切换语义与输出延迟已核查（见 2026-11-04 节）；UI 未接入，
-   属于产品功能缺口。
-3. ~~快速 scrub~~：`hr-seek=no` 约 130–190 ms、关键帧粒度约 5 s；
-   `hr-seek=yes` 约 200–330 ms、落点精确；真实 eframe + 4K + 音频下
-   `hr-seek=yes` 为 365 ms。连续 scrub、eframe 诊断与 `frame-step` 已覆盖，
-   见 2026-11-04 节。
-4. ~~HDR / 10-bit~~：mpv tone map 后的 SDR 预览满足剪辑定位；stream copy
-   与 smart cut 保留源 10-bit/HDR，见 2026-11-04 的 HDR 验证。
-5. Windows D3D11VA / macOS VideoToolbox 的导出路径（本机无法验证）。
+1. ~~eframe 0.37 end-to-end~~: passed (red/gray, DMA-BUF feature, texture lifetime,
+   window resizing and physical pixels); the GPU regression tests have been added to the pre-release
+   checks in `RELEASING.md`.
+2. ~~Audio~~: mpv `ao` output works, `position()` and `audio-pts` consistently differ by about 11–16 ms;
+   volume/mute/pause/seek all work. The integration direction is mpv owning audio exclusively, replacing
+   the cpal master clock. Multi-track/device switching semantics and output latency have been examined
+   (see the 2026-11-04 section); the UI is not wired up, which is a product feature gap.
+3. ~~Rapid scrub~~: `hr-seek=no` about 130–190 ms with about 5 s keyframe granularity;
+   `hr-seek=yes` about 200–330 ms with a precise landing point; under real eframe + 4K + audio
+   `hr-seek=yes` takes 365 ms. Consecutive scrub, eframe diagnostics and `frame-step` are covered,
+   see the 2026-11-04 section.
+4. ~~HDR / 10-bit~~: the SDR preview after mpv tone mapping meets editing and navigation needs; stream copy
+   and smart cut preserve the source 10-bit/HDR, see the HDR verification of 2026-11-04.
+5. The export paths for Windows D3D11VA / macOS VideoToolbox (cannot be verified on this machine).

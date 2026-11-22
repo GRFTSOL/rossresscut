@@ -1,106 +1,118 @@
-# 参考实现研究
+# Reference implementation research
 
-本文件记录外部参考项目的使用边界与研究顺序。LosslessCut 是行为参考，不是代码模板。
+This file records the boundaries of use and the research order for external reference
+projects. LosslessCut is a behavioral reference, not a code template.
 
-LosslessCut 是本项目的**行为参考实现**和**工程资料库**，不是本项目的架构或代码模板。
+LosslessCut is this project's **behavioral reference implementation** and
+**engineering reference library**, not this project's architecture or code template.
 
 ```text
 LosslessCut
     │
-    ├── 产品行为       ← 可以参考
-    ├── 媒体语义       ← 强烈参考
-    ├── FFmpeg 参数    ← 可以研究
-    ├── 边界条件       ← 强烈参考
-    ├── 用户交互       ← 可以参考
+    ├── product behavior        ← may reference
+    ├── media semantics         ← strong reference
+    ├── FFmpeg parameters       ← may study
+    ├── edge cases              ← strong reference
+    ├── user interaction        ← may reference
     │
-    ├── TypeScript 架构 ← 不照搬
-    ├── Electron        ← 不采用
-    ├── Chromium video  ← 不采用
-    └── Web UI          ← 不采用
+    ├── TypeScript architecture ← do not copy
+    ├── Electron                ← do not adopt
+    ├── Chromium video          ← do not adopt
+    └── Web UI                  ← do not adopt
 ```
 
-可以 clone LosslessCut 主分支源码用于研究。重点研究：
+Cloning the LosslessCut main branch source for research is allowed. Focus on:
 
-- 单 Segment lossless export 的 FFmpeg 参数构造，尤其是 `-ss`、`-to` / `-t`、stream copy、时间戳与音视频流处理。
-- keyframe 边界、非关键帧切点、smart cut 的边界判定与重编码范围。
-- PTS、DTS、time base、start time、negative timestamp、VFR、concat 后的时间戳。
-- 音频 / 视频不同起始位置、audio-only 裁剪、leading non-keyframe audio packets。
-- 容器兼容性、metadata、字幕、chapter。
-- 历史 issue / commit 中的具体边界 bug 与修复策略。
+- FFmpeg argument construction for single-Segment lossless export, especially `-ss`,
+  `-to` / `-t`, stream copy, timestamps, and audio/video stream handling.
+- keyframe boundaries, non-keyframe cut points, boundary determination and re-encode
+  range for smart cut.
+- PTS, DTS, time base, start time, negative timestamps, VFR, timestamps after concat.
+- different audio / video start positions, audio-only trimming, leading non-keyframe
+  audio packets.
+- container compatibility, metadata, subtitles, chapters.
+- concrete edge-case bugs and fix strategies in historical issues / commits.
 
-LosslessCut 官方说明：普通无损切割受 keyframe 限制，实际切点可能回退到此前的 keyframe。
-这是 Phase 4 必须理解并向用户如实说明的行为语义。
+LosslessCut's official documentation states that ordinary lossless cutting is limited
+by keyframes, and the actual cut point may fall back to the preceding keyframe. This is
+behavioral semantics that Phase 4 must understand and explain truthfully to users.
 
-### 研究方式
+### Research method
 
-正确的路径：
+The correct path:
 
 ```text
 LosslessCut source
         ↓
-理解它为什么这样做
+understand why it does this
         ↓
-FFmpeg 行为验证
+verify FFmpeg behavior
         ↓
-转换成 Rust / domain / application / media 设计
+convert into Rust / domain / application / media design
 ```
 
-错误的路径：
+The wrong path:
 
 ```text
 LosslessCut TypeScript
         ↓
-翻译成 Rust
+translate into Rust
 ```
 
-后者容易得到“TypeScript 穿 Rust 外套”，且可能把 Electron / Chromium 特定行为带进本项目。
+The latter easily produces "TypeScript wearing a Rust coat", and may drag
+Electron / Chromium-specific behavior into this project.
 
-### 研究顺序
+### Research order
 
-1. 本项目已有代码 / ADR。
-2. FFmpeg 官方文档。
-3. LosslessCut 实现与 issue / commit。
-4. 实验验证。
-5. 设计本项目实现。
+1. This project's existing code / ADRs.
+2. Official FFmpeg documentation.
+3. LosslessCut implementation and issues / commits.
+4. Experimental verification.
+5. Design this project's implementation.
 
-### 许可证约束
+### License constraints
 
-LosslessCut 使用 GPL-2.0。允许：
+LosslessCut uses GPL-2.0. Allowed:
 
-- 阅读源码，理解产品行为与媒体语义。
-- 查 FFmpeg 行为并做最小实验。
-- 自己设计 Rust 实现与测试。
+- Read the source and understand product behavior and media semantics.
+- Check FFmpeg behavior and run minimal experiments.
+- Design this project's own Rust implementation and tests.
 
-禁止：
+Forbidden:
 
-- 复制 LosslessCut 源代码。
-- 把 TypeScript 函数逐行翻译成 Rust。
-- “只改语法”的移植。
+- Copy LosslessCut source code.
+- Translate TypeScript functions line by line into Rust.
+- Ports that "only change the syntax".
 
-### Investigate LosslessCut behavior for <问题>
+### Investigate LosslessCut behavior for <problem>
 
-1. 检查当前 LosslessCut 源码。
-2. 找到相关实现、commit、issue 或文档。
-3. 说明它解决的具体问题。
-4. 区分：产品行为、媒体处理算法、FFmpeg 参数、Electron / Chromium 特定实现。
-5. 检查哪些部分适用于本项目。
-6. 不复制 LosslessCut 源代码。
-7. 不改变本项目 Rust + egui + FFmpeg 架构约束。
-8. 如果结论会影响 Domain / Application / Media 架构，进入 `architecture-decision` 流程。
-9. 对关键结论增加本项目自己的测试。
+1. Check the current LosslessCut source.
+2. Find the relevant implementation, commit, issue, or documentation.
+3. Explain the specific problem it solves.
+4. Distinguish: product behavior, media processing algorithms, FFmpeg parameters,
+   Electron / Chromium-specific implementation.
+5. Check which parts apply to this project.
+6. Do not copy LosslessCut source code.
+7. Do not change this project's Rust + egui + FFmpeg architecture constraints.
+8. If the conclusion affects the Domain / Application / Media architecture, enter the
+   `architecture-decision` process.
+9. Add this project's own tests for key conclusions.
 
 ---
 
 ## FilmCraft / EffectCraft
 
-FilmCraft 与 EffectCraft 可以作为 Rust + egui 工程实践的参考，尤其是：
+FilmCraft and EffectCraft can serve as references for Rust + egui engineering practice,
+especially:
 
-- engine-first、UI toolkit 位于最上层；
-- media / render / gpu 与 UI 分离；
-- 大型媒体项目的模块边界与测试方式。
+- engine-first, with the UI toolkit at the topmost layer;
+- media / render / gpu separated from the UI;
+- module boundaries and testing approach for a large media project.
 
-使用边界与 LosslessCut 相同：
+The boundaries of use are the same as for LosslessCut:
 
-- 只参考架构取舍与行为，不复制代码。
-- 不把其依赖、平台约束或产品范围直接带进本项目。
-- 任何影响 Domain / Application / Media 架构的结论，走 `architecture-decision`。
+- Only reference architecture tradeoffs and behavior; do not copy code.
+- Do not bring their dependencies, platform constraints, or product scope directly into
+  this project.
+- Any conclusion that affects the Domain / Application / Media architecture goes through
+  `architecture-decision`.

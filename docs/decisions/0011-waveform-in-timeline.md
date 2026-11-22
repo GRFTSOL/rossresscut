@@ -1,101 +1,121 @@
-# ADR-0011：波形预览嵌入时间轴
+# ADR-0011: Waveform Preview Embedded in the Timeline
 
-## 状态
+## Status
 
 Accepted
 
-## 背景
+## Context
 
-Phase 6 需要在编辑时间轴上显示音频包络，让用户一眼看到无声段在哪里，
-从而更准确地放置切点。波形是纯派生数据：它不参与编辑，不参与导出，
-只是时间轴的一种视觉辅助。
+Phase 6 needs to display the audio envelope on the editing timeline, so that users
+can see at a glance where the silent sections are and thus place cut points more
+accurately. The waveform is purely derived data: it does not participate in editing,
+does not participate in export, and is only a visual aid for the timeline.
 
-## 已知约束
+## Known constraints
 
-- 时间轴完全由 `ui::timeline` 自绘（`egui::Painter`），没有子控件。
-- `AGENTS.md` 规定 UI 帧内不得执行 FFmpeg、解码或阻塞等待。
-- 项目不新增解码依赖；音频解码的唯一后端是外部 FFmpeg 进程
-  （`media::preview::audio` 已采用同一模式）。
-- 波形绘制必须跟随主题，不能在深浅色主题下各自维护一套写死颜色。
-- 时间轴代表 **source time**，片段是覆盖在它上面的区间。
+- The timeline is entirely custom-drawn by `ui::timeline` (`egui::Painter`), with no child widgets.
+- `AGENTS.md` requires that no FFmpeg, decoding, or blocking waits run inside a UI frame.
+- The project adds no new decoding dependency; the only backend for audio decoding is an external
+  FFmpeg process (`media::preview::audio` already uses the same pattern).
+- Waveform drawing must follow the theme; there must not be a separate set of hardcoded colors
+  maintained for the light and dark themes.
+- The timeline represents **source time**, and segments are intervals overlaid on it.
 
-## 候选方案
+## Candidate options
 
-### 方案 A：时间轴下方独立波形条
+### Option A: A separate waveform bar below the timeline
 
-时间轴保持原高度，在其下方新增约 56px 的波形区域。
+The timeline keeps its original height, and a waveform area of about 56px is added below it.
 
-优点：
+Pros:
 
-- 波形完全不被片段遮挡。
-- 改动局部，片段配色语义不变。
+- The waveform is never obscured by segments.
+- The change is localized, and the color semantics of segments are unchanged.
 
-缺点：
+Cons:
 
-- 额外占用 56px 垂直空间，挤压预览区。
-- 波形与片段在视觉上分离，两个区域需要分别对齐时间轴。
+- It consumes an extra 56px of vertical space, squeezing the preview area.
+- The waveform and segments are visually separated, and the two areas must each be aligned to the
+  timeline.
 
-### 方案 B：波形嵌入时间轴，片段半透明覆盖
+### Option B: Waveform embedded in the timeline, with segments overlaid semi-transparently
 
-时间轴高度从 28px 提升到 56px，波形绘制在背景之上、片段之下；
-片段填充改为半透明，选中态更不透明但仍然透出波形。
+The timeline height increases from 28px to 56px, and the waveform is drawn above the background
+and below the segments; segment fills become semi-transparent, with the selected state more opaque
+but still showing the waveform through.
 
-优点：
+Pros:
 
-- 不占用额外垂直空间。
-- 片段与波形在同一坐标系里，语义直接：波形是底图，片段是覆盖物。
-- egui 原生支持半透明绘制，项目已在 in/out 高亮区域使用
-  `Color32::from_rgba_unmultiplied`。
+- It consumes no extra vertical space.
+- Segments and waveform share the same coordinate system, so the semantics are direct: the waveform
+  is the base layer and segments are overlays.
+- egui natively supports semi-transparent drawing, and the project already uses
+  `Color32::from_rgba_unmultiplied` in the in/out highlight areas.
 
-缺点：
+Cons:
 
-- 片段配色从两态（启用 / 禁用）扩展为三态（选中 / 未选中 / 禁用）。
-- 波形、片段颜色、序号文字三者叠加后的对比度需要实测调整。
+- The segment color scheme expands from two states (enabled / disabled) to three states
+  (selected / unselected / disabled).
+- The contrast after stacking the waveform, the segment colors, and the index text needs to be tuned
+  by measurement.
 
-## 决策
+## Decision
 
-选择：
+Choose:
 
-> 方案 B：波形嵌入时间轴，片段半透明覆盖。
+> Option B: waveform embedded in the timeline, with segments overlaid semi-transparently.
 
-补充决定（同一轮确认）：
+Additional decisions (confirmed in the same round):
 
-- 波形**只在媒体有音频流时显示**。无音频时时间轴保持 42px（原 28px 的 1.5 倍）。
-- 波形数据由外部 FFmpeg 解码为单声道 `s16le` 后在后台线程计算 min/max peak，
-  不进 UI 线程。
-- 片段透明度：未选中 `alpha = 64`、选中 `alpha = 130`、禁用 `alpha = 34`。
-- 波形**不持久化**：每次打开媒体重新解码音频。这是预期行为，不是缺口。
-- 波形按音频流自身的起点定位：`start = stream.start_time - container.start_time`，
-  负值截断为 0。这与关键帧索引的坐标归一化一致，音频晚于容器起点时左侧留空。
+- The waveform **is shown only when the media has an audio stream**. When there is no audio, the
+  timeline stays at 42px (1.5× the original 28px).
+- Waveform data is decoded by external FFmpeg into mono `s16le`, and then min/max peaks are computed
+  on a background thread, never on the UI thread.
+- Segment opacity: unselected `alpha = 64`, selected `alpha = 130`, disabled `alpha = 34`.
+- The waveform **is not persisted**: the audio is decoded again every time the media is opened.
+  This is intended behavior, not a gap.
+- The waveform is positioned according to the audio stream's own start point:
+  `start = stream.start_time - container.start_time`, with negative values clamped to 0. This is
+  consistent with the coordinate normalization of the keyframe index; when the audio starts later
+  than the container start, the left side is left blank.
 
-## 决策理由
+## Rationale
 
-1. 用户明确选择该方案，且它在技术上没有新增障碍。
-2. 时间轴高度 56px 仍在可接受范围，不需要为波形另开一条带子。
-3. 保持「时间轴 = source time，片段 = 覆盖物」的既有语义，不引入第二个坐标系。
-4. 沿用已有的外部 FFmpeg + 后台线程模式，不新增依赖，也不违反 UI 帧内不解码的约束。
+1. The user explicitly chose this option, and it introduces no new technical obstacles.
+2. A timeline height of 56px is still within an acceptable range, and there is no need to open a
+   separate band for the waveform.
+3. It preserves the existing semantics of "timeline = source time, segments = overlays" without
+   introducing a second coordinate system.
+4. It reuses the existing external FFmpeg + background thread pattern, adds no dependency, and
+   violates no constraint about not decoding inside a UI frame.
 
-## 后果
+## Consequences
 
-### 正面
+### Positive
 
-- 时间轴同时表达音频包络与片段布局，定位静音段不需要切换视图。
-- 新增的 `domain::waveform` 与 `media::waveform` 可独立测试，不依赖 egui。
-- 波形缺失（无音频、解码失败）时时间轴自动回落，不影响编辑。
+- The timeline expresses both the audio envelope and the segment layout, so locating silent sections
+  requires no view switching.
+- The new `domain::waveform` and `media::waveform` can be tested independently of egui.
+- When the waveform is missing (no audio, decoding failure), the timeline falls back automatically
+  without affecting editing.
 
-### 负面
+### Negative
 
-- 片段颜色需要在浅色与深色主题下分别实测可读性。
-- 波形按像素列聚合，窗口宽度变化时重新计算一次；结果只缓存在内存中。
+- Segment colors need to be measured separately for readability under the light and dark themes.
+- The waveform is aggregated per pixel column and recomputed once when the window width changes; the
+  result is cached only in memory.
 
-### 后续影响
+### Follow-up impact
 
-- `ui::timeline::segment_color` 的签名包含选中态，右侧片段列表复用同一函数。
-- `ui::timeline::WaveformCache` 以「宽度 + peak 数量」作为失效条件，
-  后续如果加入时间轴缩放，需要扩展该键。
+- The signature of `ui::timeline::segment_color` includes the selected state, and the segment list
+  on the right reuses the same function.
+- `ui::timeline::WaveformCache` uses "width + number of peaks" as its invalidation condition; if
+  timeline zoom is added later, that key needs to be extended.
 
-## 未解决问题
+## Open questions
 
-- 波形只在打开媒体时生成一次；媒体文件在外部被替换时不会自动刷新。
-- 长音频的提取耗时完全由 ffmpeg 解码决定（3 小时素材约 34 s 独立、
-  约 88 s 与 4K 预览同时运行时），尚未做进一步优化。
+- The waveform is generated only once when the media is opened; it is not automatically refreshed
+  when the media file is replaced externally.
+- The extraction time for long audio is entirely determined by ffmpeg decoding (about 34 s standalone
+  and about 88 s when running concurrently with a 4K preview, for 3 hours of material), and no
+  further optimization has been done yet.

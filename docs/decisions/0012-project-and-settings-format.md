@@ -1,44 +1,46 @@
-# ADR-0012：项目文件与设置文件格式
+# ADR-0012: Project File and Settings File Format
 
-## 状态
+## Status
 
 Accepted
 
-## 背景
+## Context
 
-Phase 7 需要把编辑结果保存下来并重新打开：源媒体路径、有序的 Segment、
-以及 `Timeline` 的 ID 计数器。同时，`config.toml` 混在一起存放应用设置与
-导出设置，已经影响可读性。
+Phase 7 needs to save editing results and reopen them: the source media path, the ordered Segments,
+and the `Timeline`'s ID counter. At the same time, `config.toml` mixes application settings and
+export settings together, which already hurts readability.
 
-## 已知约束
+## Known constraints
 
-- `Timeline` 是**有序 EDL**，顺序是用户可观察的输出顺序，不能靠
-  `source time` 推导（见 ADR-0008）。
-- `SegmentId` 是稳定身份，选择和编辑都依赖它；加载项目时必须原样恢复，
-  否则撤销、选择和后续持久化都会错位。
-- `Segment` 的不变量（`start < end`）只能由 `Segment::new` 建立。
-- 项目文件是外部输入：解析失败、版本不符、ID 重复都必须报错而不是崩溃。
-- 不新增依赖：`toml = "0.8"` 已经在依赖里。
+- `Timeline` is an **ordered EDL**; the order is the user-observable output order and cannot be
+  derived from `source time` (see ADR-0008).
+- `SegmentId` is a stable identity, and both selection and editing depend on it; it must be restored
+  exactly when a project is loaded, otherwise undo, selection, and subsequent persistence will all be
+  misaligned.
+- The invariant of `Segment` (`start < end`) can only be established by `Segment::new`.
+- The project file is external input: parse failures, version mismatches, and duplicate IDs must all
+  report errors rather than crash.
+- No new dependencies: `toml = "0.8"` is already in the dependency list.
 
-## 候选方案
+## Candidate options
 
-### 格式
+### Format
 
-A. JSON（`serde_json` 已有）
-B. TOML（`toml` 已有），扩展名 `.rrc`
+A. JSON (`serde_json` already available)
+B. TOML (`toml` already available), with the extension `.rrc`
 
-### 内容
+### Content
 
-A. 保存媒体元数据快照（流、时长、关键帧）
-B. 只保存源路径与编辑结果，打开时重新 probe
+A. Save a snapshot of media metadata (streams, duration, keyframes)
+B. Save only the source path and editing results, and re-probe on open
 
-## 决策
+## Decision
 
-选择：
+Choose:
 
-> TOML 格式，扩展名 `.rrc`；只保存源路径与编辑结果。
+> TOML format with the extension `.rrc`; save only the source path and editing results.
 
-文件布局：
+File layout:
 
 ```toml
 version = 1
@@ -57,44 +59,50 @@ enabled = true
 chapter_title = "Opening"
 ```
 
-`chapter_title` 是可选的导出章节标题。旧项目没有该字段时按“未设置”处理，
-因此格式版本保持 `version = 1`。
+`chapter_title` is an optional export chapter title. When an old project lacks this field, it is
+treated as "not set", so the format version stays at `version = 1`.
 
-设置文件按领域分节：`[general]`（应用设置）、`[preview]`（预览步长等）
-与 `[export]`（导出设置）。
+The settings file is sectioned by domain: `[general]` (application settings), `[preview]` (preview
+step size, etc.), and `[export]` (export settings).
 
-## 决策理由
+## Rationale
 
-1. TOML 能直接表示 `Vec<Segment>`（`[[timeline.segments]]`）和嵌套表，
-   `Timestamp` 作为整数微秒自然落位，不需要自定义序列化。
-2. 与 `config.toml` 使用同一格式，人工可读、可 diff、可手改。
-3. 只存编辑结果，避免媒体元数据与真实文件不一致；打开项目时重新 probe
-   是唯一可信来源。
-4. `version` 字段让不兼容变更可以被明确拒绝，而不是猜测。
-5. `next_id` 必须保存：否则重新打开后新 Segment 可能复用旧 ID，
-   破坏 `SegmentId` 的稳定性。
+1. TOML can directly represent `Vec<Segment>` (`[[timeline.segments]]`) and nested tables;
+   `Timestamp` naturally maps to integer microseconds without custom serialization.
+2. It uses the same format as `config.toml`, so it is human-readable, diffable, and hand-editable.
+3. Only editing results are stored, avoiding inconsistency between media metadata and the actual
+   file; re-probing on project open is the only trustworthy source.
+4. The `version` field lets incompatible changes be explicitly rejected rather than guessed at.
+5. `next_id` must be saved: otherwise, after reopening, new Segments could reuse old IDs and break
+   the stability of `SegmentId`.
 
-## 后果
+## Consequences
 
-### 正面
+### Positive
 
-- 项目文件小、可读，能在版本控制或脚本里处理。
-- 加载路径与正常打开共用 probe 流程，波形、关键帧、预览行为一致。
-- 设置文件分节后，导出参数与应用参数可以独立演进。
+- Project files are small and readable, and can be processed in version control or scripts.
+- The load path shares the probe flow with normal opening, so waveform, keyframes, and preview
+  behavior are consistent.
+- After sectioning the settings file, export parameters and application parameters can evolve
+  independently.
 
-### 负面
+### Negative
 
-- 项目不记录媒体指纹；源文件被替换成同名不同内容时无法检测。
-- 旧版扁平的 `config.toml` 需要兼容读取（已实现，写入时迁移为新格式）。
+- The project records no media fingerprint; when the source file is replaced with one of the same
+  name but different content, this cannot be detected.
+- The old flat `config.toml` needs compatible reading (already implemented; migration to the new
+  format happens on write).
 
-### 后续影响
+### Follow-up impact
 
-- 新增设置项必须同时更新对应设置节（`GeneralSettings` / `PreviewSettings` /
-  `ExportSettings`）的默认值。
-- 项目格式变更必须提升 `version` 并处理旧版本读取或明确拒绝；
-  纯追加的可选字段（如 `chapter_title`）可以作为兼容变更保留版本号。
+- New settings entries must also update the default values of the corresponding settings section
+  (`GeneralSettings` / `PreviewSettings` / `ExportSettings`).
+- Project format changes must bump `version` and handle reading old versions or explicitly reject
+  them; purely additive optional fields (such as `chapter_title`) may keep the version number as a
+  compatible change.
 
-## 未解决问题
+## Open questions
 
-- 没有媒体指纹校验（大小 / mtime / 哈希）。
-- 批量处理与多源项目尚未设计；当前 `Timeline` 仍绑定单一源媒体。
+- There is no media fingerprint verification (size / mtime / hash).
+- Batch processing and multi-source projects are not yet designed; the current `Timeline` is still
+  bound to a single source media.

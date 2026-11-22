@@ -1,275 +1,263 @@
-# 项目目标
+# Project Goals
 
-## 一、项目愿景
+## 1. Project Vision
 
-开发一个基于 **Rust + egui + FFmpeg** 的原生桌面媒体工具。
+Build a native desktop media tool based on **Rust + egui + FFmpeg**.
 
-目标是提供类似 **LosslessCut** 的核心使用体验，同时保持：
+The goal is to deliver the core experience of **LosslessCut** while staying:
 
-- 原生
-- 轻量
-- 快速
-- 低资源占用
-- 行为可预测
-- 架构简单
+- native
+- lightweight
+- fast
+- low on resources
+- predictable in behavior
+- simple in architecture
 
-项目重点是**快速处理已有媒体文件**，不是成为完整的视频非线性编辑器。
+The project focuses on **fast processing of existing media files**, not on becoming a full
+non-linear video editor.
 
 ---
 
-# 二、核心目标
+# 2. Core Goals
 
-## 1. 打开媒体
+## 1. Open Media
 
-用户能够打开常见媒体文件。
+The user can open common media files.
 
-程序能够显示：
+The program can display:
 
-- 文件信息
-- 容器格式
-- 时长
-- 视频流
-- 音频流
-- 字幕流
-- 编码器
-- 分辨率
-- 帧率
+- file info
+- container format
+- duration
+- video streams
+- audio streams
+- subtitle streams
+- encoder
+- resolution
+- frame rate
 - bitrate
 - chapters
 
 ---
 
-## 2. 媒体预览
+## 2. Media Preview
 
-用户能够：
+The user can:
 
-- 播放
-- 暂停
+- play
+- pause
 - seek
-- 前进
-- 后退
-- 跳转到指定时间
-- 查看当前时间
-- 查看总时长
-- 拖动时间轴时预览画面跟随更新
-- 音画同步
-- 点击预览区域切换播放 / 暂停
-- 用滚轮按固定步长前进 / 后退（默认 6.67 秒，可在设置中调整）
-- 按住 mod 键加滚轮前进 / 后退 10 秒
+- step forward
+- step backward
+- jump to a specified time
+- see the current time
+- see the total duration
+- have the preview frame follow along while the timeline is dragged
+- keep audio and video in sync
+- click the preview area to toggle play / pause
+- scroll the wheel to step forward / backward by a fixed step (6.67 seconds by default,
+  adjustable in settings)
+- hold the mod key and scroll to step forward / backward 10 seconds
 
-预览必须保持流畅，并默认使用硬件解码。
-
----
-
-## 3. 时间轴
-
-用户能够：
-
-- 查看媒体时间轴
-- 移动播放位置
-- 设置开始位置
-- 设置结束位置
-- 创建 Segment
-- 修改 Segment
-- 删除 Segment
-- 排序 Segment
-- 启用 / 禁用 Segment
-- 不同 Segment 在时间轴上使用不同颜色
-- 入点 / 出点标记与精确播放头
-
-Segment 顺序是用户可观察、可修改的输出顺序；按起点排序是显式操作。
-Segment 允许重叠，不自动拒绝、裁剪或合并。
+The preview must stay smooth and use hardware decoding by default.
 
 ---
 
-## 4. 无损剪切
+## 3. Timeline
 
-默认情况下：
+The user can:
+
+- view the media timeline
+- move the playback position
+- set the start position
+- set the end position
+- create a Segment
+- modify a Segment
+- delete a Segment
+- sort Segments
+- enable / disable a Segment
+- different Segments use different colors on the timeline
+- in / out point markers and a precise playhead
+
+Segment order is a user-observable, user-modifiable output order; sorting by start point is an
+explicit action. Segments may overlap; they are not automatically rejected, trimmed, or merged.
+
+---
+
+## 4. Lossless Cutting
+
+By default:
 
 ```text
-不重新编码
+No re-encoding
 ```
 
-优先使用 FFmpeg stream copy。
+Prefer FFmpeg stream copy.
 
-如果由于媒体格式或编辑需求无法无损完成：
+If the work cannot be done losslessly because of the media format or the editing requirements:
 
-必须明确告知用户。
+the user must be told explicitly.
 
 ---
 
-## 5. 多片段导出
+## 5. Multi-Segment Export
 
-用户能够：
+The user can:
 
 ```text
-视频
+Video
  ↓
 Segment A
 Segment B
 Segment C
  ↓
-导出
+Export
 ```
 
-支持：
+Supported:
 
-- 单个 Segment
-- 多个 Segment
-- Segment 排序
-- Segment 启用/禁用
+- a single Segment
+- multiple Segments
+- Segment ordering
+- Segment enable / disable
 
-多 Segment 导出按当前 Timeline 顺序解释 enabled Segment。
-
----
-
-# 三、第二阶段目标
-
-核心功能稳定之后，再考虑：
-
-已完成（Phase 6–7）：
-
-- waveform
-- scene detection
-- chapters 编辑
-- subtitle
-- batch processing
-- metadata title
-- 项目保存
-- 快捷键系统增强
-- 基于音频音量自动切分视频
-- 导出视频时包含章节信息
-- 智能裁切(裁切点为非关键帧时, 从该帧到关键帧进行基于此段平均码率的重新编码)
-- 预览 seek 性能与音画同步优化（libmpv 主路径，见 ADR 0010）
+Multi-segment export interprets enabled Segments in the current Timeline order.
 
 ---
 
-# 四、明确的非目标
+# 3. Phase Two Goals
 
-## 1. 完整 NLE
+Once the core features were stable, the following enhancements were completed (Phase 6–7):
+waveform, scene detection, chapter editing, subtitles, batch processing, metadata title, project
+saving, shortcut improvements, volume-based auto splitting, chapters in exports, smart cut
+(ADR 0013 / 0014), and the libmpv preview and A/V sync optimisation (ADR 0010). See
+`docs/history/completed-phases.md` for the per-item record.
 
-暂不实现：
+---
 
-- 视频特效
-- 转场
-- 调色
-- 多层轨道
+# 4. Explicit Non-Goals
+
+## 1. A Complete NLE
+
+Not implemented for now:
+
+- video effects
+- transitions
+- color grading
+- multi-layer tracks
 - keyframe animation
 - compositing
 - motion graphics
 
 ---
 
-## 2. 自己实现 codec
+## 2. Implementing Codecs Ourselves
 
-不实现：
+Not implemented:
 
 - H.264 decoder
 - H.265 decoder
 - AV1 decoder
 - AAC encoder
 - MP3 encoder
-- 自定义 muxer
-- 自定义 demuxer
+- custom muxer
+- custom demuxer
 
-这些工作交给 FFmpeg。
+That work is left to FFmpeg.
 
 ---
 
-## 3. Web UI 运行时
+## 3. Web UI Runtime
 
-本项目基于资源占用与启动速度的取舍，不引入浏览器内核或 Web UI 运行时。
+Trading off resource usage and startup speed, this project does not bring in a browser engine
+or a Web UI runtime.
 
-不采用：
+Not used:
 
-- 浏览器内核 / WebView
+- browser engine / WebView
 - Electron / Tauri
-- Node.js 运行时
-- React / Vue 等前端框架
-- 以 TypeScript / JavaScript 实现的 UI 层
+- Node.js runtime
+- frontend frameworks such as React / Vue
+- a UI layer implemented in TypeScript / JavaScript
 
-## 4. 缩略图
+## 4. Thumbnails
 
-不实现时间轴缩略图条 / 帧预览缩略图。时间轴用波形与 Segment 色块表达内容；预览由视频画面承担。
-
----
-
-# 五、产品原则
-
-优先：
-
-1. 快
-2. 简单
-3. 可预测
-4. 低资源占用
-5. 键盘友好
-6. 错误信息清晰
-7. 无损操作明确
-
-避免：
-
-1. 过于复杂的设置(快捷键设置/ui设置/功能设置等必要的设置项)
-2. 后台偷偷处理媒体
-3. 自动删除文件
-4. 自动覆盖源文件
-5. 对整个导出的视频重新编码(因为智能裁切会遇到重新编码)
-6. 为未来功能提前建立过于复杂架构
-
-## 行为参考
-
-LosslessCut 是产品行为、媒体语义和 FFmpeg 工作流的参考实现，不是本项目的架构或代码模板。
-
-普通无损切割受 keyframe 限制：实际切点可能回退到之前的关键帧。
-UI 必须如实说明这一点，不得把近似切点描述为精确切点。
-
-Smart cut 已实现（ADR 0013 / 0014）：默认关闭；开启后只重编码关键帧之间的头尾，
-必须明确告知用户哪些部分不是无损的。
-
-## UI 布局方向
-
-桌面 UI 的整体布局借鉴 **LosslessCut**：
-
-- 顶部：菜单栏（文件、视图、帮助）与当前媒体标题。
-- 中央：视频预览，点击切换播放 / 暂停。
-- 底部：时间轴、精确播放头、播放 / 暂停与当前时间 / 总时长。
-- 侧边：播放信息、流信息、Segment 列表与导出章节。
-
-- Linux 下 Open 使用 XDG desktop portal 打开文件；顶部只显示不含扩展名的文件标题，不提供可编辑路径框。
-- 侧栏先显示播放信息（参考 mpv Tab 信息），并显示流信息、Segment 列表与导出章节；不再单独显示媒体文件信息块。
-- 流信息默认折叠，并记录折叠 / 展开状态。
-- 主题默认跟随系统，并可在设置页选择深色或浅色。
-- 设置页提供主题与界面语言选择。
-- 拖动时间轴时使用快速预览反馈，松开后使用精确 seek；快速预览可能显示关键帧附近的画面。
-- 底部时间轴为不同 Segment 使用不同颜色，并保持精确播放头；入点 / 出点以标记显示。
-
-借鉴的是信息分区与操作效率，不复制 LosslessCut 的代码、资源或视觉样式。所有实现必须使用 Rust + egui。
+No timeline thumbnail strip / frame preview thumbnails are implemented. The timeline expresses
+content with the waveform and Segment color blocks; the preview is carried by the video picture.
 
 ---
 
-# 六、第一版成功标准
+# 5. Product Principles
 
-用户能够完成：
+Prefer:
+
+1. Fast
+2. Simple
+3. Predictable
+4. Low resource usage
+5. Keyboard-friendly
+6. Clear error messages
+7. Explicit lossless operations
+
+Avoid:
+
+1. overly complex settings (shortcut settings / UI settings / feature settings and other
+   necessary settings)
+2. processing media secretly in the background
+3. deleting files automatically
+4. overwriting the source file automatically
+5. re-encoding the whole exported video (because smart cut does involve re-encoding)
+6. building overly complex architecture in advance for future features
+
+## Behavior Reference
+
+LosslessCut is a reference implementation for product behavior, media semantics, and FFmpeg
+workflows, not an architecture or code template for this project.
+
+An ordinary lossless cut is limited by keyframes: the actual cut point may fall back to an
+earlier keyframe. The UI must state this truthfully and must not describe an approximate cut
+point as an exact one.
+
+Smart cut is implemented (ADR 0013 / 0014): off by default; when enabled it re-encodes only the
+head and tail between keyframes, and the user must be told explicitly which parts are not
+lossless.
+
+## UI Layout Direction
+
+The desktop UI borrows **LosslessCut**'s information zoning and operating efficiency, not its
+code, assets, or visual styling; every implementation uses Rust + egui. The high-level zones are:
+the menu bar and media title at the top, the video preview in the center (click toggles
+play / pause), the timeline, precise playhead, and timecode at the bottom, and playback info,
+stream info, the Segment list, and export chapters in the side panel. Concrete widget and desktop
+integration constraints are in `docs/ui-guidelines.md`.
+
+---
+
+# 6. First-Version Success Criteria
+
+The user can complete:
 
 ```text
-打开视频
+Open video
  ↓
-读取媒体信息
+Read media info
  ↓
-播放
+Play
  ↓
 Seek
  ↓
-设置开始位置
+Set start position
  ↓
-设置结束位置
+Set end position
  ↓
-创建 Segment
+Create Segment
  ↓
-重复创建 Segment
+Repeat creating Segments
  ↓
-导出
+Export
  ↓
-得到正确的输出文件
+Get a correct output file
 ```
 
-整个流程应该让用户感觉它是一个**专门用于快速媒体处理的工具**。
+The whole flow should make the user feel that this is a **tool dedicated to fast media
+processing**.

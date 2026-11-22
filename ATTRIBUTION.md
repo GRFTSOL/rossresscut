@@ -1,47 +1,54 @@
-# 第三方组件与参考项目
+# Third-Party Components and Reference Projects
 
-本项目以 GPL-3.0-or-later 发布，见 `LICENSE`。以下组件与参考项目的许可证需要在分发前复核。
+This project is released under GPL-3.0-or-later; see `LICENSE`. The licenses of the
+components and reference projects below must be reviewed before distribution.
 
-## 项目自身
+## The Project Itself
 
-| 组件 | 许可证 |
+| Component | License |
 | --- | --- |
-| `rossresscut` 项目代码 | GPL-3.0-or-later（`LICENSE`） |
+| `rossresscut` project code | GPL-3.0-or-later (`LICENSE`) |
 
-## 直接依赖
+## Direct Dependencies
 
-| 组件 | 用途 | 许可证 |
+| Component | Purpose | License |
 | --- | --- | --- |
-| `eframe` / `egui` | 桌面窗口与 UI | MIT OR Apache-2.0 |
-| `wgpu` | GPU 渲染 / 纹理导入 | MIT OR Apache-2.0 |
-| `mpv-engine` | libmpv safe wrapper 与 exported frame | MIT OR Apache-2.0 |
-| `libmpv` / `mpv` | 预览解码、音频输出、硬件解码 | GPL-2.0-or-later |
-| `fontdb` | 系统字体枚举 | MIT |
-| `rfd` | Linux XDG portal / Windows Shell COM 文件对话框 | MIT |
-| `cpal` | 外部 FFmpeg 回退路径的音频输出 | Apache-2.0 |
-| `serde` / `serde_json` | 数据序列化 | MIT OR Apache-2.0 |
-| `toml` | 配置文件 | MIT OR Apache-2.0 |
-| `log` / `env_logger` | 日志 | MIT OR Apache-2.0 |
+| `eframe` / `egui` | Desktop window and UI | MIT OR Apache-2.0 |
+| `wgpu` | GPU rendering / texture import | MIT OR Apache-2.0 |
+| `mpv-engine` | libmpv safe wrapper and exported frame | MIT OR Apache-2.0 |
+| `libmpv` / `mpv` | Preview decoding, audio output, hardware decoding | GPL-2.0-or-later |
+| `fontdb` | System font enumeration | MIT |
+| `rfd` | Linux XDG portal / Windows Shell COM file dialogs | MIT |
+| `cpal` | Audio output for the external FFmpeg fallback path | Apache-2.0 |
+| `serde` / `serde_json` | Data serialization | MIT OR Apache-2.0 |
+| `toml` | Configuration files | MIT OR Apache-2.0 |
+| `log` / `env_logger` | Logging | MIT OR Apache-2.0 |
 
-`libmpv` 是运行时动态链接的系统库，不随源码仓库分发。GPL-3.0-or-later 与
-`libmpv` 的 GPL-2.0-or-later 兼容；相关决策见 `docs/decisions/0015-project-license.md`。
+`libmpv` is a system library linked dynamically at runtime and is not distributed
+with the source repository. GPL-3.0-or-later is compatible with `libmpv`'s
+GPL-2.0-or-later; see `docs/decisions/0015-project-license.md` for the related
+decision.
 
-## 参考项目
+## Reference Projects
 
-| 项目 | 用途 | 许可证 | 使用方式 |
+| Project | Purpose | License | Usage |
 | --- | --- | --- | --- |
-| LosslessCut | 产品行为、媒体语义、FFmpeg 工作流参考 | GPL-2.0 | 只阅读与验证行为；不复制代码 |
-| FilmCraft | Rust + egui 工程分层参考 | 见项目仓库 | 只参考架构取舍；不复制代码 |
-| EffectCraft | engine-first 分层参考 | 见项目仓库 | 只参考架构取舍；不复制代码 |
+| LosslessCut | Reference for product behavior, media semantics, and FFmpeg workflows | GPL-2.0 | Read and verify behavior only; no code copied |
+| FilmCraft | Reference for Rust + egui project layering | See the project repository | Reference architecture trade-offs only; no code copied |
+| EffectCraft | Reference for engine-first layering | See the project repository | Reference architecture trade-offs only; no code copied |
 
-本仓库不包含上述项目的源代码。
+This repository does not contain the source code of the projects listed above.
 
-## 素材与字体
+## Assets and Fonts
 
-- `assets/fonts/JetBrainsMonoNerdFontPropo-Regular.ttf`：JetBrains Mono Nerd Font Propo
-  Regular，来自 Nerd Fonts v3.5.1（patched JetBrains Mono），
-  许可证 SIL Open Font License 1.1，见 `assets/fonts/OFL.txt`。
-  仅作为 UI 图标 glyph 的回退字体，不用于正文排版。
-- `tests/fixtures/` 中的媒体文件是使用 FFmpeg `lavfi` 生成的合成素材，不包含第三方内容；重新生成方式见 `tests/fixtures/README.md`。
-- 正文 UI 字体来自用户系统，通过 `fontdb` 枚举；项目不分发正文排版字体。
-- 若以后加入其他素材，必须记录来源、作者、许可证，并更新本文件。
+- `assets/fonts/JetBrainsMonoNerdFontPropo-Regular.ttf`: JetBrains Mono Nerd Font
+  Propo Regular, from Nerd Fonts v3.5.1 (patched JetBrains Mono), licensed under
+  the SIL Open Font License 1.1, see `assets/fonts/OFL.txt`.
+  It is used only as a fallback font for UI icon glyphs, not for body typesetting.
+- The media files in `tests/fixtures/` are synthetic assets generated with FFmpeg
+  `lavfi` and contain no third-party content; see `tests/fixtures/README.md` for how
+  to regenerate them.
+- Body UI fonts come from the user's system and are enumerated through `fontdb`;
+  the project does not distribute body typesetting fonts.
+- If other assets are added later, their source, author, and license must be
+  recorded, and this file must be updated.

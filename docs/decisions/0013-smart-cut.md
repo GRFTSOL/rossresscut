@@ -1,131 +1,154 @@
-# ADR-0013：Smart cut 的边界与失败语义
+# ADR-0013: Smart Cut Boundaries and Failure Semantics
 
-## 状态
+## Status
 
 Accepted
 
-## 背景
+## Context
 
-普通 stream copy 的 `-ss` 前置 seek 会把 Segment 起点回退到此前关键帧。
-用户把起点放在两个关键帧之间时，输出包含 Segment 之外的内容。
+A normal stream copy's leading `-ss` seek rewinds the Segment start to a preceding keyframe. When
+the user places the start point between two keyframes, the output contains content outside the
+Segment.
 
-Phase 7C 需要提供可选的 smart cut：重编码「请求起点 → 下一个关键帧」
-与「终点前的最后一个关键帧 → 请求终点」两小段，其余仍然 stream copy。
+Phase 7C needs to provide an optional smart cut: re-encode two small pieces, "requested start → next
+keyframe" and "last keyframe before the end → requested end", while the rest remains stream copy.
 
-调查与实验记录见 `docs/investigations/smart-cut.md`。
+Investigation and experiment records are in `docs/investigations/smart-cut.md`.
 
-## 已知约束
+## Known constraints
 
-- 导出必须使用外部 FFmpeg，参数逐项传递。
-- 不得把重编码标记为无损，不得静默降级。
-- 时间只使用整数 `Timestamp` / `Duration`。
-- 外部探测结果不可信，错误必须带上下文。
-- 项目已有全片关键帧索引（`domain::media::KeyframeIndex`），异步加载。
+- Export must use external FFmpeg, with arguments passed one by one.
+- Re-encoding must not be labeled lossless, and there must be no silent degradation.
+- Time uses only integer `Timestamp` / `Duration`.
+- External probe results are untrusted, and errors must carry context.
+- The project already has a full-file keyframe index (`domain::media::KeyframeIndex`), loaded
+  asynchronously.
 
-## 已知事实
+## Known facts
 
-这些由源码阅读与实验确认，不是决策：
+These were confirmed by source reading and experiments, not decisions:
 
-1. 编码段用 `-ss <start> -i <source> -ss 0 -t <len>` 可以精确从请求起点开始。
-2. 编码段与无损段可以直接 concat，接缝无间隙。
-3. 编码尾从无损段结束点开始（不是从关键帧开始），覆盖关键帧前后的边界；
-   这样视频无空洞，音频也不再跨越 2 帧。
-4. 无损段不能直接截在关键帧上：`-t` 按 DTS 截断会保留关键帧却丢掉中间的
-   B 帧，留下 2–4 帧的画面停留；让无损段提前两帧结束，再由编码尾从该结束点接管。
-5. smart cut 的中间片段与最终 concat 都不能加 `-avoid_negative_ts make_zero`，
-   否则开头出现约 2 帧空洞。
-6. 源 codec 没有可用的软件编码器时无法完成。
-7. 片段完全位于两个关键帧之间时，只能整段重编码。
-8. Matroska 的 cue 点可能稀疏；copy 段的 `-ss` 可能落到更早的 cue。
-   规划阶段可以用「稍晚的 seek 目标」让 demuxer 正好落到计划关键帧，
-   再把编码段延长到该落点。找不到可用落点时整段编码。
-9. VFR 素材的平均帧率不能代表切点处的局部帧时长。
-   规划阶段在切点前后 ±0.5s 读取包 PTS，取最大相邻间隔作为 head/tail margin；
-   编码段必须加 `-fps_mode passthrough`，否则 FFmpeg 会把 VFR 重采样成
-   猜测的恒定帧率。
-10. 图形字幕（至少 DVB subtitle / Matroska）保持 stream copy 时，`-ss` 与
-    concat 会让字幕与视频一起重定基；实测 DVB 字幕在编码头、无损中段、
-    编码尾三个子片段中都能落在正确时间范围。
+1. The encoded segment can start exactly at the requested start using
+   `-ss <start> -i <source> -ss 0 -t <len>`.
+2. The encoded segment and the lossless segment can be concatenated directly, with no gap at the
+   seam.
+3. The encoded tail starts from the lossless segment's end point (not from a keyframe) and covers the
+   boundary around the keyframe; this way the video has no holes, and the audio no longer spans 2
+   frames.
+4. The lossless segment cannot be cut directly at a keyframe: `-t` truncation by DTS keeps the
+   keyframe but drops the B-frames in between, leaving a 2–4 frame picture freeze; let the lossless
+   segment end two frames early, and then have the encoded tail take over from that end point.
+5. Neither the intermediate segments of smart cut nor the final concat may add
+   `-avoid_negative_ts make_zero`, otherwise a hole of about 2 frames appears at the beginning.
+6. It cannot be done when there is no usable software encoder for the source codec.
+7. When a segment lies entirely between two keyframes, the whole segment must be re-encoded.
+8. Matroska cue points may be sparse; the `-ss` of a copy segment may land on an earlier cue. During
+   planning, a "slightly later seek target" can be used to make the demuxer land exactly on the
+   planned keyframe, and then the encoded segment is extended to that landing point. When no usable
+   landing point is found, the whole segment is encoded.
+9. The average frame rate of VFR material cannot represent the local frame duration at the cut point.
+   During planning, packet PTS is read within ±0.5s around the cut point, and the maximum adjacent
+   gap is taken as the head/tail margin; the encoded segment must add `-fps_mode passthrough`,
+   otherwise FFmpeg will resample the VFR into a guessed constant frame rate.
+10. When graphic subtitles (at least DVB subtitle / Matroska) are kept as stream copy, `-ss` and
+    concat will rebase the subtitles along with the video; measurements show that DVB subtitles land
+    in the correct time ranges in all three sub-segments: the encoded head, the lossless middle, and
+    the encoded tail.
 
-## 决策
+## Decision
 
-### D1：不可用时严格失败
+### D1: Strict failure when unavailable
 
-选择：
+Choose:
 
-> 能精确切分就执行 smart cut；片段完全位于两个关键帧之间时整段重编码；
-> 其他无法完成的情况一律失败并说明原因，不回退到普通 copy。
+> Execute smart cut when exact cutting is possible; re-encode the whole segment when the segment
+> lies entirely between two keyframes; in all other cases that cannot be completed, fail and explain
+> the reason, without falling back to normal copy.
 
-具体触发失败的条件：
+Specific conditions that trigger failure:
 
-- 起点之后找不到任何关键帧；
-- 帧率未知，无法计算一帧时长；
-- 选中的视频流不是恰好一个；
-- 源视频 codec 没有对应的软件编码器；
-- 关键帧索引尚未加载完成。
+- No keyframe can be found after the start point;
+- The frame rate is unknown, so a frame duration cannot be computed;
+- The selected video stream is not exactly one;
+- The source video codec has no corresponding software encoder;
+- The keyframe index has not finished loading.
 
-失败会中止整次导出，错误信息必须包含具体原因。
+A failure aborts the entire export, and the error message must include the specific reason.
 
-### D2：编码质量跟随源视频码率
+### D2: Encoding quality follows the source video bitrate
 
-> 更新：本决策已被 `docs/decisions/0014-smart-cut-encoding-defaults.md` 调整：
-> 默认码率改为需编码片段的源平均码率 × 1.5，并支持设置中手动覆盖；
-> preset 固定为 x264 `faster`、x265 `veryfast`、SVT-AV1 preset 9。
+> Update: this decision has been adjusted by
+> `docs/decisions/0014-smart-cut-encoding-defaults.md`: the default bitrate is changed to the source
+> average bitrate of the segment that needs encoding × 1.5, with manual override supported in
+> settings; presets are fixed to x264 `faster`, x265 `veryfast`, and SVT-AV1 preset 9.
 
-选择：
+Choose:
 
-> 编码段目标码率 = 源视频码率 × 1.2，自动计算，不提供额外 UI。
+> Target bitrate of the encoded segment = source video bitrate × 1.2, computed automatically, with
+> no additional UI.
 
-源视频 `bit_rate` 缺失时，用容器大小 × 8 / 容器时长估算，再乘 1.2。
-仍无法确定则失败（属于 D1 的「无法完成」）。
+When the source video's `bit_rate` is missing, estimate it as container size × 8 / container
+duration, then multiply by 1.2. If it still cannot be determined, fail (this is the "cannot be
+completed" case of D1).
 
-## 决策理由
+## Rationale
 
-1. 回退到普通 copy 会让用户拿到起点错误却自称「精确」的输出，
-   违反「不得静默降级」。
-2. 整段重编码是 smart cut 在短片段上的自然形态；如果这也算失败，
-   片段短于 GOP 时功能几乎不可用。
-3. 码率跟随源码率 + 20% 余量已在参考实现中被验证；
-   额外质量控制会增加 UI 与测试面，留到出现真实需求时再做。
+1. Falling back to normal copy would give the user output that has a wrong start point but claims to
+   be "exact", violating "no silent degradation".
+2. Re-encoding the whole segment is the natural form of smart cut on short segments; if this were
+   also considered a failure, the feature would be almost unusable when segments are shorter than a
+   GOP.
+3. Following the source bitrate with a +20% margin has been validated in the reference
+   implementation; additional quality control would expand the UI and test surface, so it is left
+   until a real need arises.
 
-## 实现边界
+## Implementation boundaries
 
-- 只重编码一个视频流；音频、字幕、附加图片保持 copy。
-- 多段导出时，每段最多拆成「编码头 + 无损中段 + 编码尾」三个子片段，
-  所有子片段按 Timeline 顺序进入同一个 concat list。
-- 规划阶段会探测每个无损段的实际 seek 落点；落点晚于请求起点时，
-  编码头延长到落点，`-ss` 使用能让 demuxer 正好落到该点的目标。
-  探测是异步的，不阻塞 UI。
-- 字幕按每个子片段的区间分别裁剪后再 mux，最终由 concat 合并。
-- 章节仍按每个 Segment 的实际容器时长累计。
-- 编码段与无损段的流布局必须一致；不一致时由 FFmpeg 报错，不静默丢弃流。
+- Only one video stream is re-encoded; audio, subtitles, and attached pictures remain copy.
+- For multi-segment export, each segment is split into at most three sub-segments: "encoded head +
+  lossless middle + encoded tail", and all sub-segments enter the same concat list in Timeline order.
+- During planning, the actual seek landing point of each lossless segment is probed; when the
+  landing point is later than the requested start, the encoded head is extended to the landing point,
+  and `-ss` uses a target that makes the demuxer land exactly on that point. Probing is asynchronous
+  and does not block the UI.
+- Subtitles are clipped separately by each sub-segment's interval and then muxed, and finally merged
+  by concat.
+- Chapters are still accumulated by the actual container duration of each Segment.
+- The stream layout of the encoded segment and the lossless segment must be consistent; when they are
+  inconsistent, FFmpeg reports an error and does not silently drop streams.
 
-## 后果
+## Consequences
 
-### 正面
+### Positive
 
-- Segment 起点与终点都可以精确到帧，不再强制回退到关键帧。
-- 失败路径明确，不存在「看起来成功但起点错误」的输出。
-- 复用已有的关键帧索引、临时片段与 concat 机制。
+- Both the Segment start and end can be frame-accurate, with no forced rewind to keyframes.
+- The failure path is explicit, so there is no output that "looks successful but has a wrong start
+  point".
+- It reuses the existing keyframe index, temporary segments, and concat mechanisms.
 
-### 负面
+### Negative
 
-- 输出不再是全帧 stream copy；被重编码的头部和尾部有质量损失。
-- 片段完全位于两个关键帧之间时，整段重编码可能明显变慢。
-- 起点与下一关键帧之间会丢弃约一帧，用于避免拼接处重复帧。
-- 无损段末端提前两帧，由编码尾从该结束点补齐；这两帧也有重编码损失。
-- 无损段与编码尾的视频交界不再跳过内容；音频受 AAC 包边界影响，
-  B 帧 VFR 实测最大空隙约 72ms，无 B 帧 VFR 约 27ms。
-- 只支持一个视频流，多视频流素材无法使用 smart cut。
+- The output is no longer a full-frame stream copy; the re-encoded head and tail lose quality.
+- When a segment lies entirely between two keyframes, re-encoding the whole segment may be
+  noticeably slower.
+- About one frame is discarded between the start point and the next keyframe, to avoid duplicate
+  frames at the splice.
+- The lossless segment ends two frames early, and the encoded tail fills in from that end point;
+  these two frames also have re-encoding loss.
+- The video boundary between the lossless segment and the encoded tail no longer skips content; the
+  audio is affected by AAC packet boundaries, with a measured maximum gap of about 72ms for B-frame
+  VFR and about 27ms for non-B-frame VFR.
+- Only one video stream is supported; material with multiple video streams cannot use smart cut.
 
-### 后续影响
+### Follow-up impact
 
-- UI 文案必须说明 smart cut 会重编码头部，不能暗示完全无损。
-- smart cut 的失败原因需要能展示给用户，而不是只记录日志。
+- UI text must explain that smart cut re-encodes the head and must not imply it is fully lossless.
+- Smart cut failure reasons need to be displayable to the user rather than merely logged.
 
-## 未解决问题
+## Open questions
 
-- 硬件编码器（NVENC / VAAPI / VideoToolbox）不在当前范围；见
-  `docs/decisions/0014-smart-cut-encoding-defaults.md`。
-- PGS / DVD 字幕未直接实测；DVB subtitle 已覆盖同一 stream copy 路径。
-- 附件字体在图形字幕 stream copy 下的行为未验证。
+- Hardware encoders (NVENC / VAAPI / VideoToolbox) are out of the current scope; see
+  `docs/decisions/0014-smart-cut-encoding-defaults.md`.
+- PGS / DVD subtitles were not directly measured; DVB subtitle already covers the same stream copy
+  path.
+- The behavior of attached fonts under graphic subtitle stream copy is not verified.

@@ -1,112 +1,82 @@
-# 开发计划
+# Development Plan
 
-## 当前阶段
+## Current Phase
 
-**Phase 0–8 已全部完成。**
+**Phases 0–8 are all complete.**
 
-- 发布阶段（Phase 8）的收尾记录见下文；v0.4.2 起 Linux pacman 包由 GitHub Actions 在
-  `v*` tag 上构建并附加到同名 Release，Windows 便携包仍在本机打包。
-- 详细实现与验证记录归档在 `docs/history/completed-phases.md`。
-- 之后的工作是功能完善与缺陷修复，不再按 Phase 编号；涉及真实取舍时仍然写 ADR。
-- 未解决问题记录在 `docs/open-questions.md`。
+- The wrap-up records for the release phase (Phase 8) are below; since v0.4.2 the Linux pacman
+  package is built by GitHub Actions on `v*` tags and attached to the Release of the same name,
+  while the Windows portable package is still built on this machine.
+- Detailed implementation and verification records are archived in
+  `docs/history/completed-phases.md`.
+- Later work is feature polishing and bug fixing, no longer numbered by Phase; an ADR is still
+  written when there is a real trade-off.
+- Open issues are recorded in `docs/open-questions.md`.
 
-## 已完成阶段摘要
+## Completed Phase Summary
 
-| 阶段 | 结果 | 关键约束 / 决策 |
+| Phase | Result | Key constraint / decision |
 | --- | --- | --- |
-| Phase 0 | 项目基础 | Rust + egui；`unsafe_code = "forbid"` |
-| Phase 1 | 媒体分析 | FFprobe JSON 边界；整数时间类型 |
-| Phase 2 | 媒体预览 | libmpv 主路径（ADR 0010）；外部 FFmpeg 回退 |
-| Phase 3 | Timeline | 有序 EDL、稳定 `SegmentId`、允许重叠（ADR 0008） |
-| Phase 4 | 播放链路与无损导出 | 4A 测量；4B/4C mpv 预览；4D 单段 stream copy |
-| Phase 5 | 多片段合并 | 临时片段 + concat demuxer；顺序只来自 Timeline |
-| Phase 6 | 波形 | 外部 FFmpeg 解码 peak；时间轴背景绘制（ADR 0011） |
-| Phase 7 | 高级功能 | 项目文件（ADR 0012）、批处理/合并、字幕/流选择、smart cut（ADR 0013/0014） |
+| Phase 0 | Project foundation | Rust + egui; `unsafe_code = "forbid"` |
+| Phase 1 | Media analysis | FFprobe JSON boundary; integer time types |
+| Phase 2 | Media preview | libmpv main path (ADR 0010); external FFmpeg fallback |
+| Phase 3 | Timeline | ordered EDL, stable `SegmentId`, overlap allowed (ADR 0008) |
+| Phase 4 | Playback pipeline and lossless export | 4A measurement; 4B/4C mpv preview; 4D single-segment stream copy |
+| Phase 5 | Multi-segment merging | temporary parts + concat demuxer; order comes only from the Timeline |
+| Phase 6 | Waveform | external FFmpeg decodes the peak; drawn as the timeline background (ADR 0011) |
+| Phase 7 | Advanced features | project files (ADR 0012), batch / merge, subtitle / stream selection, smart cut (ADR 0013/0014) |
 
-Phase 5 的导出语义、Phase 6 的波形设计、Phase 7 的已知限制等细节见
-`docs/history/completed-phases.md`。
-
----
-
-# 参考实现研究
-
-LosslessCut 是产品行为、媒体语义和 FFmpeg 工作流的参考实现，不是本项目的架构或代码模板。
-
-- 研究顺序：本项目代码 / ADR → FFmpeg 官方文档 → LosslessCut 实现与 issue / commit → 实验验证 → 设计本项目实现。
-- 重点：FFmpeg 导出参数、`-ss` / `-to` / `-t`、stream copy、PTS/DTS/time base、keyframe、smart cut、concat、音画同步、容器兼容性、metadata、字幕、chapter。
-- LosslessCut 使用 GPL-2.0：只阅读、理解和验证行为；不复制源代码，不做逐行 TypeScript → Rust 翻译。
-- 阶段约束：普通无损导出只做 stream copy；smart cut 已在 Phase 7C 实现，默认关闭，重编码范围与告知要求见 ADR 0013 / 0014。
+Details such as the Phase 5 export semantics, the Phase 6 waveform design, and the Phase 7 known
+limitations are in `docs/history/completed-phases.md`.
 
 ---
 
-# Phase 8：发布（已完成）
+# Reference Implementation Research
 
-## Linux
+LosslessCut is a reference implementation for product behavior, media semantics, and FFmpeg
+workflows, not an architecture or code template for this project.
 
-- [x] Release build 已验证（`cargo build --release`）
-- [x] 发布包说明运行时依赖：`libmpv.so.2`、`ffmpeg` / `ffprobe`、XDG desktop portal、EGL / GBM
-- [x] 打包格式：pacman 包（`packaging/PKGBUILD`，`./scripts/package-linux.sh`
-  输出 `dist/rossresscut-<version>-<pkgrel>-x86_64.pkg.tar.zst`）
-- [x] desktop entry 与 pixmaps 图标随包安装
-- [x] 已在 Arch / Wayland 上实际验证：`./scripts/package-linux.sh` 产出
-  `rossresscut-0.3.0-1-x86_64.pkg.tar.zst`，包内二进制可启动，
-  Wayland app_id 为 `rossresscut`，与 desktop entry 一致
-- [x] 许可证：项目以 GPL-3.0-or-later 发布（ADR 0015）；`libmpv`（GPL-2.0-or-later）
-  与 `cpal`（Apache-2.0）均与 GPLv3 兼容
-- [ ] 公开仓库 / AUR：暂不考虑（个人自用）；将来需要时补 tagged tarball 源、
-  `url` 与校验和
-
-## Windows
-
-- [x] Windows 文件打开 / 保存对话框：`rfd` 的 Windows 后端已接入
-  （`IFileOpenDialog` / `IFileSaveDialog` COM 接口），`FILE_DIALOG_SUPPORTED`
-  已覆盖 Windows
-- [ ] 文件对话框、拖放与高 DPI 的实机验收
-- [x] Windows 版 libmpv：已用 MSVC 导入库 `mpv.lib`（由 `libmpv-2.dll`
-  的 `dumpbin /exports` + `lib /def:` 生成）链接成功；运行期 `libmpv-2.dll`
-  放 exe 同目录
-- [x] Windows 版 FFmpeg / FFprobe：`ffmpeg.exe` / `ffprobe.exe` 位于 `PATH`，
-  探测、波形、场景检测与导出均已在 Windows 上跑通
-- [x] 原生 MSVC 构建：`cargo build` / `cargo test` / 两轮 `clippy` 均通过；
-  `msvc-kit setup --persistent` 后普通 `cargo build` 即可（`MPV_LIBRARY_DIR` 仍需）
-- [x] 中文名与含空格路径的媒体实测：探测、预览、波形均正常
-- [x] 启动失败可见：Windows 上弹原生错误对话框（`rfd` MessageDialog）
-- [x] 硬件解码实测：预览走 `vo=libmpv` + OpenGL，`hwdec=auto-safe` 在 NVIDIA
-  机器上解析为 `nvdec`（`d3d11va` 需要 `gpu-context=d3d11`，该路径不可用）；
-  播放信息与日志 `mpv preview decoder:` 可见
-- [x] 便携包：`./scripts/package-windows.sh` 产出
-  `dist/rossresscut-<version>-windows-x64.zip`（exe + DLL + FFmpeg + 许可证 +
-  README）与 `.sha256`，双击可运行
-- [ ] 导出路径选择、章节写入与多段 concat 的人工验收（自动化测试已在
-  Windows 通过，尚未由用户在界面上逐项确认）
-- [x] Windows 包自动化：`scripts/mpv-import-lib.sh` 生成 `mpv.lib`，
-  `scripts/package-windows.sh` 打 zip
-- [x] 运行期失败可见性：panic 写入 `crash.log`（`logging::install_panic_hook`）
-- [x] 应用图标（窗口 / 任务栏）由 `assets/img/icon.ico` 与 `icon.png` 生成
-- [x] 交叉编译不再是主路径：Windows 版改为原生 MSVC 构建；mingw 交叉编译
-  方案保留在 git 历史中，不再维护
-
-## 通用
-
-- [ ] 自动发布：Linux 的 pacman 包已由 `.github/workflows/release.yml` 在 `v*` tag
-  上构建并附加到同名 Release；Windows 便携包仍在本机手动构建，尚未进入 CI
-- [ ] 安装包：Linux 有 pacman 包（本地脚本与 CI），Windows 只有便携 zip，
-  没有安装器
+- Research order: this project's code / ADRs → the official FFmpeg documentation → the
+  LosslessCut implementation and its issues / commits → experimental verification → designing
+  this project's implementation.
+- Focus: FFmpeg export parameters, `-ss` / `-to` / `-t`, stream copy, PTS/DTS/time base,
+  keyframe, smart cut, concat, audio/video sync, container compatibility, metadata, subtitles,
+  chapters.
+- LosslessCut is GPL-2.0: read, understand, and verify behavior only; do not copy source code
+  and do not do a line-by-line TypeScript → Rust translation.
+- Phase constraint: an ordinary lossless export only does stream copy; smart cut was implemented
+  in Phase 7C and is off by default, and its re-encode scope and notification requirements are
+  in ADR 0013 / 0014.
 
 ---
 
-# 开发原则
+# Phase 8: Release (Complete)
 
-只处理：
+- **Linux**: pacman package (`packaging/PKGBUILD`, `./scripts/package-linux.sh`) with the
+  desktop entry and icons, verified on Arch / Wayland; since v0.4.2 GitHub Actions builds it on
+  `v*` tags and attaches it to the same-named Release.
+- **Windows**: native MSVC build; `./scripts/package-windows.sh` produces the portable zip (exe
+  + `libmpv-2.dll` + FFmpeg + license + README) and a `.sha256`; still packaged locally.
+- **License**: GPL-3.0-or-later (ADR 0015); `libmpv` (GPL-2.0-or-later) and `cpal`
+  (Apache-2.0) are compatible with GPLv3.
+- **Not yet done**: a Windows installer; on-device acceptance of the file dialogs, drag and
+  drop, and high DPI; the Windows package entering CI.
+- The per-item verification record is in `docs/history/completed-phases.md`.
 
-> 当前阶段中最小的下一步。
+---
 
-不要一次实现整个 Phase。
+# Development Principles
 
-每完成一个阶段：
+Only handle:
 
-1. 更新本文件。
-2. 更新架构文档。
-3. 更新测试。
-4. 更新相关 ADR。
-5. 确认 exit criteria。
+> The smallest next step in the current phase.
+
+Do not implement an entire Phase at once.
+
+On completing each stage:
+
+1. Update this file.
+2. Update the architecture document.
+3. Update the tests.
+4. Update the related ADRs.
+5. Confirm the exit criteria.

@@ -1,12 +1,12 @@
-# 播放链路调查（Phase 4A）
+# Playback pipeline investigation (Phase 4A)
 
-状态：`已完成测量；Phase 4B 已由 ADR 0010 决策，并经 Phase 4C 实现（mpv-engine 预览）`
+Status: `measurement complete; Phase 4B was decided by ADR 0010 and implemented by Phase 4C (mpv-engine preview)`
 
-本文件只记录实际运行的命令与数据。结论未验证的部分单独列出。
+This file records only the commands that were actually run and the data. Parts of the conclusions that are not verified are listed separately.
 
-## 目的
+## Purpose
 
-用户报告实际播放音画不同步、卡顿。本调查用测量判断瓶颈属于：
+Users reported A/V desync and stutter during actual playback. This investigation uses measurements to determine whether the bottleneck is:
 
 - decoder
 - frame conversion / GPU download
@@ -15,27 +15,27 @@
 - presentation
 - clock / scheduler
 
-调查不改动产品功能，也不预先选择 UI 框架。
+The investigation does not change product features and does not pre-select a UI framework.
 
-## 环境
+## Environment
 
-| 项 | 值 |
+| Item | Value |
 | --- | --- |
-| OS | Arch Linux，Wayland（niri） |
-| 内核 | `7.2.11-zen1-1-zen` |
-| GPU | AMD Radeon Vega 8（RADV / radeonsi） |
-| 渲染节点 | `/dev/dri/renderD128` |
+| OS | Arch Linux, Wayland (niri) |
+| Kernel | `7.2.11-zen1-1-zen` |
+| GPU | AMD Radeon Vega 8 (RADV / radeonsi) |
+| Render node | `/dev/dri/renderD128` |
 | FFmpeg | `n9.0.2` |
 | mpv | `v0.41.0` |
-| 测试文件 | `/home/chasel/videos/bilibili/Immich相册部署和使用教程.mp4` |
-| 素材参数 | HEVC Main，`yuv420p`，3840x2160，`60000/1001` fps，`time_base=1/16000`，duration 1313.32s，start 0 |
-| 对照素材 | `/home/chasel/videos/episode/[非自然死亡] Unnatural (2018)/[非自然死亡] Unnatural S01E09.mkv`，H.264，1920x1080，`2997/100` fps |
+| Test file | `/home/chasel/videos/bilibili/Immich相册部署和使用教程.mp4` |
+| Asset parameters | HEVC Main, `yuv420p`, 3840x2160, `60000/1001` fps, `time_base=1/16000`, duration 1313.32s, start 0 |
+| Control asset | `/home/chasel/videos/episode/[非自然死亡] Unnatural (2018)/[非自然死亡] Unnatural S01E09.mkv`, H.264, 1920x1080, `2997/100` fps |
 
-## 当前实现事实
+## Current implementation facts
 
-### 预览视频命令
+### Preview video command
 
-`src/media/preview/video.rs` 生成：
+`src/media/preview/video.rs` generates:
 
 ```text
 ffmpeg -nostdin -loglevel error -xerror
@@ -47,87 +47,88 @@ ffmpeg -nostdin -loglevel error -xerror
        -pix_fmt rgb24 -f rawvideo pipe:1
 ```
 
-关键点：
+Key points:
 
-- 没有 `-hwaccel_output_format vaapi`，因此 FFmpeg 在解码后立即把帧下载到系统内存。
-- `scale` 和 `fps` 都在 CPU 上执行。
-- 最终通过管道传输 `rgb24`。
-- 外部进程 + 管道模型只能传输系统内存，**结构上无法做 GPU 零拷贝**。
+- There is no `-hwaccel_output_format vaapi`, so FFmpeg downloads frames to system memory right after decoding.
+- Both `scale` and `fps` run on the CPU.
+- Frames are finally transmitted as `rgb24` over the pipe.
+- The external process + pipe model can only carry system memory, so **GPU zero-copy is structurally impossible**.
 
-### 帧时间戳
+### Frame timestamps
 
-预览帧时间戳不是源 PTS：
+Preview frame timestamps are not source PTS:
 
 ```text
 frame_timestamp = start + frame_index * 1_000_000 / 30
 ```
 
-即 30fps 合成 CFR。源是 59.94fps，`fps=30` 滤镜按每两帧取一帧。
+That is, synthetic 30fps CFR. The source is 59.94fps, and the `fps=30` filter keeps one frame out of every two.
 
-### 音频时钟
+### Audio clock
 
-- FFmpeg 解码 `0:a:0` 为 f32le PCM，写入 cpal 默认输出设备。
-- 播放位置 = `start + 已写入设备缓冲的样本帧数 / sample_rate`。
-- 已知偏差：写入设备缓冲不等于已被听到，时钟可能领先最多一个输出缓冲周期。
+- FFmpeg decodes `0:a:0` to f32le PCM and writes it to the cpal default output device.
+- Playback position = `start + sample frames written to the device buffer / sample_rate`.
+- Known deviation: being written to the device buffer is not the same as having been heard, so the clock may lead
+  by up to one output buffer period.
 
-### application 层调度
+### Application layer scheduling
 
-`Playback::update` 每帧：
+`Playback::update` every frame:
 
 ```text
 poll_audio -> advance -> poll_video
 ```
 
-视频只显示 `timestamp <= position` 的最新帧，未来帧留在 `pending_frame`。
+Video only shows the newest frame with `timestamp <= position`; future frames stay in `pending_frame`.
 
-## 测量工具
+## Measurement tools
 
-### 1. `examples/phase4a_probe.rs`（绕开 egui）
+### 1. `examples/phase4a_probe.rs` (bypasses egui)
 
-该 example 不创建窗口、不做纹理上传，只驱动 `Application`：
+This example creates no window and does no texture upload; it only drives `Application`:
 
 ```bash
 cargo run --release --example phase4a_probe -- <file> <software|vaapi> [seconds] [start]
 ```
 
-它记录：
+It records:
 
-- `presented_frames`、`effective_fps`
-- 相邻帧实际呈现间隔
+- `presented_frames`, `effective_fps`
+- the actual presentation interval between adjacent frames
 - `delta = audio_clock - video_timestamp`
-- delta 的 min / max / mean / stddev，以及首尾三分之一的漂移
+- min / max / mean / stddev of delta, plus the drift between the first and last third
 
-### 2. GUI 渲染诊断（环境变量门控）
+### 2. GUI render diagnostics (gated by environment variables)
 
-`src/ui/mod.rs` 的 `RenderDiagnostics` 仅在 `ROSS_RESCUT_DIAG` 存在时构造，输出：
+`RenderDiagnostics` in `src/ui/mod.rs` is only constructed when `ROSS_RESCUT_DIAG` exists, and outputs:
 
 ```text
 render diag: ui_fps=.. uploads=.. upload_avg_ms=.. upload_max_ms=..
 ```
 
-辅助开关：
+Helper switches:
 
-| 变量 | 作用 |
+| Variable | Effect |
 | --- | --- |
-| `ROSS_RESCUT_DIAG` | 启用每 2 秒的渲染统计 |
-| `ROSS_RESCUT_DIAG_AUTOPLAY` | 打开媒体后自动 seek 到 60s 并播放，用于无输入注入的重复测量 |
-| `ROSS_RESCUT_DIAG_SCRUB` | 打开媒体后自动播放并模拟 40 步时间轴拖动，记录 scrub 与最终位置 |
-| `ROSS_RESCUT_PREVIEW_HW` | `software` / `vaapi` / `d3d11va` / `videotoolbox`，覆盖本次运行的解码后端 |
+| `ROSS_RESCUT_DIAG` | Enables render statistics every 2 seconds |
+| `ROSS_RESCUT_DIAG_AUTOPLAY` | After opening the media, automatically seek to 60s and play, for repeated measurement without input injection |
+| `ROSS_RESCUT_DIAG_SCRUB` | After opening the media, automatically play and simulate a 40-step timeline drag, recording the scrub and the final position |
+| `ROSS_RESCUT_PREVIEW_HW` | `software` / `vaapi` / `d3d11va` / `videotoolbox`, overrides the decode backend for this run |
 
-三者都不设置时默认行为不变。
+When none of them is set, the default behavior is unchanged.
 
-## 结果
+## Results
 
-### A / B：application 层（绕开 egui）
+### A / B: application layer (bypassing egui)
 
-命令：
+Commands:
 
 ```bash
 cargo run --release --example phase4a_probe -- <4K HEVC> software 40 60
 cargo run --release --example phase4a_probe -- <4K HEVC> vaapi    40 60
 ```
 
-| 指标 | A：software | B：VAAPI |
+| Metric | A: software | B: VAAPI |
 | --- | --- | --- |
 | presented frames | 1192 | 416 |
 | effective fps | 29.80 | 10.40 |
@@ -136,224 +137,239 @@ cargo run --release --example phase4a_probe -- <4K HEVC> vaapi    40 60
 | stalls > 100 ms | 0 | 19 |
 | delta mean | +194.67 ms | +17328.90 ms |
 | delta min / max | 0 / +2709.33 ms | +8693.33 / +25964.00 ms |
-| delta drift（首三分 → 末三分） | +575.05 → +4.79 ms | +11507.28 → +23102.60 ms |
+| delta drift (first third → last third) | +575.05 → +4.79 ms | +11507.28 → +23102.60 ms |
 
-A 在启动阶段 delta 从约 +2.7s 收敛到 0~10ms，之后保持稳定。启动阶段的正 delta 来自 seek 后首帧解码延迟：音频立即开始，视频首帧要等约 1.5s。
+In A, delta converges from about +2.7s to 0~10ms during startup and then stays stable. The positive delta during
+startup comes from the first-frame decode latency after the seek: audio starts immediately, while the first video
+frame takes about 1.5s.
 
-B 的 delta 在 40 秒内持续增长 11.6 秒，视频帧产出只有 10.4 fps。
+In B, delta keeps growing by 11.6 seconds over 40 seconds, and video frame output is only 10.4 fps.
 
-重复性核对（`--release`，20 秒）：
+Repeatability check (`--release`, 20 seconds):
 
-| 指标 | A：software | B：VAAPI |
+| Metric | A: software | B: VAAPI |
 | --- | --- | --- |
 | effective fps | 29.34 | 5.70 |
 | present interval mean | 29.30 ms | 76.43 ms |
 | stalls > 100 ms | 0 | 11 |
-| delta drift（首三分 → 末三分） | +1136.06 → +4.70 ms | +11931.54 → +15185.16 ms |
+| delta drift (first third → last third) | +1136.06 → +4.70 ms | +11931.54 → +15185.16 ms |
 
-A 两次运行一致（29.80 / 29.34 fps），说明测量工具本身稳定。B 的绝对帧率在 5.7–10.4 fps 之间波动，但两次都远低于实时，且 delta 持续增长。
+The two A runs agree (29.80 / 29.34 fps), which shows that the measurement tool itself is stable. B's absolute frame
+rate fluctuates between 5.7–10.4 fps, but both runs are far below real time, and delta keeps growing.
 
-### A / B：GUI 路径（egui + wgpu）
+### A / B: GUI path (egui + wgpu)
 
-命令：
+Commands:
 
 ```bash
 ROSS_RESCUT_DIAG=1 ROSS_RESCUT_DIAG_AUTOPLAY=1 ROSS_RESCUT_PREVIEW_HW=<backend> \
   RUST_LOG=rossresscut=info ./target/release/rossresscut <4K HEVC>
 ```
 
-| 指标 | A：software | B：VAAPI |
+| Metric | A: software | B: VAAPI |
 | --- | --- | --- |
 | ui_fps | 25–43 | 40–51 |
-| texture uploads / 2s | 52–60（约 26–30 fps） | 30–42（约 15–21 fps） |
+| texture uploads / 2s | 52–60 (about 26–30 fps) | 30–42 (about 15–21 fps) |
 | upload avg | 0.01–0.12 ms | 0.01 ms |
-| upload max | 3.42 ms（首次） | 0.02 ms |
+| upload max | 3.42 ms (first time) | 0.02 ms |
 
-纹理上传耗时比一帧预算低三个数量级。egui 帧率高于预览帧率。两者都不是瓶颈。
+Texture upload time is three orders of magnitude below one frame budget. The egui frame rate is higher than the
+preview frame rate. Neither is a bottleneck.
 
-### FFmpeg 微基准（4K HEVC，`-ss 60 -t 20`）
+### FFmpeg micro-benchmark (4K HEVC, `-ss 60 -t 20`)
 
 ```bash
-# 1. VAAPI 解码，默认下载到系统内存，丢弃
+# 1. VAAPI decode, downloads to system memory by default, output discarded
 ffmpeg -hwaccel vaapi -hwaccel_device /dev/dri/renderD128 -ss 60 -i <file> \
   -map 0:v:0 -an -t 20 -f null -
 
-# 2. VAAPI 解码 + fps=30,scale=960x540,rgb24
+# 2. VAAPI decode + fps=30,scale=960x540,rgb24
 ffmpeg -hwaccel vaapi -hwaccel_device /dev/dri/renderD128 -ss 60 -i <file> \
   -map 0:v:0 -an -t 20 -vf "fps=30,scale=960:540:flags=fast_bilinear" \
   -pix_fmt rgb24 -f rawvideo -y /dev/null
 
-# 3. software 解码 + 相同滤镜
+# 3. software decode + the same filters
 ffmpeg -ss 60 -i <file> -map 0:v:0 -an -t 20 \
   -vf "fps=30,scale=960:540:flags=fast_bilinear" \
   -pix_fmt rgb24 -f rawvideo -y /dev/null
 
-# 4. VAAPI 帧留在 GPU，scale_vaapi 缩到 960x540，再下载 + fps
+# 4. VAAPI frames stay on the GPU, scale_vaapi scales to 960x540, then download + fps
 ffmpeg -hwaccel vaapi -hwaccel_output_format vaapi -hwaccel_device /dev/dri/renderD128 \
   -ss 60 -i <file> -map 0:v:0 -an -t 20 \
   -vf "scale_vaapi=w=960:h=540,hwdownload,format=nv12,fps=30" \
   -pix_fmt rgb24 -f rawvideo -y /dev/null
 
-# 5. VAAPI 帧全程留在 GPU，丢弃
+# 5. VAAPI frames stay on the GPU the whole time, output discarded
 ffmpeg -hwaccel vaapi -hwaccel_output_format vaapi -hwaccel_device /dev/dri/renderD128 \
   -ss 60 -i <file> -map 0:v:0 -an -t 20 -f null -
 
-# 6. VAAPI 帧留在 GPU，scale_vaapi 后下载，不加 fps 滤镜
+# 6. VAAPI frames stay on the GPU, download after scale_vaapi, no fps filter
 ffmpeg -hwaccel vaapi -hwaccel_output_format vaapi -hwaccel_device /dev/dri/renderD128 \
   -ss 60 -i <file> -map 0:v:0 -an -t 20 \
   -vf "scale_vaapi=w=960:h=540,hwdownload,format=nv12" \
   -pix_fmt rgb24 -f rawvideo -y /dev/null
 ```
 
-| # | 路径 | 输出帧 | 耗时 | 吞吐 |
+| # | Path | Output frames | Elapsed | Throughput |
 | --- | --- | --- | --- | --- |
-| 1 | VAAPI → CPU 下载 → null | 1198 | 58.1 s | 20.6 fps / 0.34x |
-| 2 | VAAPI → CPU 下载 → CPU scale → rgb24 | 600 | 58.4 s | 10.3 fps / 0.34x |
+| 1 | VAAPI → CPU download → null | 1198 | 58.1 s | 20.6 fps / 0.34x |
+| 2 | VAAPI → CPU download → CPU scale → rgb24 | 600 | 58.4 s | 10.3 fps / 0.34x |
 | 3 | software → CPU scale → rgb24 | 600 | 13.3 s | 45 fps / 1.51x |
-| 4 | VAAPI GPU scale → 下载 960x540 → fps → rgb24 | 600 | 43.0 s | 14.0 fps / 0.47x |
-| 5 | VAAPI 全程 GPU → null | 1198 | 13.9 s | **86 fps / 1.44x** |
-| 6 | VAAPI GPU scale → 下载 960x540 → rgb24 | 1199 | 61.0 s | 20 fps / 0.33x |
+| 4 | VAAPI GPU scale → download 960x540 → fps → rgb24 | 600 | 43.0 s | 14.0 fps / 0.47x |
+| 5 | VAAPI all on GPU → null | 1198 | 13.9 s | **86 fps / 1.44x** |
+| 6 | VAAPI GPU scale → download 960x540 → rgb24 | 1199 | 61.0 s | 20 fps / 0.33x |
 
-### mpv 基准
+### mpv benchmark
 
 ```bash
-# C：VAAPI，GPU 渲染
+# C: VAAPI, GPU rendering
 mpv --no-config --no-audio --vo=gpu-next --hwdec=vaapi --untimed --start=60 --frames=300 <file>
 
-# D：software，GPU 渲染
+# D: software, GPU rendering
 mpv --no-config --no-audio --vo=gpu-next --hwdec=no --untimed --start=60 --frames=300 <file>
 
-# 仅解码吞吐
+# decode throughput only
 mpv --no-config --no-audio --vo=null --hwdec=vaapi --start=60 --frames=600 <file>
 mpv --no-config --no-audio --vo=null --hwdec=no    --start=60 --frames=600 <file>
 ```
 
-| 测试 | 帧 | 实际耗时 | 吞吐 | user CPU |
+| Test | Frames | Real elapsed | Throughput | user CPU |
 | --- | --- | --- | --- | --- |
-| C：VAAPI + gpu-next | 300 | 8.98 s | 33.4 fps | 1.67 s |
-| D：software + gpu-next | 300 | 9.65 s | 31.1 fps | 21.48 s |
+| C: VAAPI + gpu-next | 300 | 8.98 s | 33.4 fps | 1.67 s |
+| D: software + gpu-next | 300 | 9.65 s | 31.1 fps | 21.48 s |
 | VAAPI + vo=null | 600 | 11.81 s | 50.8 fps | 28.94 s |
 | software + vo=null | 600 | 11.60 s | 51.7 fps | 27.62 s |
 
-`gpu-next` 会开窗，测量包含窗口创建与 seek。C 与 D 的吞吐接近，但 C 的 CPU 消耗低一个数量级。
+`gpu-next` opens a window, so the measurement includes window creation and seek. C and D have similar throughput,
+but C's CPU consumption is an order of magnitude lower.
 
-### 1080p H.264 对照
+### 1080p H.264 control
 
-| 路径 | 输出帧 | 耗时 | 吞吐 |
+| Path | Output frames | Elapsed | Throughput |
 | --- | --- | --- | --- |
 | VAAPI + fps/scale/rgb24 | 600 | 8.4 s | 71 fps / 2.38x |
 | software + fps/scale/rgb24 | 600 | 2.4 s | 252 fps / 8.38x |
 
-## 判定
+## Verdict
 
-VAAPI 4K HEVC 的瓶颈是 **VAAPI 帧下载到系统内存（`hwdownload`）**，不是解码：
+The bottleneck of VAAPI 4K HEVC is **downloading VAAPI frames to system memory (`hwdownload`)**, not decoding:
 
-- 帧全程留在 GPU 时吞吐 86 fps（测试 5）。
-- 只要发生下载，即使 GPU 已缩放到 960x540，吞吐也只有 20 fps（测试 6）。
-- 下载后再做 CPU `fps` / `scale`，进一步降到 10 fps（测试 2）。
-- 纹理上传 0.01 ms，egui `ui_fps` 40+，均不是瓶颈。
-- software 路径在 application 层稳定 29.8 fps、delta ≈ 0，说明 clock 与 frame scheduling 本身没有持续漂移。
+- When frames stay on the GPU the whole time, throughput is 86 fps (test 5).
+- As soon as a download happens, even with the GPU already scaled to 960x540, throughput is only 20 fps (test 6).
+- Doing CPU `fps` / `scale` after the download lowers it further to 10 fps (test 2).
+- Texture upload is 0.01 ms and egui `ui_fps` is 40+, neither of which is a bottleneck.
+- The software path is stable at 29.8 fps with delta ≈ 0 at the application layer, which shows that clock and frame
+  scheduling themselves have no steady drift.
 
-因此 B（VAAPI → egui/wgpu）不同步的根因在解码器之后、egui 之前。egui/wgpu 不是原因。
+Therefore the root cause of B (VAAPI → egui/wgpu) desync lies after the decoder and before egui. egui/wgpu is not the cause.
 
-补充事实：
+Additional facts:
 
-- 1080p H.264 下 VAAPI 有 2.38x，可用。
-- 4K HEVC 下 VAAPI 只有 0.33–0.47x，不可用于实时预览。
-- 软件解码 4K HEVC 有 1.51x，能满足 30fps 预览，但 CPU 占用高（utime 91s / 20s 素材）。
+- At 1080p H.264, VAAPI reaches 2.38x and is usable.
+- At 4K HEVC, VAAPI only reaches 0.33–0.47x and is not usable for real-time preview.
+- Software decoding of 4K HEVC reaches 1.51x, which is enough for 30fps preview, but with high CPU usage
+  (utime 91s for 20s of material).
 
-## 与 mpv 的差异
+## Differences from mpv
 
-mpv 在同样 4K HEVC + VAAPI 下能到 33 fps 且 CPU 占用很低。差异来自架构：
+With the same 4K HEVC + VAAPI, mpv reaches 33 fps with very low CPU usage. The difference comes from the architecture:
 
-- mpv 让解码帧留在 GPU，并在 GPU 上完成缩放与呈现。
-- 本项目通过外部 FFmpeg 进程 + `pipe:1` 取帧，管道只能是系统内存，**必然经过一次同步下载**。
-- 这不是参数调优能消除的开销，而是「外部进程 + CPU 内存帧」模型的固有成本。
+- mpv keeps decoded frames on the GPU and performs scaling and presentation on the GPU.
+- This project fetches frames through an external FFmpeg process + `pipe:1`; a pipe can only carry system memory,
+  so it **necessarily goes through one synchronous download**.
+- This is not an overhead that parameter tuning can eliminate; it is the inherent cost of the
+  "external process + CPU memory frames" model.
 
-## 尚未验证
+## Not yet verified
 
-以下项目本轮没有测量，不应据此下结论：
+The following items were not measured in this round and should not be used to draw conclusions:
 
-- VAAPI 下载为何在这台机器上每帧约 50ms：是 radeonsi 的同步策略、FFmpeg 的 `av_hwframe_transfer_data` 实现，还是 PCIe / 内存带宽。未做 profiling。
-- 其他 4K 素材是否同样慢。只测了一个 4K HEVC 文件。
-- Windows D3D11VA 与 macOS VideoToolbox 的下载开销。当前机器无法验证。
-- 源 PTS 的正确性。预览时间戳是合成的 CFR，不是源 PTS。
-- 音频时钟相对真实扬声器输出的提前量。`cpal` 写入缓冲与 audible 时刻之间没有测量。
-- 长时段（分钟级）delta 是否仍有缓慢漂移。只测了 40 秒。
-  （mpv 主路径已在 2026-11-04 复测，见下方「长时漂移复测」）
-- Slint 或独立 video surface 是否能改善。未实现任何替代渲染路径。
+- Why a VAAPI download costs about 50ms per frame on this machine: whether it is radeonsi's synchronization strategy,
+  FFmpeg's `av_hwframe_transfer_data` implementation, or PCIe / memory bandwidth. No profiling was done.
+- Whether other 4K assets are equally slow. Only one 4K HEVC file was measured.
+- The download overhead of Windows D3D11VA and macOS VideoToolbox. The current machine cannot verify it.
+- The correctness of the source PTS. Preview timestamps are synthetic CFR, not source PTS.
+- How far the audio clock leads the real speaker output. No measurement was made between the `cpal` buffer write
+  and the audible moment.
+- Whether delta still has a slow drift over long periods (minutes). Only 40 seconds were measured.
+  (The mpv main path was re-tested on 2026-11-04, see the long-run drift re-test below)
+- Whether Slint or a separate video surface would improve matters. No alternative rendering path was implemented.
 
-## 2026-11-04 复测：mpv 主路径 10 分钟 A/V 漂移
+## 2026-11-04 re-test: 10-minute A/V drift on the mpv main path
 
-Phase 4A 的漂移发生在外部 FFmpeg + cpal 路径。切换到 mpv 主路径后，
-使用 `examples/mpv_long_playback.rs` 复核长时行为。
+The drift in Phase 4A occurred on the external FFmpeg + cpal path. After switching to the mpv main path,
+`examples/mpv_long_playback.rs` was used to check long-run behavior.
 
-环境：
+Environment:
 
-| 项 | 值 |
+| Item | Value |
 | --- | --- |
-| OS / GPU | Arch Linux（Wayland），AMD Radeon Vega 8 / RADV |
-| mpv | `v0.41.0`，FFmpeg `n9.0.2` |
-| 解码 | `hwdec=auto-safe`，实际 `vaapi` |
-| 音频 | PipeWire，48000 Hz，单声道 `floatp` |
-| 同步 | `video-sync=audio` |
-| 素材 | `testsrc2` 1280x720@30 + 440 Hz 正弦，H.264/AAC，660 s |
+| OS / GPU | Arch Linux (Wayland), AMD Radeon Vega 8 / RADV |
+| mpv | `v0.41.0`, FFmpeg `n9.0.2` |
+| Decode | `hwdec=auto-safe`, effectively `vaapi` |
+| Audio | PipeWire, 48000 Hz, mono `floatp` |
+| Sync | `video-sync=audio` |
+| Asset | `testsrc2` 1280x720@30 + 440 Hz sine, H.264/AAC, 660 s |
 
-命令：
+Commands:
 
 ```bash
 cargo build --release --features mpv-preview --example mpv_long_playback
 ./target/release/examples/mpv_long_playback /tmp/rossresscut-oq9-660s.mp4 600 1280 720
 ```
 
-探针使用与预览相同的 exported-frame 后端，每秒采样 `time-pos`、`audio-pts`、
-`frame-drop-count`、`mistimed-frame-count`、`decoder-frame-drop-count` 与 RSS，
-每 5 ms 取走并丢弃一帧，模拟 UI 的纹理消费节奏。
+The probe uses the same exported-frame backend as the preview and samples `time-pos`, `audio-pts`,
+`frame-drop-count`, `mistimed-frame-count`, `decoder-frame-drop-count` and RSS every second,
+taking and discarding one frame every 5 ms to simulate the UI's texture consumption cadence.
 
-结果（600 s 连续播放，599 个采样）：
+Results (600 s of continuous playback, 599 samples):
 
-| 指标 | 值 |
+| Metric | Value |
 | --- | --- |
-| `delta = time-pos - audio-pts` 均值 | +22.0 ms |
+| `delta = time-pos - audio-pts` mean | +22.0 ms |
 | delta min / max | +2.1 / +49.0 ms |
 | delta stddev | 10.4 ms |
-| delta 首三分 / 末三分 | +22.6 / +25.0 ms |
-| 首尾三分漂移 | **+2.3 ms / 10 分钟** |
+| delta first third / last third | +22.6 / +25.0 ms |
+| first-to-last third drift | **+2.3 ms / 10 minutes** |
 | frame drops / mistimed / decoder drops | 0 / 0 / 0 |
-| RSS 起始 / 峰值 / 结束 | 151 / 151 / 151 MiB |
+| RSS start / peak / end | 151 / 151 / 151 MiB |
 
-判定：
+Verdict:
 
-- delta 在 10 分钟内围绕 +22 ms 波动，没有持续增长；首尾三分差异 2.3 ms，
-  远小于一帧（33 ms），不构成累积漂移。
-- 固定 +22 ms 是 `time-pos` 与 `audio-pts` 的语义差（播放时钟相对正在播放的
-  音频帧），不是音画不同步。
-- 未出现丢帧、误时帧或解码器丢帧。
-- RSS 全程持平，没有随播放时长增长。
-- 短跑复核（20 s）确认 `current-ao=pipewire`、`audio-out-params` 为
-  48000 Hz 单声道 `floatp`，不是 null 输出。
+- Delta fluctuates around +22 ms within 10 minutes and does not keep growing; the difference between the first and
+  last third is 2.3 ms, far less than one frame (33 ms), so it does not constitute cumulative drift.
+- The constant +22 ms is the semantic difference between `time-pos` and `audio-pts` (the playback clock relative to
+  the audio frame currently being played), not A/V desync.
+- No frame drops, mistimed frames or decoder frame drops occurred.
+- RSS stays flat for the whole run and does not grow with playback duration.
+- A short-run check (20 s) confirms `current-ao=pipewire` and `audio-out-params` as
+  48000 Hz mono `floatp`, not a null output.
 
-限制：
+Limitations:
 
-- 探针不做 wgpu 导入与 egui 呈现；它验证的是 mpv 内部 A/V 同步与导出帧消费，
-  不覆盖 UI 纹理池，后者由 `tests/mpv_gpu_regression.rs` 覆盖。
-- 只测了一台机器、一种分辨率与编码（720p30 H.264/AAC）。4K/VFR 的长时间行为
-  仍未覆盖。
-- 10 分钟不是小时级；内存与漂移趋势只能说明该时长内稳定。
+- The probe does no wgpu import and no egui presentation; it verifies mpv's internal A/V sync and exported frame
+  consumption, and does not cover the UI texture pool, which is covered by `tests/mpv_gpu_regression.rs`.
+- Only one machine, one resolution and one encoding (720p30 H.264/AAC) were measured. Long-run behavior at 4K/VFR
+  is still not covered.
+- 10 minutes is not hour-scale; the memory and drift trends only show stability within that duration.
 
-## 对 Phase 4B 的输入
+## Input for Phase 4B
 
-> 2026-10-24：Phase 4B 已完成决策，见 `docs/decisions/0009-preview-decode-zero-copy.md`。
-> 选择进程内 `libav*` + 平台 hwaccel + `media/platform` zero-copy；本节保留为决策前的调查记录。
+> 2026-10-24: Phase 4B has been decided, see `docs/decisions/0009-preview-decode-zero-copy.md`.
+> It chose in-process `libav*` + platform hwaccel + `media/platform` zero-copy; this section is kept as the
+> investigation record from before the decision.
 
-决策必须回答：在「外部 FFmpeg 进程」约束下，如何避免每帧同步下载 4K 帧。
+The decision must answer: under the "external FFmpeg process" constraint, how can the synchronous download of 4K
+frames be avoided.
 
-候选方向（未选择）：
+Candidate directions (not chosen):
 
-1. **egui + wgpu，软件解码预览**：当前 A 路径已达 29.8 fps / delta ≈ 0，代价是 CPU。
-2. **egui + 独立 video renderer**：仍受外部进程管道限制，除非渲染器直接消费 GPU 帧。
-3. **libmpv**：可保持 GPU 帧，但需要 FFI / `unsafe`，与 `AGENTS.md` 当前禁令冲突。
-4. **代理文件 / 降低预览分辨率**：不解决下载固定开销（测试 6）。
-5. **修改 `AGENTS.md` 允许 libmpv 或特定 FFI**：属于架构与安全约束变更，必须单独决策并写 ADR。
+1. **egui + wgpu, software-decoded preview**: the current A path already reaches 29.8 fps / delta ≈ 0, at the cost of CPU.
+2. **egui + a separate video renderer**: still limited by the external process pipe, unless the renderer consumes GPU
+   frames directly.
+3. **libmpv**: can keep GPU frames, but requires FFI / `unsafe`, which conflicts with the current prohibition in `AGENTS.md`.
+4. **Proxy files / lower preview resolution**: does not solve the fixed download overhead (test 6).
+5. **Amend `AGENTS.md` to allow libmpv or specific FFI**: this is an architecture and safety constraint change, and must
+   be decided separately with an ADR.
 
-Phase 4B 不得在缺少上述取舍讨论的情况下直接开始实现。
+Phase 4B must not start implementation directly without the tradeoff discussion above.

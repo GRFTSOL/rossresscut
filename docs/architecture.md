@@ -1,6 +1,6 @@
-# 项目架构
+# Project Architecture
 
-## 一、总体架构
+## 1. Overall Architecture
 
 ```text
                     ┌──────────────┐
@@ -9,33 +9,30 @@
                            │
                            ▼
                     ┌──────────────┐
-                    │    应用层     │
                     │ Application  │
                     └──────┬───────┘
                            │
                            ▼
                     ┌──────────────┐
-                    │    领域层     │
                     │    Domain    │
                     └──────┬───────┘
                            │
                            ▼
                     ┌──────────────┐
-                    │    媒体层     │
                     │    Media     │
                     └──────┬───────┘
                            │
                            ▼
                     ┌──────────────┐
-                    │ FFmpeg/FFprobe│
+                    │FFmpeg/FFprobe│
                     └──────────────┘
 ```
 
 ---
 
-## 依赖方向
+## Dependency Direction
 
-允许：
+Allowed:
 
 ```text
 UI
@@ -46,52 +43,52 @@ Domain
  ↓
 Media
  ↓
-FFmpeg / FFprobe（外部进程：导出 / 探测）
-libmpv（进程内：预览解码与音频）
+FFmpeg / FFprobe (external process: export / probe)
+libmpv (in-process: preview decoding and audio)
 ```
 
-禁止：
+Forbidden:
 
 - Domain → UI / egui
 - Media → UI / egui
-- FFmpeg 输出 → UI
-- `media::preview` 的 GPU 纹理 / FFI 句柄类型 → Domain / Application / UI
+- FFmpeg output → UI
+- `media::preview` GPU texture / FFI handle types → Domain / Application / UI
 
-核心媒体逻辑必须能在不启动图形界面的情况下测试。
+Core media logic must be testable without starting a GUI.
 
 ---
 
-# 二、UI 层
+# 2. UI Layer
 
-负责：
+Responsible for:
 
-- 绘制界面
-- 接收用户输入
-- 显示应用状态
-- 显示任务进度
-- 显示错误
-- 通过 XDG desktop portal 触发 Linux 文件选择
-- 显示只读媒体标题、播放信息与设置窗口
-- 选择界面语言并读取本地化字符串（`ui/i18n.rs`）
+- drawing the interface
+- receiving user input
+- displaying application state
+- displaying job progress
+- displaying errors
+- triggering Linux file selection through the XDG desktop portal
+- displaying the read-only media title, playback info, and settings window
+- selecting the UI language and reading localized strings (`ui/i18n.rs`)
 
-不负责：
+Not responsible for:
 
-- FFmpeg 命令
+- FFmpeg commands
 - FFprobe JSON
-- 媒体解析
-- Segment 业务逻辑
-- 文件导出
-- 自建文件选择器
-- 计算播放位置
-- 构造 FFprobe 关键帧查询
+- media parsing
+- Segment business logic
+- file export
+- a self-built file picker
+- computing the playback position
+- constructing FFprobe keyframe queries
 
 ---
 
-# 三、应用层
+# 3. Application Layer
 
-应用层表达用户操作。
+The application layer expresses user operations.
 
-例如：
+For example:
 
 ```text
 OpenMedia
@@ -115,17 +112,17 @@ ExportSegments
 CancelExport
 ```
 
-UI 发送命令。
+The UI sends commands.
 
-应用层处理命令。
+The application layer handles commands.
 
 ---
 
-# 四、领域层
+# 4. Domain Layer
 
-领域层表达媒体编辑本身。
+The domain layer expresses media editing itself.
 
-主要模型：
+Main models:
 
 ```text
 MediaFile
@@ -144,80 +141,89 @@ Timeline
 ExportRequest
 ```
 
-领域层不得依赖 egui。
+The domain layer must not depend on egui.
 
 ---
 
-# 五、媒体层
+# 5. Media Layer
 
-负责：
+Responsible for:
 
 - FFprobe
 - FFmpeg
-- 进程管理
-- 外部进程统一构造（`media/process.rs`，Windows 上设置 `CREATE_NO_WINDOW`）；
-  同一入口记录本会话执行过的 FFmpeg 命令与用途（导出 / 场景 / 波形 / 字幕 /
-  合并 / 探测），预览解码不记录，历史上限 500 条。
-- 参数构建
-- 进度解析
-- 取消
-- 媒体操作
-- 预览视频帧解码（`mpv-engine` / libmpv，进程内，GPU-resident）
-- 预览音频输出（libmpv `ao`）
-- 关键帧索引（外部 ffprobe 读取 packet flags，不输入解码）
-- 文本字幕提取、裁剪与重新 mux（`media/subtitle.rs`）
-- 场景检测（`media/scene.rs`，外部 FFmpeg 流式输出进度与切点时间戳）
-- 导出结果合并（`media/export/merge.rs`，只 remux）
+- process management
+- unified construction of external processes (`media/process.rs`, sets
+  `CREATE_NO_WINDOW` on Windows); the same entry point records the FFmpeg
+  commands and purposes executed in this session (export / scene / waveform /
+  subtitle / merge / probe), preview decoding is not recorded, and history is
+  capped at 500 entries.
+- argument construction
+- progress parsing
+- cancellation
+- media operations
+- preview video frame decoding (`mpv-engine` / libmpv, in-process, GPU-resident)
+- preview audio output (libmpv `ao`)
+- keyframe indexing (external ffprobe reads packet flags, without decoding)
+- text subtitle extraction, clipping, and re-muxing (`media/subtitle.rs`)
+- scene detection (`media/scene.rs`, external FFmpeg streams progress and
+  cut-point timestamps)
+- merging export results (`media/export/merge.rs`, remux only)
 
-Phase 4B 修订后的预览边界（ADR 0010）：
+Preview boundary after the Phase 4B revision (ADR 0010):
 
 ```text
-libmpv（mpv-engine，进程内）
+libmpv (mpv-engine, in-process)
         ↓ decoded frame (export)
       wgpu external texture
         ↓
-media::preview 导入为 wgpu::Texture
+media::preview imported as wgpu::Texture
 ```
 
-导出、裁切、合并与探测仍使用外部 FFmpeg / FFprobe 进程。
-详见 `docs/decisions/0010-preview-via-mpv-engine.md`。
+Export, cutting, merging, and probing still use external FFmpeg / FFprobe
+processes. See `docs/decisions/0010-preview-via-mpv-engine.md` for details.
 
-导出流程：
+Export flow:
 
 ```text
-单 Segment
+Single Segment
   → ffmpeg -ss before -i -t -map 0 -c copy -avoid_negative_ts make_zero
 
-多 Segment
-  → 每个 Segment 切片到临时文件
-  → ffprobe 读取每个临时片段的实际时长
-  → 用实际时长生成章节（起点回退到关键帧，请求时长不等于实际时长）
+Multiple Segments
+  → cut each Segment into a temporary file
+  → ffprobe reads the actual duration of each temporary part
+  → generate chapters from the actual durations (the start falls back to a keyframe, the requested duration differs from the actual duration)
   → ffmpeg -f concat -safe 0 -i list -map 0 -c copy
-  → 临时目录在成功 / 失败 / 取消后删除
+  → delete the temporary directory on success / failure / cancellation
 ```
 
-切片不使用 `-shortest`：源文件带有附加图片或字幕流时，它会让 FFmpeg
-在最短流处提前结束，产物可能近乎为空。各段长度由 `-t` 控制。
+Cutting does not use `-shortest`: when the source has attached pictures or
+subtitle streams, it makes FFmpeg stop early at the shortest stream, and the
+output may be nearly empty. The length of each part is controlled by `-t`.
 
-多段顺序只来自 `Timeline.segments()`；不得按 `start` 重新排序。
-拼接语义与已知间隙见 `docs/investigations/multi-segment-concat.md`。
+The multi-segment order comes only from `Timeline.segments()`; it must not be
+re-sorted by `start`. Concatenation semantics and known gaps are described in
+`docs/investigations/multi-segment-concat.md`.
 
-媒体层不得依赖 egui。
+The media layer must not depend on egui.
 
-`cpal` 只在外部 FFmpeg 回退路径负责音频 PCM 输出；主路径音频由 libmpv `ao` 输出。
+`cpal` is responsible for audio PCM output only on the external FFmpeg fallback
+path; on the main path audio is output by libmpv `ao`.
 
-预览解码设备选择：默认 `hwdec=auto-safe`；设置页可切换为 `auto`、`d3d11va`、
-`nvdec`、`cuda`、`vaapi` 或 `no`（仅列出当前平台可用的项），
-也可以切换到外部 FFmpeg 后端。Linux 上 mpv 提供 `--vaapi-device`（默认
-`/dev/dri/renderD128`），项目不枚举 GPU。Windows 上预览走 `vo=libmpv` + OpenGL，
-所以默认 `auto-safe` 实测解析为 `nvdec`（`d3d11va` 要求 `gpu-context=d3d11`，
-该路径不可用）；切换到 `d3d11va` 时以 mpv 报告的结果为准。
+Preview decode device selection: the default is `hwdec=auto-safe`; the settings
+page can switch it to `auto`, `d3d11va`, `nvdec`, `cuda`, `vaapi`, or `no` (only
+the entries available on the current platform are listed), and can also switch
+to the external FFmpeg backend. On Linux mpv exposes `--vaapi-device` (default
+`/dev/dri/renderD128`); the project does not enumerate GPUs. On Windows the
+preview uses `vo=libmpv` + OpenGL, so in practice the default `auto-safe`
+resolves to `nvdec` (`d3d11va` requires `gpu-context=d3d11`, which is
+unavailable on that path); when switching to `d3d11va`, the result reported by
+mpv is authoritative.
 
 ---
 
-# 六、任务系统
+# 6. Job System
 
-长时间运行的工作：
+Long-running work:
 
 ```text
 FFprobe
@@ -231,9 +237,9 @@ Silence Detection
 Batch / Merge export
 ```
 
-不得在 egui update 中同步执行。
+Must not run synchronously inside the egui update.
 
-基本模型：
+Basic model:
 
 ```text
 UI
@@ -257,13 +263,13 @@ UI
 
 ---
 
-# 七、状态
+# 7. State
 
-## 领域状态
+## Domain State
 
-表达真正的媒体编辑结果。
+Expresses the actual media editing result.
 
-例如：
+For example:
 
 ```text
 Timeline
@@ -271,11 +277,11 @@ Segment
 StreamSelection
 ```
 
-## 应用状态
+## Application State
 
-表达程序运行状态。
+Expresses the program's running state.
 
-例如：
+For example:
 
 ```text
 PlaybackState
@@ -289,13 +295,15 @@ ExportStatus
 Error
 ```
 
-播放位置属于应用状态。有音频时由音频输出设备消费的样本帧推进；无音频或音频设备不可用时才使用墙钟。
+Playback position belongs to application state. With audio, it advances by the
+sample frames consumed by the audio output device; the wall clock is used only
+when there is no audio or the audio device is unavailable.
 
-## UI 状态
+## UI State
 
-表达界面交互状态。
+Expresses the interface interaction state.
 
-例如：
+For example:
 
 ```text
 HoveredSegment
@@ -303,15 +311,15 @@ DraggingHandle
 OpenPanel
 ```
 
-三种状态必须保持清晰边界。
+The three kinds of state must keep clear boundaries.
 
 ---
 
-# 八、核心原则
+# 8. Core Principles
 
-## 1. Domain 不认识 UI
+## 1. Domain Does Not Know the UI
 
-Domain 不允许：
+Domain is not allowed to:
 
 ```rust
 use egui::*;
@@ -319,9 +327,9 @@ use egui::*;
 
 ---
 
-## 2. Media 不认识 UI
+## 2. Media Does Not Know the UI
 
-Media 不允许依赖：
+Media must not depend on:
 
 ```text
 egui
@@ -331,293 +339,266 @@ UI widget
 
 ---
 
-## 3. UI 不直接执行 FFmpeg
+## 3. The UI Does Not Execute FFmpeg Directly
 
-所有媒体操作必须经过应用层。
-
----
-
-# 九、功能实现顺序
-
-新增功能优先遵循：
-
-```text
-需求
- ↓
-领域模型
- ↓
-应用命令
- ↓
-媒体操作
- ↓
-测试
- ↓
-UI
-```
-
-不要从：
-
-```text
-egui widget
-```
-
-开始设计整个功能。
+All media operations must go through the application layer.
 
 ---
 
-# 十、架构决策
+# 9. Feature Implementation Order
 
-重大架构决策记录在：
-
-```text
-docs/decisions/
-```
-
-格式：
-
-```text
-编号-标题.md
-```
-
-例如：
-
-```text
-0001-foundation-stack.md
-0002-ffprobe-integration.md
-0003-preview-backend.md
-0004-audio-clock-and-desktop-integration.md
-0005-hardware-decoding.md
-0006-ui-localization-and-settings.md
-0007-segment-editing-basics.md
-0008-segment-timeline-semantics.md
-0009-preview-decode-zero-copy.md
-0010-preview-via-mpv-engine.md
-0011-waveform-in-timeline.md
-0012-project-and-settings-format.md
-0013-smart-cut.md
-0014-smart-cut-encoding-defaults.md
-0015-project-license.md
-```
+New features should preferably follow: requirement → domain model → application command → media
+operation → test → UI. Do not start by designing an entire feature from an egui widget.
 
 ---
 
-# 十一、项目、批处理与派生数据
+# 10. Architecture Decisions
 
-## 项目文件（ADR 0012）
-
-- `.rrc` 保存源路径、有序 Segment、`SegmentId` / `next_id` 与章节标题。
-- 不保存媒体元数据、关键帧、波形与场景检测结果；打开项目时重新 probe。
-- 源文件缺失时只读加载，允许重新绑定后才能导出。
-- 自动保存按编辑后 2 秒节流；关闭媒体 / 窗口 / 应用时若有未保存修改则询问。
-
-## 批处理与合并
-
-- 批处理对队列中的每个文件套用当前 Timeline 的 enabled Segment。
-- 每个文件在后台 probe + 导出，输出到源文件旁或导出目录；UI 不阻塞。
-- 合并先导出各文件，再用 concat demuxer remux；不重新编码，不生成章节。
-- 批处理与合并都不替换当前打开的媒体。
-
-## 派生数据
-
-- 波形、关键帧索引、场景检测与静音检测结果都是派生数据，不进入项目文件。
-- 波形：外部 FFmpeg 解码为 `s16le`，折叠为 min/max peak（ADR 0011）。
-- 场景检测：外部 FFmpeg `showinfo@progress,select=gt(scene,N),showinfo@cuts`，
-  流式解析解码进度与切点时间戳；进度只在百分比增加时上报。
-- 静音切分：复用波形 peak，在静音区间中点分割。
-- 所有派生数据都在后台线程生成，UI 只轮询结果。
+Major architecture decisions are recorded in `docs/decisions/`, named
+`number-title.md` (for example `0010-preview-via-mpv-engine.md`).
 
 ---
 
-# 十二、当前代码结构（Phase 7）
+# 11. Projects, Batch Processing, and Derived Data
+
+## Project Files (ADR 0012)
+
+- `.rrc` stores the source path, ordered Segments, `SegmentId` / `next_id`, and
+  chapter titles.
+- Media metadata, keyframes, waveforms, and scene detection results are not
+  saved; the file is probed again when the project is opened.
+- When the source file is missing, the project loads read-only; export is
+  allowed only after rebinding.
+- Autosave is throttled to 2 seconds after an edit; when closing the media /
+  window / application, it asks if there are unsaved changes.
+
+## Batch Processing and Merging
+
+- Batch processing applies the enabled Segments of the current Timeline to
+  each file in the queue.
+- Each file is probed and exported in the background, written next to the
+  source file or into the export directory; the UI does not block.
+- Merging first exports each file, then remuxes them with the concat demuxer;
+  no re-encoding, no chapter generation.
+- Neither batch processing nor merging replaces the currently open media.
+
+## Derived Data
+
+- Waveforms, keyframe indices, and scene and silence detection results are all
+  derived data and do not go into the project file.
+- Waveform: external FFmpeg decodes to `s16le`, folded into min/max peaks
+  (ADR 0011).
+- Scene detection: external FFmpeg
+  `showinfo@progress,select=gt(scene,N),showinfo@cuts`, parsing decode progress
+  and cut-point timestamps as a stream; progress is reported only when the
+  percentage increases.
+- Silence cutting: reuses waveform peaks and splits at the midpoint of each
+  silent interval.
+- All derived data is generated on background threads; the UI only polls the
+  results.
+
+---
+
+# 12. Current Code Structure
 
 ```text
 src/
-├── main.rs                    二进制入口：日志初始化、启动窗口、错误退出
-├── lib.rs                     库根：导出各层模块
-├── error.rs                   应用错误类型（上下文 + source 链）
-├── logging.rs                 进程级日志初始化
+├── main.rs                    binary entry point: logging initialization, window startup, error exit
+├── lib.rs                     library root: exports the layer modules
+├── error.rs                   application error type (context + source chain)
+├── logging.rs                 process-level logging initialization
 ├── application/
-│   ├── mod.rs                 Application 状态、OpenState、查询与导出入口
-│   ├── media.rs               打开媒体、FFprobe 轮询、关键帧后台索引
+│   ├── mod.rs                 Application state, OpenState, query and export entry points
+│   ├── media.rs               opening media, FFprobe polling, background keyframe indexing
 │   ├── transport.rs           play / pause / seek / scrub / step / skip
-│   ├── editing.rs             标记、选择、剪贴板、撤销/重做、Segment 命令
-│   ├── playback.rs            Playback 播放引擎：时钟、解码、mpv 后端与回退
-│   ├── waveform.rs            波形后台提取、`has_audio` 与 `poll_waveform`
-│   ├── export.rs              ExportStatus、ExportJob（单段 / 多段）、导出命令错误
-│   ├── batch.rs               批处理队列：对多个文件逐个 probe + 导出
-│   ├── chapters.rs            导出章节标题（按 `SegmentId` 保存）
-│   ├── project.rs             `.rrc` 项目文件保存 / 恢复与源文件重新绑定
-│   ├── scene.rs               后台场景扫描、状态与结果写入 Timeline
-│   └── silence.rs             静音检测自动建片段（复用波形 peak）
+│   ├── editing.rs             markers, selection, clipboard, undo/redo, Segment commands
+│   ├── playback.rs            Playback engine: clock, decoding, mpv backend and fallback
+│   ├── waveform.rs            background waveform extraction, `has_audio` and `poll_waveform`
+│   ├── export.rs              ExportStatus, ExportJob (single / multi segment), export command errors
+│   ├── batch.rs               batch queue: probe + export multiple files one by one
+│   ├── chapters.rs            export chapter titles (saved by `SegmentId`)
+│   ├── project.rs             `.rrc` project file save / restore and source rebinding
+│   ├── scene.rs               background scene scan, state, and writing results into Timeline
+│   └── silence.rs             automatic segment creation from silence detection (reuses waveform peaks)
 ├── domain/
-│   ├── media.rs               MediaFile / MediaFormat / 流 / Chapter / KeyframeIndex
-│   ├── segment.rs             Segment / SegmentId / Timeline（有序 EDL、稳定身份）
+│   ├── media.rs               MediaFile / MediaFormat / streams / Chapter / KeyframeIndex
+│   ├── segment.rs             Segment / SegmentId / Timeline (ordered EDL, stable identity)
 │   ├── time.rs                TimeBase / Timestamp / Duration / FrameRate
-│   ├── waveform.rs            Peak / Waveform（音频包络与按列聚合）
-│   └── silence.rs             静音区间检测与中点切分规则
+│   ├── waveform.rs            Peak / Waveform (audio envelope and per-column aggregation)
+│   └── silence.rs             silent interval detection and midpoint split rules
 ├── media/
 │   ├── export/
-│   │   ├── mod.rs             ExportProcess、进度/结束事件、取消与回收
-│   │   ├── command.rs         ExportRequest 与 FFmpeg stream-copy 参数
-│   │   ├── concat.rs          多段切片、concat demuxer、临时目录生命周期
-│   │   ├── progress.rs        `-progress pipe:1` 解析
-│   │   ├── chapters.rs        `ffmetadata` 章节文件生成
-│   │   ├── merge.rs           已导出文件的 concat 合并（只 remux）
-│   │   ├── planning.rs        多段智能裁切规划与 seek 落点探测
-│   │   └── smart_cut.rs       智能裁切分段：编码头/尾 + 无损中段
+│   │   ├── mod.rs             ExportProcess, progress/finish events, cancellation and reclamation
+│   │   ├── command.rs         ExportRequest and FFmpeg stream-copy arguments
+│   │   ├── concat.rs          multi-segment cutting, concat demuxer, temporary directory lifecycle
+│   │   ├── progress.rs        `-progress pipe:1` parsing
+│   │   ├── chapters.rs        `ffmetadata` chapter file generation
+│   │   ├── merge.rs           concat merge of already-exported files (remux only)
+│   │   ├── planning.rs        multi-segment smart cut planning and seek landing point probing
+│   │   └── smart_cut.rs       smart cut segmentation: encoded head/tail + lossless middle
 │   ├── ffprobe/
-│   │   ├── mod.rs             FFprobe 进程封装与 ProbeError
-│   │   ├── raw.rs             私有 serde 结构（JSON 边界）
-│   │   ├── parse.rs           JSON → 领域模型
-│   │   ├── keyframes.rs       packet flags → 关键帧索引
-│   │   ├── packets.rs         包首/末时间戳边界（拼接对齐）
-│   │   └── seek.rs            探测输入 seek 的实际落点
+│   │   ├── mod.rs             FFprobe process wrapper and ProbeError
+│   │   ├── raw.rs             private serde structs (JSON boundary)
+│   │   ├── parse.rs           JSON → domain model
+│   │   ├── keyframes.rs       packet flags → keyframe index
+│   │   ├── packets.rs         packet first/last timestamp boundaries (concat alignment)
+│   │   └── seek.rs            probing the actual landing point of an input seek
 │   ├── preview/
-│   │   ├── mod.rs             PreviewError、共享进程清理与参数格式化
-│   │   ├── mpv.rs             mpv-engine 封装：生命周期、export、帧获取、命令与事件
-│   │   ├── video.rs           回退路径：ffmpeg RGB 帧解码、硬件解码选择、背压、seek
-│   │   └── audio.rs           回退路径：ffmpeg PCM 解码 + cpal 输出
-│   ├── scene.rs               外部 FFmpeg 场景检测（只解析时间戳）
-│   ├── process.rs             外部进程构造（Windows 上 `CREATE_NO_WINDOW`）
-│   ├── subtitle.rs            文本字幕提取、裁剪与重新 mux
-│   └── waveform.rs            ffmpeg → s16le，折叠为 min/max peak
+│   │   ├── mod.rs             PreviewError, shared process cleanup, and argument formatting
+│   │   ├── mpv.rs             mpv-engine wrapper: lifecycle, export, frame retrieval, commands and events
+│   │   ├── video.rs           fallback path: ffmpeg RGB frame decoding, hardware decode selection, backpressure, seek
+│   │   └── audio.rs           fallback path: ffmpeg PCM decoding + cpal output
+│   ├── scene.rs               external FFmpeg scene detection (parses timestamps only)
+│   ├── process.rs             external process construction (`CREATE_NO_WINDOW` on Windows)
+│   ├── subtitle.rs            text subtitle extraction, clipping, and re-muxing
+│   └── waveform.rs            ffmpeg → s16le, folded into min/max peaks
 └── ui/
-    ├── mod.rs                 RossresscutApp 状态、窗口入口与 `eframe::App`
-    ├── actions.rs             快捷键分发、片段输入框同步
-    ├── timeline.rs            时间轴与波形绘制、播放控件、滚轮与坐标换算
-    ├── preview.rs             预览绘制、texture 上传、渲染诊断
-    ├── panels.rs              右侧播放信息、片段与章节面板、导出状态行
-    ├── menu.rs                菜单栏
-    ├── windows.rs             设置、关于、导出面板、批处理、对话框窗口
-    ├── settings.rs            UiSettings、config.toml 读写、主题检测与 `apply_theme`
-    ├── shortcuts.rs           ShortcutAction、Shortcut 解析与默认绑定
-    ├── fonts.rs               字体发现与字体选择器
-    ├── dialogs.rs             XDG 门户文件/目录选择与关闭确认
-    ├── diagnostics.rs         测试用诊断驱动（预览尺寸、自动播放等）
-    ├── icons.rs               Nerd Font 图标字形常量
-    └── i18n.rs                语言枚举、强类型字符串与嵌入资源
+    ├── mod.rs                 RossresscutApp state, window entry point and `eframe::App`
+    ├── actions.rs             shortcut dispatch, segment input field synchronization
+    ├── timeline.rs            timeline and waveform drawing, playback controls, wheel and coordinate conversion
+    ├── preview.rs             preview drawing, texture upload, render diagnostics
+    ├── panels.rs              right-side playback info, segment and chapter panels, export status row
+    ├── menu.rs                menu bar
+    ├── titlebar.rs            custom-drawn title bar for the undecorated window (Windows)
+    ├── windows.rs             settings, about, export panel, batch, and dialog windows
+    ├── settings.rs            UiSettings, config.toml read/write, theme detection and `apply_theme`
+    ├── shortcuts.rs           ShortcutAction, Shortcut parsing and default bindings
+    ├── fonts.rs               font discovery and font picker
+    ├── dialogs.rs             XDG portal file/directory selection and close confirmation
+    ├── diagnostics.rs         test diagnostics driver (preview size, autoplay, etc.)
+    ├── icons.rs               Nerd Font icon glyph constants
+    └── i18n.rs                language enum, strongly typed strings, and embedded resources
 ```
 
+```text
 locales/
 ├── en.json
 └── zh-CN.json
 ```
 
-依赖方向：
+Dependency direction:
 
-- `main` → `ui`、`logging`、`error`
-- `ui` → `eframe`、`application`、`domain`（只读领域状态）；Linux 下 → `rfd`
-- `ui::i18n` → 嵌入的 locale JSON、`serde`
-- `application` → `domain`、`media::ffprobe`、`media::preview`、`error`
-- `media` → `domain`、外部 FFmpeg / FFprobe 进程、`mpv-engine`（预览主路径）、
-  `cpal`（仅在外部 FFmpeg 回退路径）
-- `domain` → 标准库、`serde`；不得依赖 `eframe`、`egui`、FFprobe JSON
-- `ffprobe::raw` 只在 `ffprobe` 模块内部可见
+- `main` → `ui`, `logging`, `error`
+- `ui` → `eframe`, `application`, `domain` (read-only domain state); on Linux → `rfd`
+- `ui::i18n` → embedded locale JSON, `serde`
+- `application` → `domain`, `media::ffprobe`, `media::preview`, `error`
+- `media` → `domain`, external FFmpeg / FFprobe processes, `mpv-engine` (main
+  preview path), `cpal` (external FFmpeg fallback path only)
+- `domain` → standard library, `serde`; must not depend on `eframe`, `egui`, or
+  FFprobe JSON
+- `ffprobe::raw` is only visible inside the `ffprobe` module
 
-打开媒体流程：
+Opening media flow:
 
 ```text
-UI Open（Linux: rfd xdg-portal，后台线程） / 命令行参数
+UI Open (Linux: rfd xdg-portal, background thread) / command-line argument
         ↓
 Application::open_media
         ↓
-后台线程 → ffprobe::probe
+background thread → ffprobe::probe
         ↓
 raw JSON → parse → MediaFile
         ↓
-Application::update（非阻塞）
+Application::update (non-blocking)
         ↓
-后台线程 → ffprobe probe_keyframes（packet flags）
+background thread → ffprobe probe_keyframes (packet flags)
         ↓
 KeyframeIndex
         ↓
-播放状态机 / UI 渲染
+playback state machine / UI rendering
 ```
 
-预览与时钟流程：
+Preview and clock flow:
 
 ```text
 UI Play / Pause / Seek / ScrubPreview / StepKeyframe / Skip
         ↓
 Application
-        ├── MpvPreview（libmpv：解码 + ao + seek）
-        │   └── export → wgpu texture（GPU-resident，无 CPU 回读）
-        └── 回退：PreviewVideo（ffmpeg → RGB24）
-                   + PreviewAudio（ffmpeg → PCM → cpal）
+        ├── MpvPreview (libmpv: decoding + ao + seek)
+        │   └── export → wgpu texture (GPU-resident, no CPU read-back)
+        └── fallback: PreviewVideo (ffmpeg → RGB24)
+                      + PreviewAudio (ffmpeg → PCM → cpal)
         ↓
-mpv time-pos（跟随音频输出）= 播放位置
+mpv time-pos (follows audio output) = playback position
         ↓
-Application::update（非阻塞轮询事件与位置）
+Application::update (non-blocking polling of events and position)
         ↓
-UI texture / 时间轴 / 播放信息 / 警告
+UI texture / timeline / playback info / warnings
 ```
 
-快速 scrub 流程：
+Fast scrub flow:
 
 ```text
-时间轴拖动
+timeline drag
         ↓
-暂停播放（记录拖动前是否在播放）
+pause playback (record whether it was playing before the drag)
         ↓
 Application::scrub → mpv hr-seek=no + seek
-        - 落点为前一个关键帧，约 80ms 限流
+        - lands on the previous keyframe, throttled to about 80ms
         ↓
-释放时间轴（使用指针最终位置）
+release the timeline (use the pointer's final position)
         ↓
-Application::seek → mpv hr-seek=yes + 精确 seek
+Application::seek → mpv hr-seek=yes + precise seek
         ↓
-如果拖动前正在播放，则 Application::play
+if it was playing before the drag, then Application::play
 ```
 
-快速 scrub 位置只用于视觉反馈，不用于编辑边界或导出。
+Fast scrub positions are used only for visual feedback, not for edit boundaries
+or export.
 
-egui 帧内不会执行 FFprobe、FFmpeg、mpv 命令或音频解码，也不会阻塞等待通道。
+No FFprobe, FFmpeg, mpv command, or audio decoding runs inside an egui frame,
+and channels are never blocked on.
 
-UI 布局：
+UI layout:
 
 ```text
-顶部：Windows 下自绘标题栏与菜单栏合一（高度 32 px）：
-     左侧菜单（File / Edit / Segments / Tools / View / Help），右侧只有最小化 / 最大化 / 关闭
-中央：视频预览（点击切换播放 / 暂停，滚轮按固定时长步进）
-右侧：可选的播放信息与批处理队列；下方 Segments / Chapters 两个 tab（默认 Segments）
-底部：时间轴单独一行；下方是播放控制（11 个控制按钮 + 音量按钮 + 片段起止时间输入框）；
-     最底行左侧当前文件名，中间时间码，右侧 Export 按钮
+Top: self-drawn title bar merged with the menu bar on Windows (32 px high):
+     menus on the left (File / Edit / Segments / Tools / View / Help), only minimize / maximize / close on the right
+Center: video preview (click to toggle play / pause, wheel steps by a fixed duration)
+Right: optional playback info and batch queue; below them two tabs, Segments / Chapters (Segments by default)
+Bottom: the timeline on its own row; below it are the playback controls (11 control buttons + volume button + segment start/end time fields);
+     the bottom row shows the current file name on the left, the timecode in the middle, and the Export button on the right
 ```
 
-设置窗口：
+Settings window:
 
 ```text
-独立操作系统窗口（第二个 egui viewport），内部按 tab 切换：
-常规：主题、界面语言、字体与缩放、项目保存等
-预览：解码后端（libmpv 各 hwdec / FFmpeg）、滚轮跳转步长
-导出：输出目录、章节开关、智能裁切与码率
-快捷键：两列成对排列，点击录制，录制时 Backspace 清空
+A separate OS window (a second egui viewport), switching tabs internally:
+General: theme, UI language, font and zoom, project saving, etc.
+Preview: decode backend (the libmpv hwdec options / FFmpeg), wheel seek step
+Export: export directory, chapters toggle, smart cut and bit rate
+Shortcuts: two columns in pairs, click to record, Backspace clears while recording
 ```
 
-主题、语言与 egui memory（流折叠状态、窗口尺寸）通过 eframe storage 持久化。
+Theme, language, and egui memory (stream collapse state, window size) are
+persisted through eframe storage.
 
-时间轴与预览区滚轮步进：
+Wheel stepping in the timeline and preview area:
 
 ```text
-上滚 → 后退一个步长
-下滚 → 前进一个步长
-mod + 滚轮 → 每格 ±10 秒
+Wheel up → go back one step
+Wheel down → go forward one step
+mod + wheel → ±10 seconds per notch
 ```
 
-步长在“设置 → 预览 → 跳转步长”中配置，单位为秒，保存到
-`config.toml` 的 `[preview] seek_step_micros`（整数微秒）。默认
-`6_666_667` 微秒，即 30 fps 下的 200 帧。作为参考，LosslessCut 的滚轮行为在
-`src/renderer/src/timelineWheel.ts`（master，查阅于 2026-11-07）：无修饰键时
-`amount = delta * wheelSensitivity * 0.2` 秒，`wheelSensitivity` 默认 `0.2`
-（`src/main/configStore.ts`）；Windows 一格滚轮约 100 px，因此约 4 秒。
-Shift+滚轮为关键帧步进，Alt+滚轮为单帧步进。本项目的默认步长比 LosslessCut
-的默认值更大。控制按钮中的上一秒 / 下一秒对应 `previous_second` /
-`next_second`（默认 Alt+Left / Alt+Right）；单帧步进只有快捷键 `previous_frame` /
-`next_frame`（默认 `,` / `.`），没有按钮。
+The step is configured under “Settings → Preview → Seek step”, in seconds, and
+saved to `[preview] seek_step_micros` in `config.toml` (integer microseconds).
+The default is `6_666_667` microseconds, i.e. 200 frames at 30 fps. For
+reference, LosslessCut's wheel behavior is in
+`src/renderer/src/timelineWheel.ts` (master, consulted 2026-11-07): with no
+modifier, `amount = delta * wheelSensitivity * 0.2` seconds, with
+`wheelSensitivity` defaulting to `0.2` (`src/main/configStore.ts`); one wheel
+notch on Windows is about 100 px, hence about 4 seconds. Shift+wheel steps by
+keyframes, Alt+wheel steps by single frames. This project's default step is
+larger than LosslessCut's default. The previous second / next second control
+buttons correspond to `previous_second` / `next_second` (default Alt+Left /
+Alt+Right); single-frame stepping only has the `previous_frame` /
+`next_frame` shortcuts (default `,` / `.`), with no buttons.
 
-滚轮交互占用了 command / ctrl 修饰键，因此 egui 的 ctrl+滚轮界面缩放被显式关闭（`InputOptions::zoom_modifier = Modifiers::NONE`）。
+Wheel interaction consumes the command / ctrl modifier, so egui's ctrl+wheel UI
+zoom is explicitly disabled (`InputOptions::zoom_modifier = Modifiers::NONE`).
 
-Segment 编辑流程：
+Segment editing flow:
 
 ```text
 UI: Alt+I / Alt+O / Alt+B / Delete / Buttons
@@ -626,20 +607,23 @@ Application: set_in_point / set_out_point / add_segment
         ↓
 Domain: Timeline::push(start, end) → SegmentId
         ↓
-UI: Segment 列表（输出顺序）、时间轴颜色、入点 / 出点标记
+UI: Segment list (output order), timeline colors, in point / out point markers
         ↓
-Delete / 修改边界 / 启停 / 排序 / 上移 / 下移 → Application 命令（按 SegmentId）
+Delete / change boundaries / toggle / sort / move up / move down → Application commands (by SegmentId)
 ```
 
-- 入点 / 出点与选中的 `SegmentId` 属于应用状态，不属于 `Timeline`。
-- `Timeline.segments` 的顺序就是输出顺序；新 Segment 追加到末尾，按起点排序是显式命令。
-- 允许 Segment 重叠，不自动拒绝、裁剪或合并。
-- 时间轴点击 / 拖动仍使用 `Seek` / `ScrubPreview`；点击同时按 SegmentId 选中点击位置所在的 Segment。
-- 详见 `docs/decisions/0008-segment-timeline-semantics.md`。
+- The in point / out point and the selected `SegmentId` belong to application
+  state, not to `Timeline`.
+- The order of `Timeline.segments` is the output order; new Segments are
+  appended to the end, and sorting by start time is an explicit command.
+- Segments may overlap; they are not automatically rejected, clipped, or merged.
+- Timeline clicks / drags still use `Seek` / `ScrubPreview`; a click also
+  selects, by SegmentId, the Segment at the clicked position.
+- See `docs/decisions/0008-segment-timeline-semantics.md` for details.
 
-布局方向记录在 `GOALS.md`。
+The layout direction is recorded in `GOALS.md`.
 
-验证入口：
+Validation entry point:
 
 ```bash
 ./scripts/check.sh

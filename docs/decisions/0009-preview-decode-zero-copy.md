@@ -1,135 +1,136 @@
-# 0009 预览解码与渲染：进程内 libav* + 平台 hwaccel + zero-copy
+# 0009 Preview Decoding and Rendering: In-Process libav* + Platform hwaccel + zero-copy
 
-- 状态：已被 `0010-preview-via-mpv-engine.md` 取代（2026-10-26）；本文保留为 Phase 4B 历史记录
-- 日期：2026-10-24
-- 阶段：Phase 4B
-- 取代：`0003-preview-backend.md` 的视频帧解码部分；`0005-hardware-decoding.md` 的预览解码实现部分
+- Status: Superseded by `0010-preview-via-mpv-engine.md` (2026-10-26); retained as Phase 4B history
+- Date: 2026-10-24
+- Phase: Phase 4B
+- Supersedes: the video frame decoding part of `0003-preview-backend.md`; the preview decoding implementation part of `0005-hardware-decoding.md`
 
-> 2026-10-26 更新：spike 证明 libmpv + 隐藏 GL context + DMA-BUF/IOSurface/
-> shared D3D11 导出 + wgpu 导入可以满足 zero-copy，且比自建 libav* + 三平台
-> surface 导入的工程量更小。预览后端改为方案 F，见 `0010-preview-via-mpv-engine.md`。
-> 本文的方案 D 不再实施；`media/platform` 也不再为预览路径所需。
+> Update 2026-10-26: the spike proved that libmpv + a hidden GL context + DMA-BUF / IOSurface /
+> shared D3D11 export + wgpu import satisfies zero-copy, with less engineering effort than
+> a hand-built libav* + three-platform surface import. The preview backend switches to Option F;
+> see `0010-preview-via-mpv-engine.md`. Option D in this document is no longer implemented, and
+> `media/platform` is no longer needed for the preview path.
 
-## 背景
+## Context
 
-Phase 4A 用真实 4K HEVC 素材测得：
+Phase 4A measured with real 4K HEVC footage:
 
-| 路径 | 吞吐 |
+| Path | Throughput |
 | --- | --- |
-| VAAPI 全程留在 GPU（`-hwaccel_output_format vaapi`） | 86 fps / 1.44x |
-| VAAPI + `hwdownload`（即使已缩到 960x540） | 20 fps / 0.33x |
-| VAAPI 默认下载 + CPU scale + rgb24 | 10.3 fps / 0.34x |
-| 软件解码 + CPU scale + rgb24 | 45 fps / 1.51x |
+| VAAPI stays on the GPU throughout (`-hwaccel_output_format vaapi`) | 86 fps / 1.44x |
+| VAAPI + `hwdownload` (even after downscaling to 960x540) | 20 fps / 0.33x |
+| VAAPI default download + CPU scale + rgb24 | 10.3 fps / 0.34x |
+| Software decode + CPU scale + rgb24 | 45 fps / 1.51x |
 
-application 层测量：软件解码 29.8 fps、`delta ≈ 0`；VAAPI 10.4 fps、40 秒内 `delta` 增长 11.6 秒。纹理上传 0.01 ms，egui `ui_fps` 40+。
+Application-layer measurements: software decode 29.8 fps, `delta ≈ 0`; VAAPI 10.4 fps, `delta` growing by 11.6 seconds within 40 seconds. Texture upload 0.01 ms, egui `ui_fps` 40+.
 
-结论：瓶颈是 GPU → CPU 下载，不是 egui / wgpu / frame scheduling。外部 FFmpeg 进程通过 `pipe:1` 只能传系统内存，结构上无法交付 GPU-resident 帧。
+Conclusion: the bottleneck is the GPU → CPU download, not egui / wgpu / frame scheduling. An external FFmpeg process can only transfer system memory through `pipe:1` and structurally cannot deliver GPU-resident frames.
 
-产品负责人决定：预览必须支持 4K 硬件解码并保持 GPU-resident 到呈现；导出继续使用外部 FFmpeg stream copy。
+Product owner decision: preview must support 4K hardware decoding and stay GPU-resident through to presentation; export continues to use external FFmpeg stream copy.
 
-## 已知约束
+## Known constraints
 
-- 导出、裁切、合并与探测仍由外部 FFmpeg / FFprobe 进程负责。
-- 平台媒体 API（VAAPI / D3D11VA / VideoToolbox）只解码，不解析容器。
-- `wgpu 30.0.1` 导入外部纹理只有 `unsafe fn`：`create_texture_from_hal`、各后端 `texture_from_raw`。
-- 当前没有成熟的 crate 提供「DMA-BUF / IOSurface / D3D11 shared handle → wgpu」的 safe 封装。
-- 项目原有的 `unsafe_code = "forbid"` 无法与 zero-copy 同时成立。
+- Export, trimming, merging, and probing remain the responsibility of external FFmpeg / FFprobe processes.
+- Platform media APIs (VAAPI / D3D11VA / VideoToolbox) only decode; they do not parse containers.
+- `wgpu 30.0.1` exposes import of external textures only as `unsafe fn`: `create_texture_from_hal` and each backend's `texture_from_raw`.
+- No mature crate currently provides a safe wrapper around "DMA-BUF / IOSurface / D3D11 shared handle → wgpu".
+- The project's existing `unsafe_code = "forbid"` cannot hold simultaneously with zero-copy.
 
-## 候选方案
+## Candidate options
 
-### 方案 A：外部 FFmpeg 软件解码预览
+### Option A: External FFmpeg software decode preview
 
-优点：不引入 FFI，当前已能 29.8 fps。
-缺点：4K HEVC CPU 占用高；不满足硬件解码与 zero-copy 要求。
+Pros: no FFI introduced, and it already reaches 29.8 fps.
+Cons: high CPU usage on 4K HEVC; does not meet the hardware decoding and zero-copy requirements.
 
-### 方案 B：libmpv 软件 render
+### Option B: libmpv software render
 
-优点：实测 67.9 fps（4K HEVC），保留 wgpu；测量程序见 `docs/investigations/mpv-sw-render-probe.c`。
-缺点：需要引入 libmpv 与 FFI；仍有一次 GPU → CPU 回读；与自建 media engine 方向不符。
+Pros: measured 67.9 fps (4K HEVC), keeps wgpu; the measurement program is in `docs/investigations/mpv-sw-render-probe.c`.
+Cons: requires introducing libmpv and FFI; still has one GPU → CPU readback; inconsistent with the direction of a self-built media engine.
 
-### 方案 C：libmpv OpenGL render + eframe glow
+### Option C: libmpv OpenGL render + eframe glow
 
-优点：可保持 GPU 帧。
-缺点：需要切换渲染栈；egui 与 libmpv 的 GL 状态共享复杂；跨平台仅 OpenGL。
+Pros: can keep GPU frames.
+Cons: requires switching the rendering stack; sharing GL state between egui and libmpv is complex; only OpenGL across platforms.
 
-### 方案 D：进程内 libav* + 平台 hwaccel + zero-copy
+### Option D: In-process libav* + platform hwaccel + zero-copy
 
-优点：统一容器与 codec；zero-copy；不依赖播放器运行时。
-缺点：引入 FFI；三平台 surface 导入分别实现；与现有外部进程预览实现不兼容。
+Pros: unified container and codec; zero-copy; does not depend on a player runtime.
+Cons: introduces FFI; surface import implemented separately per platform; incompatible with the existing external-process preview implementation.
 
-### 方案 E：完全自写 demux + 平台媒体 API
+### Option E: Fully hand-written demux + platform media API
 
-优点：不依赖 libav*。
-缺点：需要实现 MP4 / MKV / TS 等容器解析，工程量接近独立项目。
+Pros: does not depend on libav*.
+Cons: requires implementing container parsing for MP4 / MKV / TS and more, which is close to an independent project in effort.
 
-## 决策
+## Decision
 
-选择：
+Choice:
 
-> 方案 D：进程内 `libavformat` + `libavcodec` hwaccel + 平台 surface 导入 wgpu，zero-copy。
+> Option D: in-process `libavformat` + `libavcodec` hwaccel + platform surface import into wgpu, zero-copy.
 
-具体边界：
+Concrete boundaries:
 
 ```text
-libavformat              demux（进程内，FFI 依赖）
+libavformat              demux (in-process, FFI dependency)
         ↓
-libavcodec + hwaccel     VAAPI / D3D11VA / VideoToolbox（进程内，FFI 依赖）
+libavcodec + hwaccel     VAAPI / D3D11VA / VideoToolbox (in-process, FFI dependency)
         ↓
 hardware surface         DMA-BUF / D3D11 shared handle / IOSurface
         ↓
-media/platform           surface → wgpu texture（项目内唯一允许 unsafe 的 crate）
+media/platform           surface → wgpu texture (the only crate in the project allowed to use unsafe)
         ↓
 wgpu external texture
         ↓
 egui
 ```
 
-规则：
+Rules:
 
-1. 新增 `media/platform` crate，是整个 workspace **唯一**允许 `unsafe_code` 的 crate。
-2. 其余 crate 保持 `unsafe_code = "forbid"`，包括 `domain`、`application`、`ui`、`media::ffprobe`。
-3. `media/platform` 对外只暴露 safe API；类型不得泄漏裸指针、`wgpu-hal` 句柄或 FFI 类型。
-4. 每个 `unsafe` 块必须带 `// SAFETY:` 注释，说明成立的不变量。
-5. 导出、裁切、合并与探测继续使用外部 FFmpeg / FFprobe 进程；不得改为链接 libav*。
-6. 硬件解码失败必须回退到进程内软件解码，并让回退在 UI 可见。
-7. 预览音频也使用进程内 `libavcodec` 解码，PCM 仍由 `cpal` 输出；音频样本时钟继续作为主时钟。
-8. 预览解码路径不得影响 Segment、时间轴或导出语义。
+1. Add a `media/platform` crate; it is the **only** crate in the entire workspace allowed to use `unsafe_code`.
+2. All other crates keep `unsafe_code = "forbid"`, including `domain`, `application`, `ui`, and `media::ffprobe`.
+3. `media/platform` exposes only safe APIs externally; types must not leak raw pointers, `wgpu-hal` handles, or FFI types.
+4. Every `unsafe` block must carry a `// SAFETY:` comment stating the invariants that hold.
+5. Export, trimming, merging, and probing continue to use external FFmpeg / FFprobe processes; they must not switch to linking libav*.
+6. Hardware decoding failure must fall back to in-process software decoding, and the fallback must be visible in the UI.
+7. Preview audio is also decoded in-process with `libavcodec`, PCM is still output through `cpal`, and the audio sample clock remains the master clock.
+8. The preview decoding path must not affect Segment, timeline, or export semantics.
 
-## 决策理由
+## Rationale
 
-1. Phase 4A 已证明外部进程管线无法利用 GPU-resident 帧，任何参数调优都无法消除同步下载。
-2. zero-copy 是产品负责人明确要求的目标。
-3. `libavformat` 避免自写容器解析；`libavcodec` 的 hwaccel 统一三个平台，比分别直连平台媒体 API 的工程量低。
-4. unsafe 隔离在单一 crate，其余代码保持 `forbid`，与 FilmCraft 的 `crates/platform` 模式一致。
-5. 导出仍走外部 FFmpeg，保留无损 stream copy 语义与现有进程管理。
+1. Phase 4A already proved that an external process pipeline cannot exploit GPU-resident frames, and no parameter tuning can eliminate the synchronous download.
+2. zero-copy is an explicit goal set by the product owner.
+3. `libavformat` avoids hand-written container parsing; the hwaccel in `libavcodec` unifies the three platforms with less effort than talking to each platform media API directly.
+4. unsafe is isolated in a single crate while the rest of the code stays `forbid`, consistent with FilmCraft's `crates/platform` pattern.
+5. Export still goes through external FFmpeg, preserving lossless stream copy semantics and the existing process management.
 
-## 后果
+## Consequences
 
-### 正面
+### Positive
 
-- 4K HEVC 预览可保持 GPU-resident，避免每帧同步下载。
-- 容器与 codec 覆盖沿用 FFmpeg。
-- unsafe 边界明确，可通过 crate 级 lint 与代码审查约束。
+- 4K HEVC preview can stay GPU-resident, avoiding a synchronous download per frame.
+- Container and codec coverage follows FFmpeg.
+- The unsafe boundary is explicit and can be constrained by crate-level lints and code review.
 
-### 负面
+### Negative
 
-- 运行时依赖系统 `libavformat` / `libavcodec` / `libavutil` 等动态库。
-- 三套平台 surface 导入代码：Linux DMA-BUF / Vulkan、Windows D3D11 shared handle / DX12、macOS IOSurface / Metal。
-- wgpu 后端必须与平台句柄匹配，`wgpu-hal` 版本与 `wgpu` 强耦合。
-- 现有 `media/preview/video.rs` 与 `audio.rs` 的外部 FFmpeg 路径将被替换，相关测试需要重写。
-- 音频解码与视频解码同时迁入进程内，`cpal` 只保留 PCM 输出职责。
-- 本机只能验证 Linux / VAAPI；Windows 与 macOS 路径在本阶段无法实测。
+- Runtime dependency on the system's `libavformat` / `libavcodec` / `libavutil` and other dynamic libraries.
+- Three sets of platform surface import code: Linux DMA-BUF / Vulkan, Windows D3D11 shared handle / DX12, macOS IOSurface / Metal.
+- The wgpu backend must match the platform handle, and the `wgpu-hal` version is tightly coupled to `wgpu`.
+- The existing external FFmpeg paths in `media/preview/video.rs` and `audio.rs` will be replaced, and the related tests need to be rewritten.
+- Audio decoding and video decoding both move in-process, leaving `cpal` with only PCM output.
+- Only Linux / VAAPI can be verified on this machine; the Windows and macOS paths cannot be tested at this stage.
 
-### 后续影响
+### Follow-up effects
 
-- `AGENTS.md` 的 unsafe/FFI 与「FFmpeg 必须直接执行」条款需要按本 ADR 收窄。
-- 需要新增测试：
-  - 硬件路径与软件路径输出一致性（容差内）。
-  - hwaccel 初始化失败时的回退。
-  - zero-copy 纹理的生命周期与帧释放。
-  - A/V 时钟仍以音频为主时钟。
-- 播放信息中的 Decoder 必须报告实际生效的后端，而不是请求值。
+- The unsafe/FFI and "FFmpeg must be executed directly" clauses in `AGENTS.md` need to be narrowed in line with this ADR.
+- New tests are needed:
+  - Output consistency between the hardware path and the software path (within tolerance).
+  - Fallback when hwaccel initialization fails.
+  - Lifetime of zero-copy textures and frame release.
+  - The A/V clock still uses audio as the master clock.
+- The Decoder in playback info must report the backend actually in effect, not the requested value.
 
-## 未解决问题
+## Open questions
 
-见 `docs/open-questions.md`。该文档记录本 ADR 未解决的实现问题、处理时机与解除条件。
+See `docs/open-questions.md`. That document records the implementation questions this ADR leaves open, when they should be handled, and the conditions for closing them.

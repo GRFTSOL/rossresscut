@@ -1,144 +1,144 @@
-# 0008 Segment / Timeline 核心语义：有序 EDL 与稳定身份
+# 0008 Segment / Timeline Core Semantics: Ordered EDL and Stable Identity
 
-- 状态：已接受
-- 日期：2026-10-24
-- 阶段：Phase 3
-- 补充 / 取代：`0007-segment-editing-basics.md` 中关于顺序、重叠与身份的部分
+- Status: Accepted
+- Date: 2026-10-24
+- Phase: Phase 3
+- Amends / supersedes: the parts of `0007-segment-editing-basics.md` about order, overlap, and identity
 
-## 背景
+## Context
 
-`0007` 已经确定 Segment 是半开源时间区间、入点 / 出点属于应用层，但把“是否允许重叠”留成了孤立问题。实际实现因此处于混合状态：
+`0007` already established that a Segment is a half-open time interval and that in / out points belong to the application layer, but it left "whether overlap is allowed" as an isolated question. The actual implementation therefore ended up in a mixed state:
 
-- `Timeline::insert` 按起点插入；
-- `replace` 又不保证顺序；
-- 允许重叠；
-- 选中的是 `Option<usize>`；
-- 没有任何字段定义输出顺序；
-- 导出尚未实现。
+- `Timeline::insert` inserts by start point;
+- `replace` does not guarantee order;
+- overlap is allowed;
+- the selection is an `Option<usize>`;
+- no field defines the output order;
+- export is not implemented yet.
 
-Phase 4 的单 Segment 导出不依赖顺序，但 Phase 5 的多 Segment 合并必须知道“哪个 Segment 先输出”。如果继续把重叠当成独立布尔值，会在导出阶段被迫重新定义模型。
+Phase 4's single-Segment export does not depend on order, but Phase 5's multi-Segment merge must know "which Segment is output first". If overlap keeps being treated as an isolated boolean, the model will be forced to be redefined at the export stage.
 
-## 已知事实
+## Known facts
 
-- `Segment` 当前为 `{start, end, enabled}`，半开区间，整数微秒。
-- `Timeline` 当前为 `{source, segments}`，`insert` 按起点排序。
-- 选中状态是 `Application` 中的 `Option<usize>`；排序会清空选中。
-- 现有测试覆盖创建、修改、排序、启停、删除，但不覆盖顺序、重叠或导出。
-- `AGENTS.md` 的 `ExportJob.segments` 是一个列表，没有单独的输出顺序字段。
-- `GOALS.md` 要求单 Segment / 多 Segment 导出、Segment 排序、启停。
-- `PLANS.md`：Phase 4 单段导出；Phase 5 多段合并。
-- LosslessCut 的参考实现中：
-  - Segment 有稳定 `segId`；
-  - 列表可拖拽重排，列表顺序就是输出顺序；
-  - “按起点排序”是工具操作，不是不变量；
-  - 重叠是可能出现的状态，并提供检测 / 合并工具，而不是静默处理。
+- `Segment` is currently `{start, end, enabled}`, a half-open interval in integer microseconds.
+- `Timeline` is currently `{source, segments}`, and `insert` sorts by start point.
+- Selection state is `Option<usize>` in `Application`; sorting clears the selection.
+- Existing tests cover create, modify, sort, enable-disable, and delete, but not order, overlap, or export.
+- `ExportJob.segments` in `AGENTS.md` is a list with no separate output order field.
+- `GOALS.md` requires single-Segment / multi-Segment export, Segment sorting, and enable-disable.
+- `PLANS.md`: Phase 4 is single-segment export; Phase 5 is multi-segment merge.
+- In the LosslessCut reference implementation:
+  - Segments have a stable `segId`;
+  - the list can be reordered by dragging, and list order is output order;
+  - "sort by start" is a tool action, not an invariant;
+  - overlap is a possible state, and the tool provides detection / merge operations rather than handling it silently.
 
-## 决策
+## Decision
 
-选择：
+Choice:
 
-> `Timeline.segments` 是有稳定输出顺序的 EDL。
+> `Timeline.segments` is an EDL with a stable output order.
 
-具体规则：
+Concrete rules:
 
-1. **顺序即输出顺序**
-   - `Vec<Segment>` 的顺序是用户可观察、可修改的输出顺序。
-   - 新 Segment 追加到末尾，不按起点自动插入。
+1. **Order is output order**
+   - The order of `Vec<Segment>` is the user-observable, user-modifiable output order.
+   - New Segments are appended at the end, not inserted automatically by start point.
 
-2. **Segment 表示源时间**
-   - `Segment.start` / `end` 始终表示单一 source 上的源时间区间。
-   - 使用 0-based 媒体时间轴（整数微秒），不是容器绝对 PTS。
-   - 输出时间不存储在 Segment 中，而是导出时按 enabled Segment 顺序累加得到的派生值。
+2. **A Segment represents source time**
+   - `Segment.start` / `end` always represent a source time interval on the single source.
+   - It uses the 0-based media timeline (integer microseconds), not absolute container PTS.
+   - Output time is not stored in the Segment; it is a derived value accumulated at export time in enabled Segment order.
 
 3. **enabled**
-   - enabled 的 Segment 按 `segments` 顺序参与导出。
-   - disabled Segment 保留在列表中，但不参与输出。
+   - Enabled Segments participate in export in `segments` order.
+   - Disabled Segments remain in the list but do not participate in output.
 
-4. **重叠**
-   - Segment 之间允许重叠。
-   - 不自动拒绝、裁剪或合并。
-   - 重叠意味着同一段源时间可以在输出序列中出现多次。
+4. **Overlap**
+   - Overlap between Segments is allowed.
+   - No automatic rejection, trimming, or merging.
+   - Overlap means the same stretch of source time may appear multiple times in the output sequence.
 
-5. **排序**
-   - 按起点排序是显式的用户操作，不是 Domain 不变量。
-   - 排序使用稳定排序；SegmentId 与选中状态不变。
+5. **Sorting**
+   - Sorting by start is an explicit user action, not a Domain invariant.
+   - Sorting is stable; SegmentIds and selection state do not change.
 
-6. **稳定身份**
-   - `Segment` 必须具有 `SegmentId`。
-   - `SegmentId` 由 `Timeline` 分配，在同一个 Timeline 内不复用。
-   - 选择、编辑、删除、重排都按 `SegmentId`，不依赖 Vec index。
-   - `SegmentId` 是项目内部的轻量身份，不使用 UUID / 数据库。
-   - ID 计数器在 `reset` / `clear` 时重置；项目持久化需要同时保存 ID 与计数器。
+6. **Stable identity**
+   - `Segment` must have a `SegmentId`.
+   - `SegmentId` is allocated by `Timeline` and is not reused within the same Timeline.
+   - Selection, editing, deletion, and reordering all go by `SegmentId`, never by Vec index.
+   - `SegmentId` is a lightweight project-internal identity; no UUID / database.
+   - The ID counter resets on `reset` / `clear`; project persistence must save both the IDs and the counter.
 
-7. **Domain 支持重排**
-   - Domain 提供 `move_to`、`move_up`、`move_down`。
-   - 当前 UI 可以没有拖拽重排，但 Domain 不能假设列表永远按源时间排序。
+7. **Domain supports reordering**
+   - Domain provides `move_to`, `move_up`, and `move_down`.
+   - The current UI may lack drag-and-drop reordering, but Domain must not assume the list is always sorted by source time.
 
-8. **导出**
-   - Phase 5 多 Segment 导出默认按照 Timeline 顺序解释 enabled Segment。
-   - 单 Segment 导出（Phase 4）只取该 Segment 的源时间区间。
-   - 本决策不规定未来 smart cut、re-encode 或重叠优化策略。
+8. **Export**
+   - Phase 5 multi-Segment export interprets enabled Segments in Timeline order by default.
+   - Single-Segment export (Phase 4) takes only that Segment's source time interval.
+   - This decision does not dictate future smart cut, re-encode, or overlap optimization strategies.
 
-## 为什么重叠不是独立决策
+## Why overlap is not an independent decision
 
-重叠策略是“`segments` 是否具有输出顺序”的因变量，而不是一个可以单独选择的布尔值：
+Overlap strategy is a dependent variable of "does `segments` have an output order", not a boolean that can be chosen on its own:
 
-- 如果 `segments` 是有序 EDL，重叠表示同一源区间在输出序列中出现多次，是合法输入；
-- 如果 `segments` 是源时间集合，重叠是集合冲突，必须拒绝或合并；
-- 如果采用两层模型，重叠属于源区间集合，输出顺序属于另一层。
+- If `segments` is an ordered EDL, overlap means the same source range appears multiple times in the output sequence, which is valid input;
+- If `segments` is a set of source time ranges, overlap is a set conflict and must be rejected or merged;
+- If a two-layer model is used, overlap belongs to the source range set and output order belongs to another layer.
 
-先决定“顺序是否即输出顺序”，重叠策略就自然确定。
+Decide "is order the output order" first, and the overlap strategy follows naturally.
 
-## 拒绝的方案
+## Rejected options
 
-### 源时间区间集合
+### A set of source time ranges
 
-始终按起点排序，重叠必须拒绝或合并。
+Always sorted by start point, with overlap either rejected or merged.
 
-拒绝原因：
+Reasons for rejection:
 
-- “Segment 排序”无法表达用户自定义输出顺序。
-- 与 LosslessCut 的 EDL 行为不一致。
-- 会迫使创建/修改时静默裁剪或拒绝用户边界。
+- "Segment sorting" cannot express a user-defined output order.
+- Inconsistent with LosslessCut's EDL behavior.
+- It would force silent trimming or rejection of user boundaries on create / modify.
 
-### 两层模型
+### Two-layer model
 
-`Timeline` 保存源区间集合，另建 `ExportSequence` 保存输出顺序。
+`Timeline` stores a set of source ranges, and a separate `ExportSequence` stores the output order.
 
-拒绝原因：
+Reasons for rejection:
 
-- 当前只有单一源媒体；
-- 会提前引入两套同步模型；
-- 有序 `Vec<Segment>` 已足够表达输出顺序。
+- There is currently only a single source media;
+- It would introduce two synchronization models prematurely;
+- An ordered `Vec<Segment>` already expresses output order sufficiently.
 
-## 后果
+## Consequences
 
-### 正面
+### Positive
 
-- Phase 5 导出顺序明确：enabled Segment 按 Timeline 顺序。
-- 重叠成为合法语义，不需要在创建时静默修改用户输入。
-- 稳定 ID 让选择、删除、排序、未来拖拽与撤销都不再依赖索引。
-- 颜色、选中状态、编辑目标都可以随 Segment 身份保持稳定。
+- Phase 5 export order is clear: enabled Segments in Timeline order.
+- Overlap becomes valid semantics, with no silent modification of user input at creation time.
+- Stable IDs let selection, deletion, sorting, future dragging, and undo all stop relying on indices.
+- Color, selection state, and edit targets can stay stable with Segment identity.
 
-### 负面
+### Negative
 
-- `Timeline::insert` 的自动排序行为必须移除，改为追加。
-- UI 列表顺序不再等于源时间顺序；时间轴仍按源时间绘制，二者需要分别理解。
-- 重叠 Segment 在时间轴上会互相覆盖；列表顺序承担输出语义。
-- Phase 5 必须定义/测试重叠 Segment 的输出结果（同一源区间重复出现）。
-- 项目持久化需要保存 `SegmentId` 与 `next_id`。
+- The automatic sorting behavior of `Timeline::insert` must be removed in favor of appending.
+- UI list order no longer equals source time order; the timeline is still drawn by source time, and the two must be understood separately.
+- Overlapping Segments cover each other on the timeline; list order carries the output semantics.
+- Phase 5 must define / test the output result of overlapping Segments (the same source range appearing repeatedly).
+- Project persistence must save `SegmentId` and `next_id`.
 
-### 后续影响
+### Follow-up effects
 
-- Phase 4：`ExportJob` 使用单个 Segment，不受顺序影响。
-- Phase 5：导出遍历 enabled Segment；重叠段默认重复输出。
-- UI 可以后续增加拖拽重排，不需要改 Domain 语义。
-- 需要时再增加“重叠警告 / 合并”作为显式命令，不能静默处理。
+- Phase 4: `ExportJob` uses a single Segment and is unaffected by order.
+- Phase 5: export iterates enabled Segments; overlapping segments are output repeatedly by default.
+- The UI can add drag-and-drop reordering later without changing Domain semantics.
+- Overlap warnings / merging can be added later as explicit commands, never handled silently.
 
-## 未解决问题
+## Open questions
 
-- 是否显示重叠警告，以及是否提供显式“合并重叠 Segment”命令。
-- 拖拽重排 UI 的交互细节。
-- 项目持久化的 ID 格式与 `next_id` 保存方式。
-- source identity（路径 / size / mtime / hash）是否进入项目文件。
-- smart cut / 非关键帧切点 / 重编码策略，均为后续独立决策。
+- Whether to show an overlap warning, and whether to provide an explicit "merge overlapping Segments" command.
+- Interaction details of drag-and-drop reordering in the UI.
+- The ID format for project persistence and how `next_id` is saved.
+- Whether source identity (path / size / mtime / hash) goes into the project file.
+- smart cut / non-keyframe cut points / re-encode strategy are all separate follow-up decisions.

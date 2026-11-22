@@ -1,44 +1,48 @@
-# 媒体处理规则
+# Media processing rules
 
-本文件是媒体处理、FFprobe、媒体时间、Segment、无损编辑与导出的约束来源。数据模型见 `docs/media-model.md`，分层见 `docs/architecture.md`。
+This document is the source of constraints for media handling, FFprobe, media time, segments,
+lossless editing and export. See `docs/media-model.md` for the data model and
+`docs/architecture.md` for layering.
 
-## 1. FFmpeg 是媒体处理后端
+## 1. FFmpeg is the media processing backend
 
-不要重新实现：
+Do not reimplement:
 
-- 编解码器
-- 容器解析
-- 音视频编码
+- codecs
+- container parsing
+- audio/video encoding
 - mux
 - demux
-- 时间戳处理的完整替代实现
+- a complete alternative implementation of timestamp handling
 
-这些工作交给 FFmpeg。
+These jobs belong to FFmpeg.
 
-两种调用方式并存：
+Two invocation modes coexist:
 
-- 导出、裁切、合并与探测：外部 FFmpeg / FFprobe 进程。
-- 预览解码与音频输出：进程内 `mpv-engine`（libmpv）。
+- Export, cutting, merging and probing: external FFmpeg / FFprobe processes.
+- Preview decoding and audio output: in-process `mpv-engine` (libmpv).
 
-两者都必须使用 FFmpeg / libmpv 的能力，不允许自写编解码器或容器解析。预览的进程内边界与 zero-copy 规则见 `docs/decisions/0010-preview-via-mpv-engine.md`。
+Both must use the capabilities of FFmpeg / libmpv; writing your own codec or container parser is
+not allowed. The in-process preview boundary and zero-copy rules are in
+`docs/decisions/0010-preview-via-mpv-engine.md`.
 
-Rust 负责：
+Rust is responsible for:
 
-- 命令构造
-- 参数验证
-- 进程启动
-- 进程管理
-- 进度解析
-- 取消
-- 错误处理
-- 媒体模型
-- 应用层逻辑
+- command construction
+- argument validation
+- process spawning
+- process management
+- progress parsing
+- cancellation
+- error handling
+- the media model
+- application-layer logic
 
 ---
 
-## 2. FFmpeg 调用方式
+## 2. How FFmpeg is invoked
 
-导出、裁切、合并与探测必须直接执行外部程序：
+Export, cutting, merging and probing must execute the external program directly:
 
 ```text
 Command
@@ -46,7 +50,7 @@ Command
 FFmpeg executable
 ```
 
-避免：
+Avoid:
 
 ```text
 Shell
@@ -54,53 +58,72 @@ Shell
 FFmpeg
 ```
 
-不要通过 shell 拼接用户输入。
+Do not concatenate user input through a shell.
 
-文件路径、参数等必须作为独立进程参数传递。
+File paths, arguments and so on must be passed as separate process arguments.
 
-所有外部进程（`ffmpeg` / `ffprobe`）必须经 `media::process::command` 创建，
-不得直接调用 `std::process::Command::new`：它在 Windows 上设置
-`CREATE_NO_WINDOW`，避免 GUI 程序为每次探测、波形或解码弹出控制台窗口。
+All external processes (`ffmpeg` / `ffprobe`) must be created through
+`media::process::command`; `std::process::Command::new` must not be called directly: it sets
+`CREATE_NO_WINDOW` on Windows, which keeps a GUI program from popping up a console window for
+every probe, waveform or decode.
 
-预览解码与音频使用进程内 `mpv-engine`（libmpv），同样不得经由 shell，也不得在 egui 帧内同步调用。
+Preview decoding and audio use the in-process `mpv-engine` (libmpv), which likewise must not go
+through a shell, and must not be called synchronously inside an egui frame.
 
 ---
 
-## 3. 预览与音频
+## 3. Preview and audio
 
-- 预览主路径使用 `mpv-engine`（libmpv）解码、渲染与音频输出；外部 FFmpeg 预览保留为回退路径。
-- 播放位置使用 libmpv 的 `time-pos`，它跟随音频输出；无音轨时同一时钟仍然有效。
-- 音频由 libmpv 的 `ao` 输出；`cpal` 只在外部 FFmpeg 回退路径使用，不得与 mpv 同时输出音频。
-- 拖动时间轴使用 `hr-seek=no`（落在前一个关键帧）提供视觉反馈；松开时使用指针最终位置并切换 `hr-seek=yes` 做精确 seek。
-- `PlaybackRestart` 事件缺失时，精确 seek 以 `position()` 落点兜底，容差为 100 ms。
-- 快速 scrub 的位置是近似值，不得用于 Segment 边界、编辑结果或导出。
-- 硬件解码默认由 libmpv 选择（`hwdec=auto-safe`）；设备不可用时自动回退软件。
-  设置页的“预览后端”可以指定 `auto` / `d3d11va` / `nvdec` / `cuda` / `vaapi` /
-  `no`（只列出当前平台可用的项），或切换到外部 FFmpeg。
-  预览走 `vo=libmpv` + OpenGL 渲染 API，因此 Windows 上 `d3d11va` 通常不可用
-  （该 hwdec 要求 `gpu-context=d3d11`）。默认 `auto-safe` 在 NVIDIA 机器上实测
-  `hwdec-current` 为 `nvdec`，这是该渲染路径下的正常取值。
-- 预览导出尺寸按预览窗格大小与源宽高比等比适配，按物理像素下发，且不得超过源分辨率（不放大）。
-- 解码失败或 mpv 启动失败必须可见；播放信息显示 `mpv (<hwdec-current>)`，
-  例如 `mpv (vaapi)`、`mpv (vaapi-copy)`、`mpv (no)`；外部回退路径显示 `ffmpeg (...)`。
-- 预览区点击切换播放 / 暂停；滚轮按固定步长步进（上滚后退，下滚前进，默认 6.67 秒），按住 mod 键时每格步进 10 秒。步长可在“设置 → 预览 → 跳转步长”中调整。上一秒 / 下一秒按钮对应 `Alt+Left` / `Alt+Right`；单帧步进只有 `,` / `.` 快捷键，没有按钮。
-- 预览不保证帧精确；导出与编辑不得依赖预览时间。
-- 精确 seek 在目标纹理到达前由 `Application` 门控，不发布旧位置纹理；UI 不因此
-  清空预览，继续绘制上一张已发布纹理，避免每次 seek 都闪一次加载状态。
-  门控有超时回退避免画面卡死。快速 scrub 不受此门控影响。
+- The main preview path uses `mpv-engine` (libmpv) for decoding, rendering and audio output;
+  external FFmpeg preview remains as a fallback path.
+- Playback position uses libmpv's `time-pos`, which follows the audio output; the same clock is
+  still valid when there is no audio track.
+- Audio is output by libmpv's `ao`; `cpal` is only used on the external FFmpeg fallback path and
+  must not output audio at the same time as mpv.
+- Dragging the timeline uses `hr-seek=no` (landing on the previous keyframe) for visual feedback;
+  on release it uses the pointer's final position and switches to `hr-seek=yes` for an exact seek.
+- When the `PlaybackRestart` event is missing, the exact seek falls back to the landing point of
+  `position()`, with a tolerance of 100 ms.
+- The position during fast scrubbing is approximate and must not be used for segment boundaries,
+  edit results or export.
+- Hardware decoding is chosen by libmpv by default (`hwdec=auto-safe`); it automatically falls
+  back to software when the device is unavailable.
+  The “Preview backend” on the settings page can select `auto` / `d3d11va` / `nvdec` / `cuda` /
+  `vaapi` / `no` (only the items available on the current platform are listed), or switch to
+  external FFmpeg.
+  Preview uses `vo=libmpv` + the OpenGL render API, so `d3d11va` is usually unavailable on
+  Windows (that hwdec requires `gpu-context=d3d11`). The default `auto-safe` measured
+  `hwdec-current` as `nvdec` on NVIDIA machines, which is the normal value for this render path.
+- The preview export size is scaled proportionally to the preview pane size and the source aspect
+  ratio, is submitted in physical pixels, and must not exceed the source resolution (no upscaling).
+- Decode failures or mpv start failures must be visible; playback info shows
+  `mpv (<hwdec-current>)`, for example `mpv (vaapi)`, `mpv (vaapi-copy)`, `mpv (no)`; the external
+  fallback path shows `ffmpeg (...)`.
+- Clicking in the preview area toggles play / pause; the mouse wheel steps by a fixed step
+  (scrolling up goes back, scrolling down goes forward, 6.67 seconds by default), and while a mod
+  key is held each notch steps 10 seconds. The step can be adjusted in
+  “Settings → Preview → Seek step”. The previous second / next second buttons correspond to
+  `Alt+Left` / `Alt+Right`; single-frame stepping only has the `,` / `.` shortcuts and no buttons.
+- Preview is not guaranteed to be frame-accurate; export and editing must not depend on preview
+  time.
+- Until the target texture arrives, the exact seek is gated by `Application` and does not publish
+  the old position texture; the UI therefore does not clear the preview but keeps drawing the last
+  published texture, avoiding a loading state flash on every seek.
+  The gate has a timeout fallback so the picture does not freeze. Fast scrubbing is not affected
+  by this gate.
 
 ---
 
 ## FFprobe
 
-FFprobe 输出必须尽快转换成明确的 Rust 数据结构。
+FFprobe output must be converted into explicit Rust data structures as soon as possible.
 
-推荐：
+Recommended:
 
 ```text
 FFprobe JSON
     ↓
-解析器
+Parser
     ↓
 MediaFile
     ├── Format
@@ -110,58 +133,58 @@ MediaFile
     └── Chapter
 ```
 
-不要让 `serde_json::Value` 在整个项目中到处传播。
+Do not let `serde_json::Value` propagate everywhere across the project.
 
-FFprobe 的 JSON 只应该存在于媒体解析边界。
+FFprobe JSON should only exist at the media parsing boundary.
 
 ---
 
-## 时间系统
+## Time system
 
-媒体时间是本项目的核心数据。
+Media time is the core data of this project.
 
-### 禁止
+### Prohibited
 
-不要在核心逻辑中使用：
+Do not use:
 
 ```rust
 f32
 f64
 ```
 
-作为唯一的媒体时间表示。
+as the sole media time representation in core logic.
 
 ---
 
-### 原因
+### Rationale
 
-视频编辑涉及：
+Video editing involves:
 
-- 帧边界
-- 时间戳
+- frame boundaries
+- timestamps
 - PTS
 - DTS
 - time base
 - VFR
-- 音视频同步
-- 精确 seek
-- 容器时间戳
+- audio/video sync
+- exact seek
+- container timestamps
 
-浮点秒数容易产生精度和边界问题。
+Floating-point seconds easily cause precision and boundary problems.
 
 ---
 
-### 要求
+### Requirements
 
-项目必须定义明确的：
+The project must define explicit:
 
 - `Timestamp`
 - `Duration`
 - `TimeBase`
 
-并明确它们之间的转换规则。
+and explicit conversion rules between them.
 
-具体设计记录在：
+The concrete design is recorded in:
 
 ```text
 docs/media-model.md
@@ -171,9 +194,9 @@ docs/media-model.md
 
 ## Segment
 
-片段是用户编辑行为的核心数据。
+Segments are the core data of user editing behavior.
 
-概念模型：
+Conceptual model:
 
 ```text
 Segment
@@ -183,80 +206,91 @@ Segment
 └── enabled
 ```
 
-片段必须能够脱离 UI 单独存在。
+Segments must be able to exist independently of the UI.
 
-不能依赖：
+They must not rely on:
 
 ```text
-某个 egui widget
-某个拖动状态
-某个临时 UI 数值
+some egui widget
+some drag state
+some temporary UI value
 ```
 
-来表达最终编辑结果。
+to express the final edit result.
 
-当前实现将 `source` 绑定在 `Timeline` 上，而不是在每个 `Segment` 中重复保存。
-一次只编辑一个源文件；打开新文件会清空 Timeline。
+The current implementation binds `source` to `Timeline` rather than storing it repeatedly in each
+`Segment`. Only one source file is edited at a time; opening a new file clears the Timeline.
 
-`Timeline.segments` 是**有输出顺序的 EDL**：列表顺序就是导出顺序，按起点排序是显式操作，不是不变量。
-Segment 允许重叠，不自动拒绝、裁剪或合并。
-选择、编辑、删除与重排必须使用稳定 `SegmentId`，不得依赖 Vec index。
-详见 `docs/decisions/0008-segment-timeline-semantics.md`。
+`Timeline.segments` is an **EDL with output order**: list order is export order, and sorting by
+start time is an explicit operation, not an invariant.
+Segments may overlap; they are not automatically rejected, trimmed or merged.
+Selection, editing, deletion and reordering must use the stable `SegmentId` and must not rely on
+the Vec index.
+See `docs/decisions/0008-segment-timeline-semantics.md`.
 
 ---
 
-## 无损编辑
+## Lossless editing
 
-项目的核心功能是**无损媒体编辑**。
+The project's core feature is **lossless media editing**.
 
-默认情况下优先使用：
+By default, prefer:
 
 ```text
 stream copy
 ```
 
-而不是重新编码。
+over re-encoding.
 
-如果某项操作需要重新编码：
+If an operation requires re-encoding:
 
-- 必须明确知道原因。
-- 必须明确告诉用户。
-- 不允许静默切换到重新编码。
-- 不能把重新编码操作标记成无损操作。
-- 必须显式传递源的 `pix_fmt` 与 color range / space / transfer / primaries，
-  保留 10-bit/HDR 元数据；不得用预览的 8-bit 帧作为重编码输入。
-- HDR10 静态元数据（Mastering display / Content light level）只在解码帧的 side data
-  里可见，stream 层没有。smart cut 额外探测首帧，并以
-  `-x265-params master-display=...:max-cll=...` 显式交给 `libx265`，不依赖 FFmpeg
-  版本是否把输入帧的 side data 转发给编码器（ffmpeg 9.0 会转发，6.x 不会）。该探测
-  只在 transfer 为 PQ（`smpte2084`）或 HLG（`arib-std-b67`）时执行，失败不阻断打开。
-  其他编码器不传这组参数：`-x265-params` 是 x265 私有语法。
-- Smart cut 重编码固定使用性价比 preset（x264 `faster`、x265 `veryfast`、
-  SVT-AV1 preset 9）；码率默认取需编码片段的源平均码率 × 1.5，可在设置中
-  改为固定 kbps。决策见 `docs/decisions/0014-smart-cut-encoding-defaults.md`。
-- VFR 素材的编码段必须使用 `-fps_mode passthrough`，并按切点附近真实 PTS
-  计算局部帧时长；图形字幕保持 stream copy，由 concat 重定基。
+- You must know the reason explicitly.
+- You must explicitly tell the user.
+- Silent switching to re-encoding is not allowed.
+- A re-encoding operation must not be labeled as a lossless operation.
+- The source's `pix_fmt` and color range / space / transfer / primaries must be passed explicitly,
+  preserving 10-bit/HDR metadata; the preview's 8-bit frames must not be used as re-encoding input.
+- HDR10 static metadata (Mastering display / Content light level) is only visible in the side data
+  of decoded frames; the stream layer does not have it. Smart cut additionally probes the first
+  frame and passes it explicitly to `libx265` with
+  `-x265-params master-display=...:max-cll=...`, without relying on whether the FFmpeg version
+  forwards the input frame's side data to the encoder (ffmpeg 9.0 forwards it, 6.x does not). This
+  probe only runs when the transfer is PQ (`smpte2084`) or HLG (`arib-std-b67`), and a failure
+  does not block opening. Other encoders do not get this set of parameters: `-x265-params` is
+  x265-private syntax.
+- Smart cut re-encoding always uses cost-effective presets (x264 `faster`, x265 `veryfast`,
+  SVT-AV1 preset 9); the bitrate defaults to the source average bitrate of the segments that need
+  encoding × 1.5, and can be changed to a fixed kbps in settings. Decision in
+  `docs/decisions/0014-smart-cut-encoding-defaults.md`.
+- Encoded segments of VFR material must use `-fps_mode passthrough` and compute local frame
+  durations from the real PTS around the cut point; graphical subtitles keep stream copy and are
+  rebased by concat.
 
-### 降级原因必须具体
+### Degradation reasons must be specific
 
-降级原因必须是可展示给用户的具体文本，例如"切点不在关键帧上，smart cut 需要重新编码"，
-不能只用一个布尔标志表示"会发生重编码"。
+The degradation reason must be specific text that can be shown to the user, for example "the cut
+point is not on a keyframe, so smart cut needs to re-encode"; a single boolean flag meaning
+"re-encoding will happen" is not enough.
 
-判断是否降级的那一层负责给出原因文本；UI 只负责展示，不自行拼接或改写原因。
+The layer that decides whether to degrade is responsible for producing the reason text; the UI only
+displays it and does not assemble or rewrite the reason itself.
 
-多段 concat 不改写包时间戳。导出先在后台探测每段的首包 PTS 与末包结束时间，
-再按“本段结束 - 下一段首 PTS”写入 concat list 的 `duration`，这样下一段首帧
-紧跟上一段末帧，不会插入 1 帧间隙。音频包时间戳保持原样。
-不得把多段输出描述为帧精确：非关键帧起点仍会包含此前内容，非关键帧结束点
-在含 B 帧的素材上可能留下短暂画面停留。开启智能裁切后，起点与终点由编码段
-补齐，段尾不再有该停顿；但被重编码的头/尾必须明确告知用户。用户可见说明见
-README 与导出面板。
+Multi-segment concat does not rewrite packet timestamps. Export first probes, in the background,
+the first packet PTS and the last packet end time of each segment, and then writes `duration` into
+the concat list as “this segment's end - the next segment's first PTS”, so the next segment's first
+frame follows immediately after the previous segment's last frame without inserting a 1-frame gap.
+Audio packet timestamps stay as they are.
+Multi-segment output must not be described as frame-accurate: non-keyframe start points still
+include the preceding content, and non-keyframe end points may leave a brief frozen picture on
+material with B-frames. With smart cut enabled, the start and end are filled in by encoded
+segments and the segment tail no longer has that pause; but the re-encoded head/tail must be
+clearly communicated to the user. The user-facing notes are in the README and the export panel.
 
 ---
 
-## 导出
+## Export
 
-导出任务至少应该包含：
+An export job should contain at least:
 
 ```text
 ExportJob
@@ -270,47 +304,59 @@ ExportJob
 └── result
 ```
 
-导出必须支持：
+Export must support:
 
-- 进度
-- 错误
-- 取消
-- 输出文件检查
+- progress
+- errors
+- cancellation
+- output file checking
 
-导出未成功结束之前，不得将任务标记为成功。
+An export must not be marked successful before it has finished successfully.
 
-### 流选择
+### Stream selection
 
-- 流选择是可选的裁剪：未指定时保持源文件的全部流（`-map 0`）。
-- 一旦指定，就只映射列出的**绝对流索引**，不依赖相对顺序。
-- 流选择优先于字幕替换：用户没有勾选字幕轨时，即使已经裁剪出字幕，也不输出字幕轨。
-- 字幕内容始终是**裁剪后**的，流选择只决定该轨是否出现。
-- 各段拼接要求流布局一致；不一致时不得静默丢弃流来“凑”成功。
+- Stream selection is optional pruning: when unspecified, all streams of the source file are kept
+  (`-map 0`).
+- Once specified, only the listed **absolute stream indices** are mapped, without relying on
+  relative order.
+- Stream selection takes precedence over subtitle replacement: if the user did not check a
+  subtitle track, no subtitle track is output even when subtitles were already cut.
+- Subtitle content is always the **post-cut** content; stream selection only decides whether that
+  track appears.
+- Concatenating segments requires identical stream layouts; when they differ, streams must not be
+  silently dropped to "force" success.
 
 ---
 
-## 字幕
+## Subtitles
 
-- 只处理文本字幕（`srt` / `subrip` / `ass` / `ssa` / `mov_text` / `webvtt` / `text`），
-  取第一个文本字幕轨。
-- FFmpeg 的 `-ss` 输入 seek 不会重写字幕包时间戳，因此不能直接 stream copy 字幕轨；
-  必须把整轨导出为 SRT，在媒体时间轴上裁剪后作为新字幕轨 mux 回输出。
-- 图形字幕（`hdmv_pgs_subtitle` / `dvd_subtitle` / `dvb_subtitle`）保持 stream copy，不裁剪。
-- 多段导出时，没有 cue 的片段写入占位空字幕轨，保证各段的流布局一致。
-- 常规设置「保留被片段边界截断的字幕」：关闭时整句丢弃，开启时裁剪到片段范围内（默认关闭）。
+- Only text subtitles are handled (`srt` / `subrip` / `ass` / `ssa` / `mov_text` / `webvtt` /
+  `text`), taking the first text subtitle track.
+- FFmpeg's `-ss` input seek does not rewrite subtitle packet timestamps, so the subtitle track
+  cannot be stream copied directly; the whole track must be exported as SRT, trimmed on the media
+  time axis, and muxed back into the output as a new subtitle track.
+- Graphical subtitles (`hdmv_pgs_subtitle` / `dvd_subtitle` / `dvb_subtitle`) keep stream copy and
+  are not trimmed.
+- In multi-segment export, segments without cues get a placeholder empty subtitle track so that
+  every segment has the same stream layout.
+- General settings “Keep subtitles cut by a segment boundary”: when off, whole cues are dropped;
+  when on, they are clipped to the segment range (off by default).
 
-## 章节
+## Chapters
 
-- 章节按每个临时片段的实际容器时长累计，不按请求时长；为此启用章节的单段导出
-  也会走临时片段 + concat。
-- 章节标题按 `SegmentId` 保存；标题为空时回退到 `Segment N`。
-- 合并不生成章节：各文件章节无法可靠叠加。
+- Chapters are accumulated from the actual container duration of each temporary segment, not from
+  the requested duration; for this reason, single-segment export with chapters enabled also goes
+  through temporary segments + concat.
+- Chapter titles are stored by `SegmentId`; a blank title falls back to `Segment N`.
+- Merging does not generate chapters: chapters from different files cannot be reliably stacked.
 
-## 批处理与合并
+## Batch processing and merging
 
-- 批处理对每个文件套用当前 Timeline 的 enabled Segment；超出文件时长的部分截断，
-  完全落在文件之外的片段跳过。
-- 批处理输出写到源文件旁的 `<stem>-export.<ext>`，或导出目录中；同名文件会被覆盖。
-- 合并按文件名排序，先导出各自片段，再用 concat demuxer remux；不重新编码。
-- 合并要求各导出结果的 codec / 分辨率 / 时间基一致；不一致时 FFmpeg 报错，
-  不得静默丢弃流来“凑”成功。
+- Batch processing applies the currently enabled segments of the Timeline to every file; parts
+  beyond the file duration are truncated, and segments entirely outside the file are skipped.
+- Batch output is written next to the source file as `<stem>-export.<ext>`, or into the export
+  directory; files with the same name are overwritten.
+- Merging sorts by file name, exports each segment first, and then remuxes with the concat
+  demuxer; no re-encoding.
+- Merging requires the codec / resolution / time base of each export result to match; when they
+  differ FFmpeg reports an error, and streams must not be silently dropped to "force" success.

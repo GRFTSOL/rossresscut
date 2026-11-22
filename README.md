@@ -12,7 +12,7 @@ in-process, mark segments on the timeline, and export them without re-encoding.
 > pull requests are disabled**. There is no support commitment and no roadmap.
 > You are welcome to fork it under the GPL.
 
-<img width="1679" height="979" alt="图片" src="https://github.com/user-attachments/assets/707ed9fc-7080-4c6e-b33c-b089e414e409" />
+<img width="1679" height="979" alt="Screenshot" src="https://github.com/user-attachments/assets/707ed9fc-7080-4c6e-b33c-b089e414e409" />
 
 ## Features
 
@@ -186,6 +186,7 @@ with GPLv3. The full list, including the bundled font, is in [`ATTRIBUTION.md`](
 | FFmpeg / export rules | [`docs/media-rules.md`](docs/media-rules.md) |
 | Coding standards and tests | [`docs/coding-standards.md`](docs/coding-standards.md) |
 | Build, commands, permissions | [`docs/development.md`](docs/development.md) |
+| This machine's development environment | [`docs/local-environment.md`](docs/local-environment.md) |
 | Reference projects and their limits | [`docs/research.md`](docs/research.md) |
 | Completed phase records | [`docs/history/completed-phases.md`](docs/history/completed-phases.md) |
 | Architecture decisions | [`docs/decisions/`](docs/decisions/) |

@@ -112,7 +112,7 @@ cargo build --release
 ```
 
 运行期 `libmpv-2.dll` 必须和 exe 放在同一目录。工具链细节、打包脚本与测试环境见
-[`docs/development.md`](docs/development.md)。
+[`docs/development.md`](docs/development_ZH.md)。
 
 完整的本地检查（fmt、两轮 clippy、全部测试、构建）：
 
@@ -159,25 +159,26 @@ add_cut = "Alt+I"
 **GPL-3.0-or-later**，见 [`LICENSE`](LICENSE)。
 
 `libmpv` 是 GPL-2.0-or-later，Rust 依赖是 MIT / Apache-2.0，都与 GPLv3 兼容。完整清单（含内置
-字体）见 [`ATTRIBUTION.md`](ATTRIBUTION.md)。
+字体）见 [`ATTRIBUTION.md`](ATTRIBUTION_ZH.md)。
 
 ## 文档
 
 | 内容 | 文档 |
 | --- | --- |
-| 硬约束与入口 | [`AGENTS.md`](AGENTS.md) |
-| 产品目标 | [`GOALS.md`](GOALS.md) |
-| 阶段与当前工作 | [`PLANS.md`](PLANS.md) |
-| 架构与数据流 | [`docs/architecture.md`](docs/architecture.md) |
-| 媒体模型与整数时间 | [`docs/media-model.md`](docs/media-model.md) |
-| UI 约定 | [`docs/ui-guidelines.md`](docs/ui-guidelines.md) |
-| FFmpeg / 导出规则 | [`docs/media-rules.md`](docs/media-rules.md) |
-| 编码规范与测试 | [`docs/coding-standards.md`](docs/coding-standards.md) |
-| 构建、命令、权限 | [`docs/development.md`](docs/development.md) |
-| 参考项目与边界 | [`docs/research.md`](docs/research.md) |
-| 已完成阶段记录 | [`docs/history/completed-phases.md`](docs/history/completed-phases.md) |
+| 硬约束与入口 | [`AGENTS.md`](AGENTS_ZH.md) |
+| 产品目标 | [`GOALS.md`](GOALS_ZH.md) |
+| 阶段与当前工作 | [`PLANS.md`](PLANS_ZH.md) |
+| 架构与数据流 | [`docs/architecture.md`](docs/architecture_ZH.md) |
+| 媒体模型与整数时间 | [`docs/media-model.md`](docs/media-model_ZH.md) |
+| UI 约定 | [`docs/ui-guidelines.md`](docs/ui-guidelines_ZH.md) |
+| FFmpeg / 导出规则 | [`docs/media-rules.md`](docs/media-rules_ZH.md) |
+| 编码规范与测试 | [`docs/coding-standards.md`](docs/coding-standards_ZH.md) |
+| 构建、命令、权限 | [`docs/development.md`](docs/development_ZH.md) |
+| 本机开发环境 | [`docs/local-environment.md`](docs/local-environment_ZH.md) |
+| 参考项目与边界 | [`docs/research.md`](docs/research_ZH.md) |
+| 已完成阶段记录 | [`docs/history/completed-phases_ZH.md`](docs/history/completed-phases_ZH.md) |
 | 架构决策 | [`docs/decisions/`](docs/decisions/) |
-| 发布流程 | [`RELEASING.md`](RELEASING.md) |
+| 发布流程 | [`RELEASING.md`](RELEASING_ZH.md) |
 
 ## 状态
 

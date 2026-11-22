@@ -1,106 +1,106 @@
-# 0007 Segment 编辑基础语义
+# 0007 Basic Segment Editing Semantics
 
-- 状态：部分被 `0008-segment-timeline-semantics.md` 取代（输出顺序 / 重叠 / SegmentId）
-- 日期：2026-10-24
-- 阶段：Phase 3
+- Status: Partially superseded by `0008-segment-timeline-semantics.md` (output order / overlap / SegmentId)
+- Date: 2026-10-24
+- Phase: Phase 3
 
-> 2026-10-24 更新：Timeline 现已确定为有输出顺序的 EDL，Segment 使用稳定 `SegmentId`，重叠允许且不自动处理。
-> 本文关于入点 / 出点位于应用层、`start < end`、单源 Timeline 的结论仍然有效；
-> 顺序、重叠与身份语义以 `0008-segment-timeline-semantics.md` 为准。
+> Update 2026-10-24: the Timeline is now defined as an EDL with an output order, Segments use a stable `SegmentId`, and overlap is allowed and not handled automatically.
+> The conclusions in this document about in / out points living in the application layer, `start < end`, and a single-source Timeline remain valid;
+> order, overlap, and identity semantics are governed by `0008-segment-timeline-semantics.md`.
 
-## 背景
+## Context
 
-Phase 3 需要落地下游无损裁剪所依赖的 Segment / Timeline 模型。当前约束：
+Phase 3 needs to land the Segment / Timeline model that downstream lossless trimming depends on. Current constraints:
 
-- 媒体时间使用整数微秒 `Timestamp`。
-- 领域层不依赖 egui。
-- 导出尚未实现，Segment 暂不参与媒体处理。
-- 一次只打开一个媒体文件。
+- Media time uses integer microsecond `Timestamp`.
+- The domain layer does not depend on egui.
+- Export is not implemented yet, so Segments do not yet participate in media processing.
+- Only one media file is open at a time.
 
-在实现前需要确定：Segment 是否允许重叠、入点 / 出点放在哪一层、排序是否自动。
+Before implementation, three things must be settled: whether Segments may overlap, which layer holds the in / out points, and whether sorting is automatic.
 
-## 已知约束
+## Known constraints
 
-- `Segment` 必须满足 `start < end`。
-- 导出必须使用精确的源时间，不能使用预览近似位置。
-- 领域模型不应保存 UI 的临时状态。
+- `Segment` must satisfy `start < end`.
+- Export must use exact source time, not approximate preview positions.
+- The domain model should not store temporary UI state.
 
-## 候选方案
+## Candidate options
 
-### 重叠策略 A：允许重叠，按起点排序
+### Overlap strategy A: Allow overlap, sort by start
 
-优点：
+Pros:
 
-- 实现简单，不擅自改变用户输入。
-- 不丢用户数据；后续可以在导出阶段检测或拆分。
-- 与“先实现功能、后优化”的节奏一致。
+- Simple to implement, and it does not change user input on its own.
+- No user data is lost; overlapping ranges can later be detected or split during export.
+- Consistent with the "implement the feature first, optimize later" cadence.
 
-缺点：
+Cons:
 
-- 时间轴绘制时后绘制的 Segment 可能覆盖先绘制的。
-- 导出语义需要在 Phase 4 明确。
+- When drawing the timeline, a later-drawn Segment may cover an earlier one.
+- Export semantics must be clarified in Phase 4.
 
-### 重叠策略 B：强制非重叠
+### Overlap strategy B: Enforce non-overlap
 
-优点：
+Pros:
 
-- 时间轴与导出语义更简单。
+- Timeline and export semantics become simpler.
 
-缺点：
+Cons:
 
-- 创建或修改 Segment 时必须裁剪或拒绝，属于隐藏的用户数据变更。
-- 需要额外的交互规则与提示。
+- Creating or modifying a Segment must trim or reject, which is a hidden change to user data.
+- Requires additional interaction rules and hints.
 
-### 重叠策略 C：自动拆分 / 合并
+### Overlap strategy C: Automatic split / merge
 
-当前阶段实现成本过高，且会引入未定义的产品行为。
+Too costly to implement at the current stage, and it would introduce undefined product behavior.
 
-## 决策
+## Decision
 
-选择：
+Choice:
 
-> 重叠策略 A；入点 / 出点与选中状态放在应用层。
+> Overlap strategy A; in / out points and selection state live in the application layer.
 >
-> **2026-10-24 更新：顺序、重叠与身份语义已由 `0008` 取代。本文以下具体规则保留为历史记录，`0008` 为准。**
+> **Update 2026-10-24: order, overlap, and identity semantics have been superseded by `0008`. The concrete rules below are retained as history; `0008` governs.**
 
-具体规则：
+Concrete rules:
 
-1. `Segment` 由 `start`、`end`、`enabled` 组成，半开区间 `[start, end)`。
-   - 已由 0008 扩展：增加稳定 `SegmentId`。
-2. `Timeline` 持有单一 `source`，不要求每个 Segment 重复保存来源。
-3. ~~`Timeline::insert` 按起点插入并返回索引。~~ 已由 0008 取代：新 Segment 追加，分配 `SegmentId`。
-4. 入点 / 出点是 `Application` 的临时标记，不属于领域模型。
-5. 添加 Segment 需要同时存在入点与出点，且 `start < end`；成功后清空标记并选中新 Segment。
-6. ~~修改起止点不自动重排；用户可显式排序。排序后清空选中状态。~~ 已由 0008 取代：排序保留选中，选择按 `SegmentId`。
-7. 点击时间轴会 seek，并按 `SegmentId` 选中点击位置所在的 Segment；点击列表行会 seek 到 Segment 起点。
+1. `Segment` consists of `start`, `end`, and `enabled`, as the half-open interval `[start, end)`.
+   - Extended by 0008: a stable `SegmentId` is added.
+2. `Timeline` holds a single `source`; each Segment does not need to repeat the source.
+3. ~~`Timeline::insert` inserts by start point and returns an index.~~ Superseded by 0008: new Segments are appended and assigned a `SegmentId`.
+4. In / out points are temporary markers on `Application` and are not part of the domain model.
+5. Adding a Segment requires both an in point and an out point, with `start < end`; on success the markers are cleared and the new Segment is selected.
+6. ~~Modifying start or end does not reorder automatically; the user can sort explicitly. Sorting clears the selection.~~ Superseded by 0008: sorting preserves the selection, and selection is by `SegmentId`.
+7. Clicking the timeline seeks and selects the Segment containing the clicked position by `SegmentId`; clicking a list row seeks to the Segment's start.
 
-## 决策理由
+## Rationale
 
-1. 保持领域模型最小，不把选择状态和临时标记塞进 `Segment`。
-2. 不静默修改用户设置的边界，符合无损编辑的可预测性原则。
-3. 单源 Timeline 与当前“一次一个文件”的产品范围一致。
+1. Keep the domain model minimal; do not stuff selection state and temporary markers into `Segment`.
+2. Do not silently modify the boundaries the user set, in line with the predictability principle of lossless editing.
+3. A single-source Timeline matches the current "one file at a time" product scope.
 
-## 后果
+## Consequences
 
-### 正面
+### Positive
 
-- Phase 3 的创建 / 删除 / 修改 / 排序 / 启停都有明确命令与测试。
-- Segment 可直接作为 Phase 4 导出的输入。
+- Create / delete / modify / sort / enable-disable in Phase 3 all have explicit commands and tests.
+- Segments can be used directly as Phase 4 export input.
 
-### 负面
+### Negative
 
-- 重叠 Segment 的视觉覆盖与导出顺序尚未定义。
-- 没有时间轴边界拖拽，只能从播放头设置边界。
-- 没有项目持久化，打开新文件会清空 Segment。
+- Visual coverage and export order for overlapping Segments are not yet defined.
+- There is no timeline boundary dragging; boundaries can only be set from the playhead.
+- There is no project persistence, so opening a new file clears the Segments.
 
-### 后续影响
+### Follow-up effects
 
-- Phase 4 必须在导出前定义重叠 Segment 的处理方式（拒绝、裁剪或按顺序输出）。
-- 项目文件格式需要保存 source、segments 与启停状态。
+- Phase 4 must define how overlapping Segments are handled before export (reject, trim, or output in order).
+- The project file format needs to store the source, segments, and enabled state.
 
-## 未解决问题
+## Open questions
 
-- ~~是否允许重叠，还是创建时自动裁剪 / 拒绝。~~ 已由 `0008` 决定：允许重叠，不自动处理。
-- ~~是否需要稳定身份。~~ 已由 `0008` 决定：使用 `SegmentId`。
-- 时间轴是否需要 Segment 边界拖拽。
-- 是否需要按文件持久化 Segment。
+- ~~Whether overlap is allowed, or whether it is automatically trimmed / rejected on creation.~~ Decided by `0008`: overlap is allowed and not handled automatically.
+- ~~Whether a stable identity is needed.~~ Decided by `0008`: use `SegmentId`.
+- Whether the timeline needs Segment boundary dragging.
+- Whether Segments should be persisted per file.

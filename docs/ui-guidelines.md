@@ -1,158 +1,186 @@
-# UI 规则
+# UI Rules
 
-本文件是 UI 与桌面集成的约束来源。入口与硬约束见 `AGENTS.md`；分层与数据流见 `docs/architecture.md`。
+This file is the source of constraints for the UI and desktop integration. Entry points
+and hard constraints are in `AGENTS.md`; layering and data flow are in
+`docs/architecture.md`.
 
-## 1. egui UI 不能阻塞
+## 1. The egui UI must not block
 
-禁止在 egui 每帧更新逻辑中直接执行长时间任务。
+Running long tasks directly inside the per-frame egui update logic is forbidden.
 
-包括：
+This includes:
 
 - FFmpeg
 - FFprobe
-- 视频解码
-- 大量文件读取
-- 波形生成
-- 场景检测
-- 大规模数据处理
-- 阻塞式进程等待
-- 阻塞式 channel 接收
+- video decoding
+- bulk file reads
+- waveform generation
+- scene detection
+- large-scale data processing
+- blocking process waits
+- blocking channel receives
 
-这些工作必须放到 UI 帧之外。
+This work must be placed outside the UI frame.
 
-长任务必须可取消，且取消要真正的终止外部进程（例如关闭场景扫描窗口时
-`kill` FFmpeg），不能只丢弃结果通道。任务运行期间 UI 要主动请求重绘，
-否则进度会停在第一次的值。
-
----
-
-## 2. UI 不负责业务逻辑
-
-UI 负责：
-
-- 显示状态
-- 获取用户输入
-- 发送命令
-- 显示进度
-- 显示错误
-
-UI 不负责：
-
-- 构造 FFmpeg 命令
-- 解析 FFprobe JSON
-- 计算媒体时间
-- 判断片段是否合法
-- 执行媒体导出
-- 操作底层文件
+Long tasks must be cancellable, and cancellation must actually terminate the external
+process (for example, `kill` FFmpeg when the scene scan window is closed); discarding
+the result channel alone is not enough. While a task is running, the UI must actively
+request repaints, otherwise progress stalls at its first value.
 
 ---
 
-## 3. UI 状态与领域状态分离
+## 2. The UI is not responsible for business logic
 
-区分：
+The UI is responsible for:
 
-### 领域状态
+- displaying state
+- gathering user input
+- sending commands
+- displaying progress
+- displaying errors
 
-例如：
+The UI is not responsible for:
 
-- 当前媒体
-- 时间轴
-- 片段
-- 流选择
-- 导出配置
-
-### 应用状态
-
-例如：
-
-- 当前任务
-- 导出进度
-- 场景扫描进度（0–99%，完成后由 Ready 状态替代）
-- 错误状态
-- 取消状态
-
-### UI 状态
-
-例如：
-
-- 当前拖动的控件
-- 当前悬停位置
-- 面板展开状态
-- 临时输入内容
-
-**UI 状态不能成为领域状态的唯一来源。**
+- building FFmpeg commands
+- parsing FFprobe JSON
+- computing media time
+- deciding whether a segment is valid
+- performing media export
+- manipulating underlying files
 
 ---
 
-## 4. 状态变更必须经过应用层
+## 3. UI state is separate from domain state
 
-UI 不允许直接修改领域状态。
+Distinguish:
 
-- 所有改变领域状态的操作都必须表达为应用层命令，并具备 `enabled` 判断与失败原因。
-- UI 只负责构造参数、调用命令、展示结果。
-- 命令之外的代码路径不得 mutate 领域状态。
+### Domain state
+
+For example:
+
+- the current media
+- the timeline
+- segments
+- stream selection
+- export configuration
+
+### Application state
+
+For example:
+
+- the current task
+- export progress
+- scene scan progress (0–99%, replaced by the Ready state when finished)
+- error state
+- cancellation state
+
+### UI state
+
+For example:
+
+- the control currently being dragged
+- the current hover position
+- panel expansion state
+- temporary input content
+
+**UI state must not be the sole source of domain state.**
 
 ---
 
-## 5. 桌面集成
+## 4. State changes must go through the application layer
 
-- Linux 文件打开必须使用 XDG desktop portal（`rfd` 的 `xdg-portal` 后端），不自建文件选择器。
-- Windows 文件打开 / 保存使用 `rfd` 的 Windows 后端（Shell COM 的
-  `IFileOpenDialog` / `IFileSaveDialog`），同样不自建文件选择器。
-- 顶部显示当前媒体标题标签，只显示文件名主体，不含扩展名；不提供可编辑路径输入框。
-- 主题默认跟随系统，并允许在设置页手动选择 Dark / Light；设置页同时提供字体选择与字体缩放。
-- 系统不报告主题时，自动主题读取 GTK / Qt 配置（含 nwg-look、qt6ct）；仍无法判断时使用手动主题。
-- 自动主题只在启动、打开设置或切换自动主题时检测，不做周期轮询。
-- Windows 主窗口把标题栏与菜单栏合并为一行，高度对齐 Windows 资源管理器标题栏
-  （96 DPI 下 32 px）：
-  左侧菜单，右侧只有最小化 / 最大化 / 关闭。窗口按钮区没有边框和外边距，
-  最大化后可以直接把鼠标移到屏幕右上角关闭；空白区域可拖动、双击最大化。
-  菜单按钮的悬停背景高 24 px，在 32 px 的栏内上下各留 4 px，不贴边。
-  Linux 保留合成器装饰与独立菜单栏。
-- 当前文件名显示在底部行左侧，时间码以窗口中心为轴居中，Export 按钮在右侧。
-- View 菜单提供“显示批处理队列”与“显示播放信息”开关；设置入口在 Tools 菜单。
-- 设置是独立操作系统窗口（第二个 egui viewport），不再嵌在主窗口内，也不再使用
-  折叠分组，而是“常规 / 预览 / 导出 / 快捷键”四个 tab；每个 tab 内只有一个纵向
-  滚动区域。窗口使用与主窗口相同的自绘标题栏样式（居中标题 + 关闭）。快捷键
-  两列成对排列，点击绑定录制，录制时按 Backspace 清空。
-- “预览”tab 提供解码后端选择：libmpv 的 `auto-safe` / `auto` / `d3d11va` /
-  `nvdec` / `cuda` / `vaapi` / `no`（只列当前平台可用项）以及外部
-  FFmpeg；切换后立即重建预览。
-- 对话框主操作可用 Enter 确认；文本框获得焦点时 Enter 仍交给文本框，且只有最顶层窗口响应。
-- “查看”菜单提供全屏、复位 / 增大 / 减小字体大小；设置入口在工具菜单。
-- 快捷键默认值：Space 播放/暂停、Alt+I 添加切点、Alt+O 添加切点结束、Alt+B 分割、
-  Delete 删除选中片段、Escape 清除标记、Ctrl+W 关闭媒体、Ctrl+, 打开设置、
-  Alt+S 基于音量自动切分；ArrowUp / ArrowDown 选择上/下片段，Alt+Left / Alt+Right
-  跳转上/下一秒，`,` / `.` 步进上/下一帧；编辑动作默认
-  Ctrl+Z / Ctrl+Shift+Z / Ctrl+X / Ctrl+C / Ctrl+V / Ctrl+A。
-  菜单中的其他命令（打开 / 项目导入导出 / 场景检测 / 全屏 / 字体大小 / 关于等）
-  也可在此绑定，默认未分配。设置以 TOML 持久化到
-  `$XDG_CONFIG_HOME/rossresscut/config.toml`（回退到 `~/.config`）。
-- 侧栏的播放信息默认隐藏，由“查看 > 显示播放信息”切换；信息只显示解码器（实际 hwdec）、帧、
-  视频、音频。下方是 Segments / Chapters 两个 tab，默认 Segments。
-- 音量按钮固定为 32×24：图标随音量变化，但按钮矩形和弹窗锚点不得随图标宽度移动；
-  音量弹窗以按钮中心为轴居中。
-- 流信息默认折叠，折叠状态由 egui memory 记录。
-- 时间轴单独占一行；播放控制位于其下方并水平居中，使用符号按钮并提供 hover tooltip；
-  上一秒 / 下一秒是按钮，单帧步进只有快捷键。
-- 时间轴上的 Segment 按 Timeline 顺序显示序号；宽度不足以容纳序号时画在片段左侧。
-- 字体选择按字族分组，可搜索字族并单独选择字重；字体大小与字族在同一区域。
-- 右侧片段列表与时间轴共用配色；Ctrl 点击可多选。
-- 编辑菜单提供撤销 / 重做 / 剪切 / 复制 / 粘贴 / 全选；撤销历史只覆盖 Timeline 状态。
-- 片段菜单提供随机片段、排序 / 打乱、合并所有重叠片段 / 反转片段（已选与未选区域互换）、清除全部。
-- 工具菜单提供“已执行的 ffmpeg 命令”：按最新在前的顺序显示本次会话的所有
-  FFmpeg 命令，并标注用途（导出 / 场景检测 / 波形 / 字幕 / 合并 / 探测等）；
-  预览解码不计入。内容可复制，不直接执行。
-- 导出按钮显示为“导出…”，点击打开导出面板；输出目录可选源文件目录或指定目录。
-- 导出按钮位于主界面右下角，不放在 File 菜单。
-- 切点交互：首次“添加切点”设置片段开始；在其后再次添加会立即生成 Segment；
-  “删除切点”清除 pending 切点，没有 pending 时删除选中 Segment；
-  “分割片段”以播放头为界。
-- 未打开媒体时，点击预览区的任意位置打开文件选择器；提示文字是不可选择的 label。
-- 关于窗口显示版本、项目许可证（GPL-3.0-or-later）与可展开的第三方组件清单
-  （FFmpeg、libmpv 及 Rust 依赖的许可证）；清单与 `ATTRIBUTION.md` 保持一致。
-- 启动失败必须可见：Windows 上没有控制台，由 `main` 弹一个原生错误对话框
-  （`rfd` 的 `MessageDialog`）并附上错误文本与 `RUST_LOG=info` 提示；
-  其他平台仍输出到 stderr。
+The UI is not allowed to modify domain state directly.
+
+- Every operation that changes domain state must be expressed as an application-layer
+  command, with an `enabled` check and a failure reason.
+- The UI only builds arguments, invokes commands, and displays results.
+- Code paths outside commands must not mutate domain state.
+
+---
+
+## 5. Desktop integration
+
+- On Linux, opening files must use the XDG desktop portal (`rfd`'s `xdg-portal`
+  backend); do not build a custom file picker.
+- On Windows, opening / saving files uses `rfd`'s Windows backend (Shell COM's
+  `IFileOpenDialog` / `IFileSaveDialog`); likewise do not build a custom file picker.
+- The top shows a tab with the current media title, showing only the file name stem
+  without the extension; no editable path input box is provided.
+- The theme follows the system by default, and the settings page allows manually
+  selecting Dark / Light; the settings page also provides font selection and font
+  scaling.
+- When the system does not report a theme, automatic theming reads the GTK / Qt
+  configuration (including nwg-look and qt6ct); if it still cannot be determined, the
+  manual theme is used.
+- Automatic theming is only detected at startup, when settings are opened, or when
+  switching to automatic theme; there is no periodic polling.
+- The Windows main window merges the title bar and the menu bar into a single row whose
+  height matches the Windows Explorer title bar (32 px at 96 DPI):
+  menu on the left, and only minimize / maximize / close on the right. The window
+  button area has no border and no outer margin, so after maximizing the mouse can move
+  straight to the top-right corner of the screen to close; the blank area can be
+  dragged and double-clicked to maximize. Menu button hover backgrounds are 24 px high,
+  leaving 4 px above and below inside the 32 px bar, so they do not touch the edges.
+  Linux keeps compositor decorations and a separate menu bar.
+- The current file name is shown on the left side of the bottom row, the timecode is
+  centered on the window center as its axis, and the Export button is on the right.
+- The View menu provides toggles for "Show batch queue" and "Show playback info"; the
+  settings entry is in the Tools menu.
+- Settings is a separate operating-system window (a second egui viewport); it is no
+  longer embedded in the main window and no longer uses collapsible groups, but four
+  tabs: "General / Preview / Export / Shortcuts"; each tab contains only one vertical
+  scroll area. The window uses the same custom-drawn title bar style as the main window
+  (centered title + close). Shortcuts are laid out in two paired columns; clicking a
+  binding starts recording, and pressing Backspace during recording clears it.
+- The "Preview" tab provides decoder backend selection: libmpv's `auto-safe` / `auto` /
+  `d3d11va` / `nvdec` / `cuda` / `vaapi` / `no` (only items available on the current
+  platform are listed) plus external FFmpeg; switching rebuilds the preview immediately.
+- Primary dialog actions can be confirmed with Enter; when a text box has focus, Enter
+  is still delivered to the text box, and only the topmost window responds.
+- The "View" menu provides fullscreen and reset / increase / decrease font size; the
+  settings entry is in the Tools menu.
+- Default shortcuts are listed in `README.md`; menu commands without a default can also be bound
+  here. Settings are persisted as TOML to `$XDG_CONFIG_HOME/rossresscut/config.toml` (falling
+  back to `~/.config`).
+- The sidebar playback info is hidden by default and toggled by "View > Show playback
+  info"; the info shows only the decoder (the actual hwdec), frame, video, and audio.
+  Below it are two tabs, Segments / Chapters, with Segments by default.
+- The volume button is fixed at 32×24: the icon changes with the volume, but the button
+  rectangle and the popup anchor must not move with the icon width; the volume popup is
+  centered on the button's center as its axis.
+- Stream info is collapsed by default; the collapsed state is recorded by egui memory.
+- The timeline occupies its own row; playback controls sit below it and are horizontally
+  centered, using symbol buttons with hover tooltips; previous second / next second are
+  buttons, while single-frame stepping only has shortcuts.
+- Segments on the timeline display their number in Timeline order; when the width is
+  insufficient to hold the number, it is drawn to the left of the segment.
+- Font selection is grouped by font family; families can be searched and the weight
+  selected separately; font size and font family are in the same area.
+- The right-hand segment list shares the color scheme with the timeline; Ctrl-click
+  allows multi-selection.
+- The Edit menu provides undo / redo / cut / copy / paste / select all; undo history
+  only covers Timeline state.
+- The Segments menu provides random segment, sort / shuffle, merge all overlapping
+  segments / invert segments (swap the selected and unselected regions), clear all.
+- The Tools menu provides "Executed FFmpeg commands": it lists all FFmpeg commands from
+  the current session in newest-first order, annotated with their purpose (export /
+  scene detection / waveform / subtitle / merge / probe, etc.); preview decoding is not
+  counted. The content can be copied, not executed directly.
+- The export button reads "Export…"; clicking it opens the export panel; the output
+  directory can be the source file's directory or a specified directory.
+- The export button is in the bottom-right corner of the main window and is not placed
+  in the File menu.
+- Cut point interaction: the first "Add cut point" sets the segment start; adding
+  another after it immediately creates a Segment; "Remove cut point" clears the pending
+  cut point, and when there is no pending cut point it deletes the selected Segment;
+  "Split segment" splits at the playhead.
+- When no media is open, clicking anywhere in the preview area opens the file picker;
+  the hint text is a non-selectable label.
+- The About window shows the version, the project license (GPL-3.0-or-later) and an
+  expandable list of third-party components (licenses of FFmpeg, libmpv and the Rust
+  dependencies); the list is kept consistent with `ATTRIBUTION.md`.
+- Startup failures must be visible: there is no console on Windows, so `main` pops a
+  native error dialog (`rfd`'s `MessageDialog`) including the error text and a
+  `RUST_LOG=info` hint; other platforms still print to stderr.
 
 ---

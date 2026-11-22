@@ -1,10 +1,12 @@
-# 开发与工具链
+# Development and Toolchain
 
-本文件记录本机开发环境、命令、权限边界与提交规则。贡献流程见 `CONTRIBUTING.md`。
+This document records the local development environment, commands, privilege boundaries, and
+commit rules. See `CONTRIBUTING.md` for the contribution process.
 
-## 准入门槛
+## Entry gate
 
-Cargo 工程建立之后，以下命令是本地与 CI 的共同准入门槛：
+Once the Cargo project is set up, the following commands are the shared entry gate for local
+runs and CI alike:
 
 ```bash
 cargo build
@@ -14,29 +16,45 @@ cargo clippy --no-default-features --all-targets -- -D warnings
 cargo fmt --all --check
 ```
 
-## 构建输入
+## Build inputs
 
-- `assets/img/icon.png` 是窗口图标源图，`assets/img/icon.ico` 是 Windows 的多尺寸
-  可执行文件图标；`build.rs` 读取两者，删除或改名会让构建失败。
-- `build.rs` 的依赖只用于构建：`image`（把 PNG 缩放到窗口图标尺寸）与
-  Windows 上的 `winresource`（嵌入 ico 与版本字符串）。两者都不进入运行时。
-- 窗口图标尺寸由 `build.rs` 的 `WINDOW_ICON_SIZE` 决定，`src/ui/mod.rs` 从
-  `OUT_DIR/window-icon.rgba` 读取；改动尺寸时两处必须同步。
+- `assets/img/icon.png` is the source image for the window icon, and `assets/img/icon.ico` is
+  the Windows multi-size executable icon; `build.rs` reads both, so deleting or renaming them
+  breaks the build.
+- The `build.rs` dependencies are build-only: `image` (scales the PNG to the window icon size)
+  and `winresource` on Windows (embeds the ico and the version string). Neither of them enters
+  the runtime.
+- The window icon size is determined by `WINDOW_ICON_SIZE` in `build.rs`, and `src/ui/mod.rs`
+  reads it from `OUT_DIR/window-icon.rgba`; when changing the size, both places must be kept in
+  sync.
 
-## 规则
+## Rules
 
-- 提交前上述命令必须全部通过。
-- `--no-default-features` 的 clippy 用于验证无 `mpv-preview` 时的外部 FFmpeg 回退路径仍可编译；它不运行需要 libmpv 的测试。
-- 编译警告零容忍：`unused import`、`dead_code`、`deprecated API` 都必须为零。
-- 格式问题不靠人工审查，交给 `cargo fmt`；`cargo fmt --all --check` 失败即视为未完成。
-- 工具链版本由 `rust-toolchain.toml` 固定，避免不同机器行为差异；升级工具链属于独立变更。
-- 命令块中的参数与 `clippy` 的 `-D warnings` 不得为了绕过报错而删减。
-- `fuck-u-code analyze` 的 `Overall Score`（及 JSON 里的 `score`）**越高越好**；文本报告中的 `Issue Score` 是反向值（`100 - score`），越高越差；`Metrics Details` 里的百分比是问题占比，越低越好。
-- `fuck-u-code` 的函数级指标依赖 `tree-sitter-wasms` 的 WASM 语法文件。pnpm 全局安装不会把它链接进 `fuck-u-code/node_modules`，缺失时工具会**静默降级到 regex parser**，把整个 `impl` 块当成一个函数，函数长度与复杂度全部失真。
+- All of the above commands must pass before committing.
+- The `--no-default-features` clippy run verifies that the external FFmpeg fallback path still
+  compiles without `mpv-preview`; it does not run the tests that need libmpv.
+- Zero tolerance for compiler warnings: `unused import`, `dead_code`, and `deprecated API` must
+  all be zero.
+- Formatting issues are not left to manual review; `cargo fmt` handles them. A failing
+  `cargo fmt --all --check` counts as unfinished work.
+- The toolchain version is pinned by `rust-toolchain.toml` to avoid behavior differences between
+  machines; upgrading the toolchain is a separate change.
+- The arguments in the command block and `clippy`'s `-D warnings` must not be trimmed in order
+  to get around an error.
+- For `fuck-u-code analyze`, `Overall Score` (and `score` in the JSON) is **higher is better**;
+  `Issue Score` in the text report is the inverse value (`100 - score`), where higher is worse;
+  the percentages under `Metrics Details` are the share of issues, where lower is better.
+- The function-level metrics of `fuck-u-code` rely on the WASM grammar files from
+  `tree-sitter-wasms`. A global pnpm install does not link it into `fuck-u-code/node_modules`,
+  and when it is missing the tool **silently falls back to the regex parser**, treating the
+  whole `impl` block as a single function so that function length and complexity are all
+  distorted.
 
-  判断方法：输出里出现 `Tree-sitter init failed for rust, falling back to regex parser` 就说明数据不可信；此时以 `cargo clippy -W clippy::too_many_lines` 为准。
+  How to tell: if `Tree-sitter init failed for rust, falling back to regex parser` appears in
+  the output, the data is not trustworthy; in that case rely on
+  `cargo clippy -W clippy::too_many_lines`.
 
-  修复（重装后可能复发）：
+  Fix (may recur after reinstalling):
 
   ```bash
   PNPM_GLOBAL=$(pnpm root -g)
@@ -45,211 +63,84 @@ cargo fmt --all --check
   done
   ```
 
-  Windows 上 `ln -s` 不可靠（需要开发者模式或管理员），改用目录联接；两侧路径
-  按实际的 pnpm store 替换：
+  On Windows `ln -s` is unreliable (it needs Developer Mode or administrator rights), so use a
+  directory junction instead; replace the paths on both sides with the actual pnpm store:
 
   ```powershell
-  powershell -NoProfile -Command 'New-Item -ItemType Junction -Path "<eff-u-code>\node_modules\tree-sitter-wasms" -Target "<tree-sitter-wasms>"'
+  powershell -NoProfile -Command 'New-Item -ItemType Junction -Path "<fuck-u-code>\node_modules\tree-sitter-wasms" -Target "<tree-sitter-wasms>"'
   ```
 
-  验证：再跑一次，输出中不再出现 `Tree-sitter init failed for rust`（`.sh` 脚本
-  降级到 regex parser 不影响 Rust 结果）。
+  Verification: run it again and `Tree-sitter init failed for rust` no longer appears in the
+  output (falling back to the regex parser for `.sh` scripts does not affect the Rust results).
 
-## 开发环境
+## Development environment
 
-本节只记录**会改变构建与验证行为**的机器约定，不是产品支持范围。
+The toolchain, paths, and known pitfalls of the current development machine are recorded
+separately in [`docs/local-environment.md`](local-environment.md): that part describes only this
+machine (Arch + Wayland, Windows MSVC via `msvc-kit`, `C:\bin`, and so on) and does not
+represent the product's supported scope; see `GOALS.md` and `PLANS.md` for supported platforms.
 
-- **操作系统**：Arch Linux（滚动发行版）。系统包用 `pacman` 安装，例如 `sudo pacman -S ffmpeg`；不通过脚本直接下载系统级二进制。
-- **Rust 工具链**：由 `rustup` 管理，版本由 `rust-toolchain.toml` 固定（当前 `1.99.1`，含 `rustfmt` 与 `clippy`）。缺组件时用 `rustup component add rustfmt clippy`。
-- **工具链升级**：升级 `rust-toolchain.toml` 是独立变更，不与功能改动混在一起。
-- **FFmpeg / FFprobe**：使用系统包（`/usr/sbin/ffmpeg`、`/usr/sbin/ffprobe`；`ffprobe` 由 `ffmpeg` 包提供，不是独立包），项目不自带二进制。滚动发行版会改变实际版本，因此测试不得假设固定版本行为。
-- **桌面会话**：Wayland（`XDG_SESSION_TYPE=wayland`，合成器为 niri），没有 X11 会话。egui / winit 的行为验证必须在 Wayland 下进行，不依赖 X11 专属路径。
-- **交互 shell**：fish。脚本不依赖交互 shell 配置：显式写 shebang（`#!/usr/bin/env bash` 或 `#!/usr/bin/env fish`），并保证在非交互环境下可运行。
-- **辅助脚本**：只用于开发与验证，不进入产品运行时；项目不引入 Python / Node 运行时依赖。
+For the general build inputs and entry gate, see above. The packaging scripts for the two
+platforms:
 
-### Windows（本机原生 MSVC 构建）
+- Linux: `./scripts/package-linux.sh`
+- Windows: `./scripts/package-windows.sh` (Git Bash; requires the MSVC toolchain and `mpv.lib`)
 
-同一棵树也在这台 Windows 机器上用 MSVC 直接构建，不是交叉编译。Linux 侧因此
-不再需要 `x86_64-pc-windows-gnu` target 与 `mingw-w64-gcc`；这些工具链可以卸载，
-本仓库的脚本与 CI 都不再引用它们。
+At runtime on Windows, `libmpv-2.dll` must be in the same directory as the exe, and the external
+`ffmpeg` / `ffprobe` must be on `PATH` or in the same directory as the exe.
 
-- **MSVC 与 Windows SDK**：由 `msvc-kit` 安装在 `C:\data\msvc-kit-data`
-  （MSVC `14.40.33807`、Windows SDK `10.0.19041.0`）。执行一次持久化后，它们被
-  写进用户环境变量（`PATH`、`INCLUDE`、`LIB`、`CC`、`AR`、
-  `CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER`），普通 `cargo build` 与
-  rust-analyzer 都直接可用：
+## Privilege boundaries
 
-  ```powershell
-  msvc-kit setup --persistent   # 只需一次；之后重启编辑器与终端
-  cargo build
-  ```
+The agent cannot escalate privileges: the current runtime sets `NoNewPrivs: 1`, and `sudo`,
+`pkexec`, and `su` all fail to obtain root. This is an established limitation of the runtime,
+not a configuration oversight, and attempts to bypass it are not allowed either.
+**All system-level installation is performed manually by the user.**
 
-  没有做持久化时，用 `msvc-kit run` 临时注入环境：
+Agent responsibilities:
 
-  ```bash
-  msvc-kit run -- cargo build
-  ```
+1. Read-only detection: `command -v ffmpeg ffprobe`, `pacman -Q ffmpeg`.
+2. If something is missing, report it and give a command that can be copied directly (for
+example `sudo pacman -S --needed ffmpeg`).
+3. Once the user confirms it is done, re-check the version and path, then continue.
 
-  注意：Git for Windows 的 `usr\bin\link.exe` 仍可能排在 MSVC 之前，但持久化设置
-  通过 `CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER` 把链接器路径显式传给 rustc，
-  因此不影响构建。
+Prohibited:
 
-- **libmpv 导入库**：`mpv-engine` 需要 MSVC 导入库 `mpv.lib`，官方 Windows
-  构建只提供 `libmpv-2.dll`。用脚本生成（Windows 走 `dumpbin` + `lib`，
-  Linux 走 LLVM 的 `llvm-readobj` + `llvm-dlltool`）：
+- Attempting `sudo`, `pkexec`, `su -c`, `sudo -S` to read a password, or `sudo -A` with a
+  self-built askpass.
+- Modifying `/etc/sudoers`, `/etc/sudoers.d/*`, or `/etc/sudo.conf`, or suggesting that the user
+  configure `NOPASSWD` on their machine so that the agent can escalate privileges.
+- Running `pacman -Syu`, `pacman -R*`, or `systemctl` to change system services when the user
+  has not explicitly asked for it.
+- Writing any password into scripts, environment variables, or logs, or committing it to the
+  repository.
 
-  ```bash
-  ./scripts/mpv-import-lib.sh /path/to/libmpv-2.dll
-  ```
+If some crate needs a system development library, report the package name and let the user
+install it; the agent only detects. The project's own Rust dependencies and in-repo scripts must
+not require root.
 
-  输出在 `dist/mpv-lib/`，构建时指向它：
-
-  ```powershell
-  $env:MPV_LIBRARY_DIR = "C:/project/rust/rossresscut/dist/mpv-lib"
-  cargo build
-  ```
-
-- **打包**：从干净工作树运行 `./scripts/package-windows.sh`，产出
-  `dist/rossresscut-<version>-windows-x64.zip` 与 `.sha256`。
-- **崩溃日志**：未捕获的 panic 追加到 `%LOCALAPPDATA%\rossresscut\crash.log`
-  （UTC 时间、版本与堆栈）；Linux 为
-  `$XDG_STATE_HOME/rossresscut/crash.log`（回退 `~/.local/state`）。
-
-- **运行时 DLL**：`libmpv-2.dll` 必须与 exe 同目录或位于 `PATH`。集成测试的
-  exe 在 `target\debug\deps` 下，需要把 DLL 也复制到那里。
-- **FFmpeg / FFprobe**：`ffmpeg.exe`、`ffprobe.exe` 位于 `C:\bin` 并在 `PATH` 中。
-- **准入门槛**：在 Git Bash 中一条命令跑完全部检查：
-
-  ```bash
-  MPV_LIBRARY_DIR=C:/data/mpv-msvc bash scripts/check.sh
-  ```
-
-  未做持久化环境时在前面加 `msvc-kit run --`。
-
-- 程序以 `windows_subsystem = "windows"` 构建，自身没有控制台。所以所有外部
-  `ffmpeg` / `ffprobe` 进程必须经 `media::process::command` 创建；它在 Windows
-  上设置 `CREATE_NO_WINDOW`。直接用 `std::process::Command` 会为每次探测、
-  波形或解码另开一个控制台窗口。启动失败会弹原生错误对话框，界面规则见
-  `docs/ui-guidelines.md`。
-- **不要把 Windows SDK 的 `bin\<version>\x64` 放进 `PATH`。** 该目录自带旧版
-  `dxcompiler.dll` / `dxil.dll`，wgpu 的 D3D12 后端会从 `PATH` 加载它们，然后
-  `DxcCreateInstance` 返回 `E_NOINTERFACE`，整个初始化失败：
-
-  ```text
-  DxcCreateInstance failed: 不支持此接口 (0x80004002)
-  Failed to create surface for any enabled backend: {}
-  ```
-
-  由于程序是 GUI 子系统且没有控制台，双击时表现为**默默退出、没有任何提示**。
-  `msvc-kit setup --persistent` 会把该目录写进用户 `PATH`，需要手动移除；
-  `rc.exe` / `mt.exe` 只在编译 Windows 资源脚本时才需要，rustc 不使用。
-  构建只需要 MSVC 的 `Tools\MSVC\<version>\bin\Hostx64\x64` 在 `PATH` 上。
-- 交互 shell 是 nushell，PowerShell 5.1 保留可用；脚本仍显式写 shebang，
-  不依赖交互 shell 配置。
-
-产品支持平台仍以 `GOALS.md` 与 `PLANS.md` 中的 Linux / Windows 为准。本节描述的是当前开发机的验证环境，不能作为"只支持 Arch Linux"的依据。
-
-## 系统包与权限边界
-
-### 硬约束：agent 无法提权
-
-当前 agent 运行环境设置了 `NoNewPrivs: 1`，且 **CapEff / CapPrm / CapBnd 全为 0**。
-`sudo`、`pkexec`、`su` 都无法获得 root：
-
-```text
-sudo: The "no new privileges" flag is set, which prevents sudo from running as root.
-```
-
-这是运行环境的既定限制，不是配置遗漏，也不允许尝试绕过。
-
-**结论：系统级安装一律由用户手动执行。**
-
-### agent 的职责
-
-1. 只读检测：
-
-   ```bash
-   command -v ffmpeg ffprobe
-   pacman -Q ffmpeg
-   ```
-
-2. 缺失时报告，并给出可直接复制的命令：
-
-   ```bash
-   sudo pacman -S --needed ffmpeg
-   ```
-
-3. 用户确认完成后复检版本与路径，再继续后续工作。
-
-### 禁止
-
-- 尝试 `sudo`、`pkexec`、`su -c`、`sudo -S` 读密码、`sudo -A` 配合自建 askpass。
-- 修改 `/etc/sudoers`、`/etc/sudoers.d/*`、`/etc/sudo.conf`，或建议为用户机器配置 `NOPASSWD` 以便 agent 提权。
-- 在用户未明确要求时执行 `pacman -Syu`、`pacman -R*`、`systemctl` 修改系统服务。
-- 把任何密码写入脚本、环境变量、日志或提交到仓库。
-
-### 需要 root 的构建依赖
-
-如果某个 crate 需要系统开发库，同样按上述流程：报告包名，由用户安装，agent 只做检测。
-
-项目自身的 Rust 依赖与项目内脚本不得要求 root。
-
-### 包与文件归属查询
-
-本机安装了 **`pacfiles` 0.3.0-1**（来自 `archlinuxcn` 仓库，依赖 `plocate`），
-它是 `pacman -F` 的快速替代，查询范围覆盖仓库，不限于已安装包。
-
-```bash
-# 文件 → 包，支持 glob
-pacfiles '*/ffprobe'
-pacfiles 'usr/bin/ffprobe'
-
-# 只输出包名，便于脚本消费
-pacfiles -q usr/bin/ffprobe
-
-# 包 → 文件
-pacfiles -l ffmpeg
-
-# POSIX 扩展正则
-pacfiles -x '.*/libav(codec|format)\.so'
-```
-
-**用途**：在报告"缺依赖"之前，先确认某个命令、头文件或共享库由哪个包提供，
-以及现有包是否已经包含它。例如 `usr/bin/ffprobe` 属于 `extra/ffmpeg`，不需要单独安装。
-
-**边界**：
-
-- `pacfiles` 只读查询，可以作为默认排查工具；它不安装、不修改系统。
-- 数据库陈旧时，刷新需要写 `/var/lib/pacman`，由用户在宿主终端执行 `sudo pacman -Fy`。
-- 换机器或未安装 `pacfiles` 时回退：
-
-  ```bash
-  pacman -Ql <pkg>             # 包 → 文件，仅限已安装包
-  pacman -Fq usr/bin/ffprobe   # 文件 → 包，需要 pacman 文件数据库
-  ```
-
-- 本机 `pacman -F` 会报第三方仓库（`arch4edu`）数据库不一致；文件查询优先用 `pacfiles`，
-  同时把该告警报告给用户，不要静默忽略。
-- 查询只用于决定"是否需要装包"，**安装仍然走本节开头的手动流程**。
+Before reporting a missing dependency, confirm its owner with `pacman -Fq usr/bin/ffprobe`
+(file → package) or `pacman -Ql <pkg>` (package → files). This machine has a faster alternative,
+documented in `docs/local-environment.md`. Queries only decide whether a package must be
+installed; installation still follows the manual flow above.
 
 ---
 
-## UI 检查（AT-SPI，仅 Linux）
+## UI inspection (AT-SPI, Linux only)
 
-`scripts/ui_a11y.py` 通过 AT-SPI 读取或点击正在运行的 `rossresscut` 窗口。
-Windows 没有 AT-SPI，只能用截图配合 `keybd_event` / 鼠标事件注入，例如
-`target/` 下的一次性 PowerShell 脚本。
-它用于开发与代理验证，不进入产品运行时。
+`scripts/ui_a11y.py` reads or clicks the running `rossresscut` window through AT-SPI. Windows
+has no AT-SPI, so only screenshots combined with `keybd_event` / injected mouse events are
+available there, for example the one-off PowerShell scripts under `target/`.
+It is used for development and agent verification and does not enter the product runtime.
 
-前提：
+Prerequisites:
 
-- 应用使用默认的 `accesskit` feature 构建。
-- 本机有 PyGObject 的 Atspi 绑定（Arch：`python-gobject`、`at-spi2-core`）。
-- niri 默认不开启 AT-SPI；脚本的 `--enable` 会设置运行时的
-  `org.a11y.Status.IsEnabled`。
+- The application is built with the default `accesskit` feature.
+- This machine has the PyGObject Atspi bindings (Arch: `python-gobject`, `at-spi2-core`).
+- niri does not enable AT-SPI by default; the script's `--enable` sets the runtime
+  `org.a11y.Status.IsEnabled`.
 
 ```bash
-# 先启动应用
+# start the application first
 ./target/release/rossresscut [media-file] &
 
 ./scripts/ui_a11y.py --enable
@@ -262,19 +153,21 @@ Windows 没有 AT-SPI，只能用截图配合 `keybd_event` / 鼠标事件注入
 ./scripts/ui_a11y.py --disable
 ```
 
-说明：
+Notes:
 
-- `--role` 只控制打印或点击匹配；树仍会完整遍历。
-- `--contains` 把精确名称匹配改为子串匹配；`--index` 选择同名控件中的第几个。
-- `--rects` 输出屏幕坐标与尺寸，可用于粗略布局检查。
-- 自绘的时间轴与视频预览在 AT-SPI 中通常只是 `unknown`，没有按钮角色或
-  action；拖动、滚轮和视频画面仍需截图或输入注入。
-- 颜色、字体渲染与布局细节仍必须用截图验证。
-- 脚本会过滤 AccessKit 与 pyatspi 之间已知的无害 AT-SPI 警告。
+- `--role` only controls what is printed or clicked; the tree is still traversed in full.
+- `--contains` switches from exact name matching to substring matching; `--index` selects which
+  of several same-named widgets to use.
+- `--rects` prints screen coordinates and sizes, which is useful for a rough layout check.
+- The custom-drawn timeline and video preview usually show up in AT-SPI as just `unknown`, with
+  no button role or action; dragging, the mouse wheel, and the video picture still need
+  screenshots or input injection.
+- Colors, font rendering, and layout details still have to be verified with screenshots.
+- The script filters the known harmless AT-SPI warnings exchanged between AccessKit and pyatspi.
 
-### 导出 UI 冒烟
+### Export UI smoke test
 
-`scripts/ui_export_smoke.py` 用 AT-SPI 驱动完整导出流程，不需要人工点击：
+`scripts/ui_export_smoke.py` drives the full export flow through AT-SPI without manual clicking:
 
 ```bash
 ./scripts/ui_export_smoke.py
@@ -282,80 +175,87 @@ Windows 没有 AT-SPI，只能用截图配合 `keybd_event` / 鼠标事件注入
 ./scripts/ui_export_smoke.py --binary target/debug/rossresscut
 ```
 
-- 在 headless `cage` 中启动应用，生成一个带 2 个章节的 1080p30 素材；章节自动生成 Segment。
-- 配置 `smart_cut = true`，让两次导出都有可观察的运行时间。
-- 第一次导出断言运行中、完成状态、输出时长与 2 个章节；第二次在运行中点击取消，
-  断言「Export cancelled」且没有留下输出文件。
-- 要求本机没有其他 `rossresscut` 实例；脚本结束时会关闭它启动的 cage 进程组。
-- 失败时打印当前的 label/button 列表与 cage 日志尾部。
+- It starts the application in a headless `cage` and generates a 1080p30 source with 2 chapters;
+  the chapters automatically produce Segments.
+- It sets `smart_cut = true` so that both exports have an observable running time.
+- The first export asserts the running state, the completed state, the output duration, and the
+  2 chapters; the second one clicks cancel while running, asserting "Export cancelled" and that
+  no output file is left behind.
+- It requires that no other `rossresscut` instance is running on the machine; when the script
+  ends it shuts down the cage process group it started.
+- On failure it prints the current label/button list and the tail of the cage log.
 
-## 发布打包（Linux）
+## Release packaging (Linux)
 
-`scripts/package-linux.sh` 构建 release 二进制并生成 pacman 包：
+`scripts/package-linux.sh` builds the release binary and produces a pacman package:
 
 ```bash
 ./scripts/package-linux.sh
 ```
 
-- 要求工作树干净；脚本会检查 `Cargo.toml` 与 `packaging/PKGBUILD` 的版本一致。
-- 依次执行 `./scripts/check.sh`、`cargo build --release --locked`、`makepkg`。
-- 产物在 `dist/`：`rossresscut-<version>-<pkgrel>-x86_64.pkg.tar.zst`；
-  包内容、运行时依赖与许可证说明见 `RELEASING.md`。
-- `packaging/PKGBUILD` 复用当前工作树的 `target/release`，不在 `build()` 里调用
-  cargo：makepkg 每次把 `SOURCE_DATE_EPOCH` 设为当前时间，该值属于 Cargo 指纹，
-  会让整个依赖图重新编译并冲掉本地 release 缓存。
+- It requires a clean working tree; the script checks that the versions in `Cargo.toml` and
+  `packaging/PKGBUILD` match.
+- It runs `./scripts/check.sh`, `cargo build --release --locked`, and `makepkg` in order.
+- The artifacts land in `dist/`: `rossresscut-<version>-<pkgrel>-x86_64.pkg.tar.zst`; see
+  `RELEASING.md` for the package contents, runtime dependencies, and license notes.
+- `packaging/PKGBUILD` reuses `target/release` from the current working tree instead of calling
+  cargo inside `build()`: makepkg sets `SOURCE_DATE_EPOCH` to the current time on every run, and
+  that value is part of the Cargo fingerprint, so it would recompile the entire dependency graph
+  and flush the local release cache.
 
-## Git 与提交
+## Git and commits
 
-不自动 commit、push、reset、rebase 或修改历史，除非用户明确要求（同
-`AGENTS.md`）。保持修改范围清晰。
+Do not automatically commit, push, reset, rebase, or rewrite history unless the user explicitly
+asks for it (same as `AGENTS.md`). Keep the scope of changes clear.
 
-不要把以下内容混在一个修改中：
+Do not mix the following into a single change:
 
-- 功能
-- 大规模重构
-- 格式化
-- 依赖升级
-- 无关 bug 修复
-
----
-
-## 红线清单
-
-必须遵守 `AGENTS.md` 的硬约束（原生 Rust、无 `unsafe`、整数时间、UI 帧内不阻塞、
-只经 Application 命令修改状态、禁止 shell 拼接、禁止静默重编码、禁止 `unwrap`
-处理外部输入）。开发流程上额外视为未完成的行为：
-
-- ❌ 提交带 warning 或 `cargo fmt --check` 不通过的代码。
-- ❌ 未经实际运行就声称“已经测试通过”。
-- ❌ 用 `fuck-u-code` 的分数替代实际测试。
+- Features
+- Large refactors
+- Formatting
+- Dependency upgrades
+- Unrelated bug fixes
 
 ---
 
-## 完成标准
+## Red lines
 
-一个功能只有满足以下条件才算完成：
+The hard constraints in `AGENTS.md` must be followed (native Rust, no `unsafe`, integer time, no
+blocking inside a UI frame, state changed only through Application commands, no shell
+concatenation, no silent re-encoding, no `unwrap` on external input). In the development
+process, the following additionally count as unfinished work:
 
-- [ ] 编译通过
-- [ ] 相关测试通过
-- [ ] 新功能有合理测试
-- [ ] 错误路径经过考虑
-- [ ] UI 不会被长任务阻塞
-- [ ] 没有无必要的新依赖
-- [ ] 新增依赖的理由已记录
-- [ ] 公开 API 有 `///` 文档注释
-- [ ] `cargo fmt --all --check` 通过
-- [ ] `cargo clippy --all-targets --all-features -- -D warnings` 通过
-- [ ] 项目代码无 `unsafe`；外部 GPU 句柄只在 `media::preview` 与 UI 渲染适配层之间传递
-- [ ] 相关文档已经更新
-- [ ] 没有产生无关修改
-- [ ] 功能、重构、格式化、依赖升级没有混在同一次修改中
-- [ ] 实际验证了相关功能
+- ❌ Committing code that carries warnings or fails `cargo fmt --check`.
+- ❌ Claiming "tested and passing" without actually running it.
+- ❌ Substituting a `fuck-u-code` score for actual testing.
 
-如果没有实际测试：
+---
 
-**禁止声称“已经测试通过”。**
+## Definition of done
 
-如果只是理论上 FFmpeg 支持：
+A feature only counts as done when it meets the following conditions:
 
-**禁止声称“项目已经支持该格式”。**
+- [ ] It compiles
+- [ ] The relevant tests pass
+- [ ] New features have reasonable tests
+- [ ] Error paths have been considered
+- [ ] The UI is not blocked by long-running tasks
+- [ ] There are no unnecessary new dependencies
+- [ ] The rationale for new dependencies is recorded
+- [ ] Public APIs have `///` doc comments
+- [ ] `cargo fmt --all --check` passes
+- [ ] `cargo clippy --all-targets --all-features -- -D warnings` passes
+- [ ] The project code has no `unsafe`; external GPU handles are only passed between
+      `media::preview` and the UI rendering adaptation layer
+- [ ] The relevant documentation has been updated
+- [ ] No unrelated changes were produced
+- [ ] Features, refactors, formatting, and dependency upgrades are not mixed into the same change
+- [ ] The relevant functionality was actually verified
+
+If there was no actual testing:
+
+**Claiming "tested and passing" is forbidden.**
+
+If FFmpeg only supports something in theory:
+
+**Claiming "the project supports this format" is forbidden.**

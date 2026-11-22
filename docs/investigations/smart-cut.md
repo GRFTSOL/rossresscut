@@ -1,295 +1,295 @@
-# Smart cut 调查（Phase 7C 前置）
+# Smart cut investigation (Phase 7C prerequisite)
 
-状态：`调查完成；已在 Phase 7C 实现，决策见 ADR 0013 / 0014`
+Status: `Investigation complete; implemented in Phase 7C, decisions in ADR 0013 / 0014`
 
-本文件只记录实际阅读到的外部行为、本项目现状与真实实验结果。
-实现方案与最终取舍见 ADR（决策后补充链接）。
+This file records only external behavior that was actually read, the current state of this project, and real experiment results.
+See the ADRs for the implementation plan and final tradeoffs (links to be added after the decision).
 
-## 问题
+## Problem
 
-普通 stream copy 的 `-ss` 起点会回退到此前关键帧。
-若用户把 Segment 起点放在两个关键帧之间，输出会比请求更长，且多出的内容属于 Segment 之外。
+A plain stream copy's `-ss` start rolls back to the preceding keyframe.
+If the user places a Segment start between two keyframes, the output is longer than requested, and the extra content lies outside the Segment.
 
-smart cut 的目标是：
+The goal of smart cut is:
 
 ```text
-请求：[5.5s, 9.0s)      关键帧：6.0s
+Request: [5.5s, 9.0s)      Keyframe: 6.0s
 
-普通 copy：  4.0s(关键帧) ──────────────── 9.0s     ← 起点回退
-smart cut：  5.5s(重编码头) │ 6.0s(关键帧) ─────── 9.0s
+plain copy:  4.0s(keyframe) ──────────────── 9.0s     ← start rolls back
+smart cut:   5.5s(encoded head) │ 6.0s(keyframe) ─────── 9.0s
 ```
 
-即：只重编码「请求起点 → 下一个关键帧」这一小段，其余仍然 stream copy。
+That is: re-encode only the small stretch from "requested start → next keyframe", and stream copy the rest.
 
-## 参考实现：LosslessCut 的实际行为
+## Reference implementation: LosslessCut's actual behavior
 
-阅读对象：LosslessCut 主分支（GPL-2.0）。以下只描述行为，不复制代码。
+Subject read: LosslessCut main branch (GPL-2.0). The following describes behavior only; no code is copied.
 
-### 1. 关键帧检测
+### 1. Keyframe detection
 
-- 用 `ffprobe -read_intervals <from>%<to> -show_packets -select_streams <v>
-  -show_entries packet=pts_time,flags -of json` 读取起点前后 ±10 秒的包。
-- 只保留 `flags` 以 `K` 开头的包。
-- 起点时间与关键帧时间误差小于 `1e-6` 秒 → 视为已经落在关键帧上，不需要 smart cut。
-- 否则取「起点之后的下一个关键帧」作为无损段起点。
-- 找不到时把窗口扩大到 ±60 秒；仍然找不到则报错
-  （`Cannot find any keyframe after the desired start cut point`）。
+- Read packets within ±10 seconds of the start with `ffprobe -read_intervals <from>%<to> -show_packets -select_streams <v>
+  -show_entries packet=pts_time,flags -of json`.
+- Keep only packets whose `flags` begin with `K`.
+- If the start time is within `1e-6` seconds of a keyframe time → treat it as already on a keyframe, and smart cut is unnecessary.
+- Otherwise take "the next keyframe after the start" as the lossless-segment start.
+- If none is found, widen the window to ±60 seconds; if it is still not found, raise an error
+  (`Cannot find any keyframe after the desired start cut point`).
 
-### 2. 判定与分段
+### 2. Decision and segmentation
 
 ```text
-desiredCutFrom = 用户请求的起点
-desiredCutTo = 用户请求的终点
-losslessCutFrom = 起点之后的下一个关键帧
-lastKeyframeBeforeEnd = 终点之前（或正好在终点）的关键帧
+desiredCutFrom = the start the user requested
+desiredCutTo = the end the user requested
+losslessCutFrom = the next keyframe after the start
+lastKeyframeBeforeEnd = the keyframe before the end (or exactly at the end)
 
-若起点已是关键帧且终点也是关键帧：
-    整段普通 copy
-否则若 losslessCutFrom >= 终点：
-    整段重编码（片段完全位于两个关键帧之间）
-否则：
-    编码段 [desiredCutFrom, losslessCutFrom - 一帧)      # 起点精确
-    无损段 [losslessCutFrom, lastKeyframeBeforeEnd - 两帧)
-    编码段 [lastKeyframeBeforeEnd, desiredCutTo)          # 终点精确
+if the start is already a keyframe and the end is also a keyframe:
+    plain copy the whole segment
+else if losslessCutFrom >= the end:
+    re-encode the whole segment (the segment lies entirely between two keyframes)
+else:
+    encode part [desiredCutFrom, losslessCutFrom - one frame)      # exact start
+    lossless part [losslessCutFrom, lastKeyframeBeforeEnd - two frames)
+    encode part [lastKeyframeBeforeEnd, desiredCutTo)              # exact end
 ```
 
-编码段结束点取 `max(desiredCutFrom + 一帧, losslessCutFrom - 一帧)`，
-用于避免拼接处出现重复帧，同时避免产生零长度片段。
+The encoded part's end point is `max(desiredCutFrom + one frame, losslessCutFrom - one frame)`,
+to avoid a duplicate frame at the join while also avoiding a zero-length segment.
 
-末端的两帧余量用于避开 `-t` 按 DTS 截断的问题：如果无损段直接截在
-关键帧上，FFmpeg 会保留关键帧并从下一个 GOP 多取一两个包，中间的 B 帧
-却被丢掉，形成一段画面停留。让无损段提前两帧结束，再由编码段从关键帧
-重新编码到终点，末端就没有空洞。
+The two-frame margin at the end avoids the problem of `-t` truncating on DTS: if the lossless part ends
+exactly on a keyframe, FFmpeg keeps the keyframe and grabs one or two extra packets from the next GOP while
+dropping the B frames in between, producing a still frame. Ending the lossless part two frames early and
+re-encoding from the keyframe to the end in the encoded part leaves no hole at the end.
 
-### 3. 编码段的 FFmpeg 参数（行为层面）
+### 3. FFmpeg arguments for the encoded part (behavior level)
 
 ```text
--ss <desiredCutFrom>          # 输入 seek，前置
+-ss <desiredCutFrom>          # input seek, placed before -i
 -i <source>
--ss 0                         # 输出侧重置；去掉会让拼接结果开头出现空洞
--t <编码段时长>
--map ...                      # 一个视频流 + 所有非视频流
--c:<视频输出> <源 codec 对应的编码器>
--b:<视频输出> <源视频码率 × 1.2>
--bf <has_b_frames>            # 仅当源报告了 B 帧
--video_track_timescale <源视频 time base>
+-ss 0                         # output-side reset; removing it makes the concat result start with a hole
+-t <encoded part duration>
+-map ...                      # one video stream + all non-video streams
+-c:<video output> <encoder corresponding to the source codec>
+-b:<video output> <source video bitrate × 1.2>
+-bf <has_b_frames>            # only when the source reports B frames
+-video_track_timescale <source video time base>
 ```
 
-- 视频编码器由源 `codec_name` 映射；AV1 映射到 `libsvtav1`，其余同名。
-- 源视频 `bit_rate` 缺失时，用「文件大小 × 8 / 时长」估算，再乘 1.2。
-- 只重编码**一个**视频流；音频、字幕、附加图片全部 copy。
-- 无损段使用关键帧起点、`keyframeCut` 模式，并且**不**加 `avoid_negative_ts`。
-- 拼接后不再整体加 `avoid_negative_ts`（见实验 3）。
+- The video encoder is mapped from the source `codec_name`; AV1 maps to `libsvtav1`, others keep the same name.
+- When the source video `bit_rate` is missing, estimate it as "file size × 8 / duration", then multiply by 1.2.
+- Re-encode only **one** video stream; audio, subtitles, and attached pictures are all copied.
+- The lossless part uses a keyframe start, `keyframeCut` mode, and does **not** add `avoid_negative_ts`.
+- After concat, `avoid_negative_ts` is not applied to the whole output (see Experiment 3).
 
-### 4. 产品层面的限制（LosslessCut 自己承认）
+### 4. Product-level limitations (acknowledged by LosslessCut itself)
 
-- UI 标注 `Smart cut is experimental and will not work on all files`。
-- FPS 未知时直接拒绝（需要一帧时长）。
-- 只能处理恰好一个视频流。
-- 只支持主文件，不支持外部附加文件。
-- 码率检测失败时回退到按文件大小估算。
+- The UI states `Smart cut is experimental and will not work on all files`.
+- It refuses outright when FPS is unknown (a frame duration is needed).
+- It can only handle exactly one video stream.
+- It supports only the main file, not external attached files.
+- When bitrate detection fails, it falls back to estimating by file size.
 
-## 本项目现状
+## Current state of this project
 
-已有的、可以直接复用的部分：
+Parts that already exist and can be reused directly:
 
 - `domain::media::KeyframeIndex`
-  - 已由 `ffprobe` 的 `-show_packets` 全片索引，后台线程加载，时间戳已归一到媒体时间轴。
-  - 提供 `previous` / `next`；`next` 是**严格大于**，需要补一个「已落在关键帧上」的判断。
+  - Already indexed for the whole file from `ffprobe`'s `-show_packets`, loaded on a background thread, with timestamps normalised to the media timeline.
+  - Provides `previous` / `next`; `next` is **strictly greater**, so a check for "already on a keyframe" needs to be added.
 - `media::export::command::build_args`
-  - 单段导出的参数构造；`-ss` 已前置，`-t` 在输入之后，`-c copy`。
+  - Argument construction for single-segment export; `-ss` is already placed before the input, `-t` after it, with `-c copy`.
 - `media::export::concat`
-  - 每段切片到临时文件 + concat demuxer；临时目录随 `Drop` 清理。
+  - Cuts each segment to a temporary file + concat demuxer; the temporary directory is cleaned up on `Drop`.
 - `Application::start_export`
-  - 单段/多段分流；`ExportOptions` 已承载导出设置。
-- 设置项 `smart_cut` 已存在并持久化，但没有任何代码读取。
+  - Single-segment/multi-segment branching; `ExportOptions` already carries export settings.
+- The `smart_cut` setting exists and is persisted, but no code reads it.
 
-缺失的事实：
+Missing facts:
 
-- `VideoStream` 没有建模 `has_b_frames`；需要从 FFprobe JSON 增加字段。
-- 没有「源 codec → 编码器」映射。
-- 没有 smart cut 的编码段构造与两段拼接。
+- `VideoStream` does not model `has_b_frames`; a field needs to be added from the FFprobe JSON.
+- There is no "source codec → encoder" mapping.
+- There is no encoded-part construction or two-part concat for smart cut.
 
-## 实验
+## Experiments
 
-环境：Arch Linux，FFmpeg 系统包。素材：320x240、30fps、10 秒、H.264 + AAC，
-`-g 60 -keyint_min 60 -sc_threshold 0`，关键帧在 0/2/4/6/8 秒。
+Environment: Arch Linux, FFmpeg from the system packages. Material: 320x240, 30fps, 10 seconds, H.264 + AAC,
+`-g 60 -keyint_min 60 -sc_threshold 0`, keyframes at 0/2/4/6/8 seconds.
 
-### 实验 1：编码头 + 无损尾是否可行
+### Experiment 1: Is an encoded head plus lossless tail viable?
 
 ```text
-编码段：[-ss 5.5, -ss 0, -t 0.466667]  → libx264，b:v = 源码率 × 1.2
-无损段：[-ss 6.0, -t 3.0]              → -c copy，无 avoid_negative_ts
-concat：-f concat -safe 0 -map 0 -c copy（无 avoid_negative_ts）
+encoded part: [-ss 5.5, -ss 0, -t 0.466667]  → libx264, b:v = source bitrate × 1.2
+lossless part: [-ss 6.0, -t 3.0]             → -c copy, no avoid_negative_ts
+concat: -f concat -safe 0 -map 0 -c copy (no avoid_negative_ts)
 ```
 
-结果：
+Results:
 
-| 项目 | 结果 |
+| Item | Result |
 | --- | --- |
-| 编码段 | 14 帧，0.466667s |
-| 无损段 | 92 帧，3.066667s（请求 3.0s，多 2 帧） |
-| 拼接输出 | 106 帧，3.539974s |
-| 视频接缝 | 无间隙；帧间隔稳定在 0.0333s |
-| 末尾 | 比请求多约 0.0667s，来自无损段本身的末端溢出 |
+| Encoded part | 14 frames, 0.466667s |
+| Lossless part | 92 frames, 3.066667s (3.0s requested, 2 extra frames) |
+| Concat output | 106 frames, 3.539974s |
+| Video join | No gap; frame interval steady at 0.0333s |
+| End | About 0.0667s more than requested, from the lossless part's own end overflow |
 
-### 实验 2：起始内容是否真的精确
+### Experiment 2: Is the start content really accurate?
 
-抽取拼接输出的第一帧，与源文件在 5.5s / 6.0s 的帧比较 PSNR：
+Extract the first frame of the concat output and compare PSNR against the source frames at 5.5s / 6.0s:
 
-| 对比 | PSNR |
+| Comparison | PSNR |
 | --- | --- |
-| 输出首帧 vs 源 5.5s 帧 | 36.58 dB |
-| 输出首帧 vs 源 6.0s 帧 | 11.07 dB |
+| Output first frame vs source 5.5s frame | 36.58 dB |
+| Output first frame vs source 6.0s frame | 11.07 dB |
 
-结论：输出确实从请求的 5.5s 开始，而不是回退到 6.0s 的关键帧。
-36.58 dB 的差异来自编码段的重编码损失。
+Conclusion: the output really starts at the requested 5.5s instead of rolling back to the 6.0s keyframe.
+The 36.58 dB difference comes from re-encoding loss in the encoded part.
 
-### 实验 3：concat 时加 `avoid_negative_ts` 的后果
+### Experiment 3: Consequences of adding `avoid_negative_ts` at concat time
 
-编码段首帧有负 DTS（B 帧）。concat 时加 `-avoid_negative_ts make_zero`：
+The encoded part's first frame has a negative DTS (B frames). With `-avoid_negative_ts make_zero` at concat time:
 
 ```text
 video start_time = 0.066667
-首帧 PTS = 0.066667        ← 开头出现约 2 帧空洞
+first frame PTS = 0.066667        ← about a 2-frame hole appears at the start
 ```
 
-不加时：
+Without it:
 
 ```text
 video start_time = 0.000000
-首帧 PTS = 0.000000，DTS = -0.066667
+first frame PTS = 0.000000, DTS = -0.066667
 ```
 
-结论：smart cut 的输出不能整体套用 `-avoid_negative_ts make_zero`。
-当前普通多段导出使用该参数是安全的（每段输入已被 copy 归零），
-但 smart cut 路径必须区分。
+Conclusion: `-avoid_negative_ts make_zero` must not be applied wholesale to smart cut output.
+Using it for the current plain multi-segment export is safe (each segment's input has already been zeroed by copy),
+but the smart cut path must be handled differently.
 
-### 实验 4：编码段去掉 `-ss 0`
+### Experiment 4: Dropping `-ss 0` from the encoded part
 
 ```text
-首帧 PTS = 1.019987        ← 保留了输入 seek 的内部偏移
-输出时长 4.559961s         ← 比请求多出约 1 秒
+first frame PTS = 1.019987        ← the input seek's internal offset is retained
+output duration 4.559961s         ← about 1 second more than requested
 ```
 
-结论：编码段的 `-ss 0` 不可省略。
+Conclusion: `-ss 0` in the encoded part cannot be omitted.
 
-### 实验 5：`-video_track_timescale` 对 Matroska 输出
+### Experiment 5: `-video_track_timescale` for Matroska output
 
-Matroska 输出接受该参数，不报错。是否真的生效不影响可行性判断。
+Matroska output accepts this argument without error. Whether it actually takes effect does not affect the feasibility judgement.
 
-## 事实 / 推论 / 决策
+## Facts / inferences / decisions
 
-### 事实
+### Facts
 
-1. 编码段可以精确从请求起点开始，前提是输入 seek + 解码丢弃（`-ss` 前置 + `-ss 0`）。
-2. 编码段与无损段可以直接 concat，接缝无间隙。
-3. 末端同样可以精确：用编码段覆盖最后一个关键帧到请求终点的区间。
-4. 无损段不能直接截在关键帧上；`-t` 按 DTS 截断会保留关键帧却丢掉中间的
-   B 帧，留下 2–4 帧的画面停留。提前两帧结束再由编码段接管可以避免。
-5. 拼接 smart cut 片段时不能加 `avoid_negative_ts make_zero`。
-6. Matroska 的 cue 点可能比关键帧稀疏。`-ss <关键帧>` 在 copy 模式下可能
-   落到更早的 cue，把关键帧之前的内容一起复制。实测 Inception HEVC MKV：
-   `-ss 60.56` 落到 `53.22`，`-ss 61.06` 才落到 `60.56`。
-   规划阶段用 `ffmpeg -ss <target> -copyts ... -frames:v 1` + ffprobe
-   探测实际落点；找到 `落点 >= 请求起点` 的目标后，编码头延长到落点，
-   copy 段使用该目标。找不到时整段编码。
-7. 当前项目已经拥有全片关键帧索引，不需要像 LosslessCut 那样按窗口现查。
-8. `has_b_frames` 未建模，但可以从 FFprobe JSON 补上。
+1. The encoded part can start exactly at the requested start, provided input seek plus decode discard (`-ss` before the input + `-ss 0`).
+2. The encoded part and the lossless part can be concatenated directly with no gap at the join.
+3. The end can be exact as well: cover the range from the last keyframe to the requested end with an encoded part.
+4. The lossless part must not end exactly on a keyframe; `-t` truncating on DTS keeps the keyframe but drops the B frames
+   in between, leaving 2–4 frames of still image. Ending two frames early and handing over to the encoded part avoids this.
+5. `avoid_negative_ts make_zero` must not be added when concatenating smart cut segments.
+6. Matroska cue points may be sparser than keyframes. In copy mode, `-ss <keyframe>` may
+   land on an earlier cue and copy content from before the keyframe. Measured with an Inception HEVC MKV:
+   `-ss 60.56` landed on `53.22`, and only `-ss 61.06` landed on `60.56`.
+   At planning time, use `ffmpeg -ss <target> -copyts ... -frames:v 1` + ffprobe
+   to probe the actual landing point; once a target with `landing point >= requested start` is found, extend the encoded head to the landing point
+   and use that target for the copy part. If none is found, encode the whole segment.
+7. The current project already has a whole-file keyframe index, so it does not need LosslessCut's per-window on-demand lookup.
+8. `has_b_frames` is not modelled, but can be filled in from the FFprobe JSON.
 
-### 推论
+### Inferences
 
-1. 多段导出时，每段可能产生「编码头 + 无损中段 + 编码尾」三个子片段；
-   可以把所有子片段按 Timeline 顺序放进同一个 concat list。
-2. 编码段和无损段的流布局、codec、时间基必须一致，否则 concat 失败。
-3. 源 codec 没有对应软件编码器时，smart cut 无法完成。
-4. 该功能本质上是「局部重编码」，输出不再是严格意义上的
-   「所有帧都原样复制」，必须在产品文案与导出结果中明确。
+1. During multi-segment export, each segment may produce three sub-segments: "encoded head + lossless middle + encoded tail";
+   all sub-segments can be placed into the same concat list in Timeline order.
+2. The encoded part and the lossless part must have consistent stream layout, codec, and time base, otherwise concat fails.
+3. When the source codec has no corresponding software encoder, smart cut cannot be completed.
+4. The feature is essentially "partial re-encoding", and the output is no longer strictly
+   "every frame copied as-is"; this must be made clear in product copy and export results.
 
-### 需要项目负责人决定
+### Decisions required from the project owner
 
-见下方「待决策」。
+See "Pending decisions" below.
 
-## LosslessCut 对照（2026-11-04）
+## LosslessCut comparison (2026-11-04)
 
-对照 `mifi/lossless-cut` master 的 `smartcut.ts`、`useFfmpegOperations.ts`、
-`util/streams.ts`（只读参考，未复制代码）：
+Compared against `smartcut.ts`, `useFfmpegOperations.ts`, and
+`util/streams.ts` in `mifi/lossless-cut` master (read-only reference, no code copied):
 
-- 它的 smart cut 只处理**起点**：`needsSmartCut()` 找起点之后的关键帧，
-  `cutEncodeSmartPart()` 编码 `[请求起点, 该关键帧)`，剩余区间继续 copy。
-  片段终点仍由 `-t` copy 截断，没有尾部编码。
-- Matroska + B 帧的提前 seek（issue #1216）用固定补偿：
-  `getKeyframeCutSeekCompensation()` 在 `-ss` 上加 `3/23 + 0.001` 秒，
-  再用 `-itsoffset` 把输出零点移回原切点。
-- 导出参数与我们的编码头一致：`-ss` 在 `-i` 之前、编码段再加 `-ss 0`、
-  `-t` 在输入之后、concat demuxer 合并、码率 ×1.2。
+- Its smart cut handles the **start** only: `needsSmartCut()` finds the keyframe after the start,
+  `cutEncodeSmartPart()` encodes `[requested start, that keyframe)`, and the rest of the range continues as copy.
+  The segment end is still truncated by copy with `-t`; there is no tail encoding.
+- The early seek for Matroska + B frames (issue #1216) uses fixed compensation:
+  `getKeyframeCutSeekCompensation()` adds `3/23 + 0.001` seconds to `-ss`,
+  then uses `-itsoffset` to move the output zero point back to the original cut point.
+- The export arguments match our encoded head: `-ss` before `-i`, an additional `-ss 0` in the encoded part,
+  `-t` after the input, merging with the concat demuxer, and bitrate ×1.2.
 
-与本项目的差异：
+Differences from this project:
 
-- OQ-25：本项目额外编码**尾部最后一个 GOP**；LosslessCut 不做，其段尾仍
-  依赖 `-t` copy 截断。两者属于同一思路（局部重编码 + copy 中间段 +
-  concat），本项目把范围扩展到终点。
-- OQ-26：本项目用实际 seek 落点探测替代固定补偿。固定补偿只覆盖约 0.13s
-  的 Matroska 偏移；实测稀疏 cue 可提前 7s 以上，因此必须按落点规划。
-  `-itsoffset` 的方案也会平移音频时间戳，探测 + 延长编码头不改变音画时间轴。
+- OQ-25: this project additionally encodes the **last GOP at the tail**; LosslessCut does not, and its segment end still
+  relies on `-t` copy truncation. Both follow the same idea (partial re-encode + copy the middle +
+  concat), and this project extends the scope to the end point.
+- OQ-26: this project replaces fixed compensation with probing the actual seek landing point. Fixed compensation covers only about 0.13s
+  of Matroska offset; measured sparse cues can be more than 7s early, so planning must be based on the landing point.
+  The `-itsoffset` approach also shifts the audio timestamps, whereas probing + extending the encoded head does not change the A/V timeline.
 
-## 待决策
+## Pending decisions
 
-### D1：smart cut 不可用时怎么办
+### D1: What to do when smart cut is unavailable
 
-触发条件（任一）：
+Trigger conditions (any one):
 
-- 找不到起点之后的关键帧；
-- FPS 未知（无法计算一帧时长）；
-- 选中的视频流多于一个；
-- 源视频 codec 没有可用的软件编码器；
-- 片段完全位于两个关键帧之间（整段需要重编码）。
+- No keyframe is found after the start;
+- FPS is unknown (a frame duration cannot be computed);
+- More than one video stream is selected;
+- The source video codec has no available software encoder;
+- The segment lies entirely between two keyframes (the whole segment would need re-encoding).
 
-候选：
+Candidates:
 
-- **A. 严格失败**：中止导出并给出具体原因。与 LosslessCut 一致，
-  符合「不得静默降级」。
-- **B. 回退到普通 copy**：起点回退到此前关键帧，并在结果中明确标注
-  「本段未使用智能裁切，起点已回退」。导出仍然成功。
+- **A. Fail strictly**: abort the export and give a specific reason. Consistent with LosslessCut,
+  and in line with "never degrade silently".
+- **B. Fall back to plain copy**: the start rolls back to the preceding keyframe, and the result clearly notes
+  "smart cut was not used for this segment, the start has rolled back". The export still succeeds.
 
-### D2：编码质量目标
+### D2: Encoding quality target
 
-- **A. 跟随 LosslessCut**：源视频码率 × 1.2，自动，不提供 UI。
-- **B. 提供自定义码率/质量**：增加导出设置项。
+- **A. Follow LosslessCut**: source video bitrate × 1.2, automatic, no UI exposure.
+- **B. Provide custom bitrate/quality**: add an export setting.
 
-推荐 A。smart cut 的重编码范围通常只有几百毫秒到几秒，
-自动跟随源码率已经足够，额外的质量控制属于后续优化。
+A is recommended. smart cut's re-encoding range is usually only a few hundred milliseconds to a few seconds,
+so automatically following the source bitrate is already sufficient; additional quality control is a later optimisation.
 
-## 2026-11-05 VFR 与图形字幕验证
+## 2026-11-05 VFR and graphical subtitle verification
 
 ### VFR
 
-合成 VFR 素材：120/60/40fps 三段，带 B 帧，关键帧每 30 帧。
-智能裁切区间 `[4.1,7.2)` 与 `[8.1,10.2)`。
+Synthesised VFR material: three sections at 120/60/40fps, with B frames, keyframe every 30 frames.
+Smart cut ranges `[4.1,7.2)` and `[8.1,10.2)`.
 
-实现：
+Implementation:
 
-- 编码段加 `-fps_mode passthrough`，避免 FFmpeg 把 VFR 重采样成猜测的 CFR。
-- 用 `r_frame_rate` 与 `avg_frame_rate` 相差 >0.5% 判定 VFR。
-- 规划线程在切点 ±0.5s 读取包 PTS，取最大相邻间隔作为该边界的局部帧时长；
-  编码头/尾分别使用起点与终点的局部时长。
-- 无损段提前 2 个局部帧结束，编码尾从该结束点开始（不是从关键帧开始），
-  这样视频没有空洞，音频也不跨越整段关键帧间隔。
+- Add `-fps_mode passthrough` to the encoded part, to stop FFmpeg from resampling VFR into a guessed CFR.
+- Detect VFR when `r_frame_rate` and `avg_frame_rate` differ by more than 0.5%.
+- The planning thread reads packet PTS within ±0.5s of the cut point and takes the largest adjacent interval as the local frame duration at that boundary;
+  the encoded head and tail use the local duration at the start and end respectively.
+- The lossless part ends 2 local frames early, and the encoded tail starts from that end point (not from the keyframe),
+  so there is no video hole and the audio does not span an entire keyframe interval.
 
-实测（B 帧 VFR）：最大视频间隔 25ms（40fps 段正常帧间隔），
-最大音频接缝 72ms；无 B 帧 VFR 的音频接缝约 27ms。
-AAC 包 21.3ms，接缝空隙受包边界限制，已在 ADR-0013 记录为已知限制。
-回归：`tests/smart_cut_export.rs::smart_cut_preserves_vfr_timestamps_and_audio_cadence`。
+Measured (B-frame VFR): maximum video interval 25ms (the normal frame interval of the 40fps section),
+maximum audio join 72ms; the audio join for VFR without B frames is about 27ms.
+AAC packets are 21.3ms, and the join gap is bounded by packet boundaries, recorded in ADR-0013 as a known limitation.
+Regression: `tests/smart_cut_export.rs::smart_cut_preserves_vfr_timestamps_and_audio_cadence`.
 
-### 图形字幕
+### Graphical subtitles
 
-FFmpeg 没有 PGS/DVD/DVB 编码器，用 GStreamer `dvbsubenc` 生成
-`tests/fixtures/dvb_subtitles.mkv`（80x60、10fps、3s、DVB subtitle）。
+FFmpeg has no PGS/DVD/DVB encoder, so GStreamer `dvbsubenc` was used to generate
+`tests/fixtures/dvb_subtitles.mkv` (80x60, 10fps, 3s, DVB subtitle).
 
-智能裁切区间 `[0.2,2.8)` 会拆成编码头 + 无损中段 + 编码尾；
-输出 DVB 字幕 40 个包，时间范围 `0..2.532s`，视频 `0..2.466s`，
-没有超出输出或跨接缝的明显空洞。图形字幕保持 stream copy，
-`-ss` 与 concat 会把它和视频一起重定基。
+The smart cut range `[0.2,2.8)` splits into encoded head + lossless middle + encoded tail;
+the output DVB subtitles have 40 packets spanning `0..2.532s`, and the video spans `0..2.466s`,
+with no obvious holes beyond the output or across the join. Graphical subtitles stay as stream copy,
+`-ss` and concat rebase them together with the video.
 
-回归：`tests/smart_cut_export.rs::smart_cut_keeps_graphical_subtitles_in_range`。
-PGS / DVD 未直接实测，但走同一条非文本字幕 copy 路径。
+Regression: `tests/smart_cut_export.rs::smart_cut_keeps_graphical_subtitles_in_range`.
+PGS / DVD were not tested directly, but they go through the same non-text subtitle copy path.

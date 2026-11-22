@@ -1,95 +1,104 @@
-# ADR-0015：项目许可证选择 GPL-3.0-or-later
+# ADR-0015: Choosing GPL-3.0-or-later as the Project License
 
-## 状态
+## Status
 
 Accepted
 
-## 背景
+## Context
 
-项目准备发布 Linux 二进制包，但一直没有确定自身许可证。预览主路径动态链接
-系统的 `libmpv`，因此不能单方面选择宽松许可证而不处理 GPL 合规问题。
+The project is preparing to release Linux binary packages, but has never settled on its own license.
+The main preview path dynamically links the system `libmpv`, so it cannot unilaterally choose a
+permissive license without addressing GPL compliance issues.
 
-## 已知约束
+## Known constraints
 
-- Arch 的 `mpv` 包标注 `GPL-2.0-or-later AND LGPL-2.1-or-later`；发布二进制时
-  按 `GPL-2.0-or-later` 处理最稳妥。
-- `cpal 0.18.2` 是单一 `Apache-2.0`，用于外部 FFmpeg 回退路径的音频输出。
-- 其余直接依赖为 `MIT` 或 `MIT OR Apache-2.0`；内嵌字体为 `OFL-1.1`。
-- 项目代码没有复制 LosslessCut / FilmCraft / EffectCraft 的源码。
-- 项目仅面向本地桌面使用，当前不发布到 AUR 或公开仓库。
+- Arch's `mpv` package is marked `GPL-2.0-or-later AND LGPL-2.1-or-later`; when distributing
+  binaries, treating it as `GPL-2.0-or-later` is the safest.
+- `cpal 0.18.2` is single-licensed `Apache-2.0`, used for audio output on the external FFmpeg
+  fallback path.
+- The remaining direct dependencies are `MIT` or `MIT OR Apache-2.0`; the embedded fonts are
+  `OFL-1.1`.
+- The project code does not copy any source code from LosslessCut / FilmCraft / EffectCraft.
+- The project targets local desktop use only and is currently not published to AUR or a public
+  repository.
 
-## 候选方案
+## Candidate options
 
-### 方案 A：GPL-3.0-or-later
+### Option A: GPL-3.0-or-later
 
-优点：
+Pros:
 
-- 与 `libmpv` 的 `GPL-2.0-or-later` 兼容（允许升级到 GPLv3）。
-- 与 `cpal` 的 `Apache-2.0` 兼容（Apache-2.0 与 GPLv2 存在兼容性争议，与 GPLv3 兼容）。
-- 与所有 MIT / 双许可依赖兼容。
-- 包含专利授权条款。
+- Compatible with `libmpv`'s `GPL-2.0-or-later` (upgrading to GPLv3 is allowed).
+- Compatible with `cpal`'s `Apache-2.0` (Apache-2.0 has a compatibility dispute with GPLv2, but is
+  compatible with GPLv3).
+- Compatible with all MIT / dual-licensed dependencies.
+- Includes patent grant clauses.
 
-缺点：
+Cons:
 
-- 分发二进制时必须提供对应源码。
-- 不能闭源分发。
-- 与 `GPL-2.0-only` 的代码不兼容（当前没有这类依赖）。
+- Distributing binaries requires providing the corresponding source code.
+- Closed-source distribution is not allowed.
+- Incompatible with `GPL-2.0-only` code (there are currently no such dependencies).
 
-### 方案 B：GPL-2.0-or-later
+### Option B: GPL-2.0-or-later
 
-优点：
+Pros:
 
-- 许可证文本更短。
-- 同样可以链接 `libmpv`。
+- The license text is shorter.
+- It can also link `libmpv`.
 
-缺点：
+Cons:
 
-- `cpal` 的 `Apache-2.0` 与 GPLv2 的兼容性有争议，实际分发需要按 GPLv3 条款使用，
-  声明会变得含糊。
+- The compatibility of `cpal`'s `Apache-2.0` with GPLv2 is disputed; practical distribution requires
+  using the GPLv3 terms, making the declaration ambiguous.
 
-### 方案 C：MIT / Apache-2.0
+### Option C: MIT / Apache-2.0
 
-优点：
+Pros:
 
-- 最宽松，允许闭源再分发。
+- The most permissive, allowing closed-source redistribution.
 
-缺点：
+Cons:
 
-- 动态链接 GPL 的 `libmpv` 并分发二进制时存在合规风险。
-- 只有改用 LGPL 构建的 `libmpv` 或不分发二进制时才比较安全。
+- There is compliance risk when dynamically linking GPL `libmpv` and distributing binaries.
+- It is only relatively safe when switching to an LGPL build of `libmpv` or not distributing
+  binaries.
 
-## 决策
+## Decision
 
-选择：
+Choose:
 
-> 方案 A：GPL-3.0-or-later。
+> Option A: GPL-3.0-or-later.
 
-## 决策理由
+## Rationale
 
-1. 一条许可证同时覆盖 `libmpv`、`cpal` 与全部 MIT 依赖，不需要额外例外。
-2. `libmpv` 的 `or-later` 允许升级到 GPLv3，合规路径最简单。
-3. 项目定位是开源桌面工具，GPL 的开源义务与目标一致。
-4. 比 AGPL 温和，不引入与本地桌面使用无关的网络条款。
+1. A single license covers `libmpv`, `cpal`, and all MIT dependencies at once, requiring no
+   additional exceptions.
+2. The `or-later` of `libmpv` allows upgrading to GPLv3, which is the simplest compliance path.
+3. The project is positioned as an open-source desktop tool, and GPL's open-source obligations align
+   with that goal.
+4. It is gentler than AGPL and introduces no network clauses unrelated to local desktop use.
 
-## 后果
+## Consequences
 
-### 正面
+### Positive
 
-- 依赖许可证组合清晰，发布时不需要逐项解释兼容性。
-- 项目保持完全开源。
+- The dependency license combination is clear, and no per-item compatibility explanation is needed at
+  release time.
+- The project remains fully open source.
 
-### 负面
+### Negative
 
-- 分发二进制必须同时提供对应源码或书面提供方式。
-- 不能闭源分发。
+- Distributing binaries requires providing the corresponding source code or a written offer.
+- Closed-source distribution is not allowed.
 
-### 后续影响
+### Follow-up impact
 
-- `LICENSE` 使用 GPLv3 全文。
-- `Cargo.toml`、`packaging/PKGBUILD`、`README.md`、`ATTRIBUTION.md`、
-  `RELEASING.md` 与 `PLANS.md` 的许可证说明已同步。
-- pacman 包同时安装 `LICENSE` 与 `ATTRIBUTION.md`。
+- `LICENSE` uses the full GPLv3 text.
+- The license statements in `Cargo.toml`, `packaging/PKGBUILD`, `README.md`, `ATTRIBUTION.md`,
+  `RELEASING.md`, and `PLANS.md` have been synchronized.
+- The pacman package installs both `LICENSE` and `ATTRIBUTION.md`.
 
-## 未解决问题
+## Open questions
 
-- 无。
+- None.

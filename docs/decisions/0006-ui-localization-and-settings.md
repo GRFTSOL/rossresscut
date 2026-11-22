@@ -1,117 +1,117 @@
-# 0006 UI 本地化与设置持久化
+# 0006 UI Localization and Settings Persistence
 
-- 状态：已接受
-- 日期：2026-10-24
-- 阶段：Phase 2 修订
+- Status: Accepted
+- Date: 2026-10-24
+- Phase: Phase 2 revision
 
-## 背景
+## Context
 
-Phase 2 修订需要加入设置页、主题选择与界面语言选择。项目负责人要求：
+The Phase 2 revision calls for a settings page, theme selection, and interface language selection. The project owner requires:
 
-- 主题使用下拉框，并提供“跟随系统主题”复选框。
-- 提供语言选择。
-- 字符串单独存储，按语言读取对应资源。
+- The theme uses a dropdown and provides a "follow system theme" checkbox.
+- Provide language selection.
+- Strings are stored separately, and the matching resource is read per language.
 
-项目负责人表示不熟悉 i18n 的具体实现，技术方案由 Agent 判断。本 ADR 记录该技术判断及其取舍。
+The project owner is not familiar with the concrete implementation of i18n; the technical approach is left to the Agent. This ADR records that technical judgment and its tradeoffs.
 
-## 已知约束
+## Known constraints
 
-- 不引入 Web 技术或额外运行时。
-- 不增加不必要的依赖。
-- egui 帧内不得进行大量文件读取。
-- 新增语言不应要求改动业务代码。
+- Do not introduce Web technology or an additional runtime.
+- Do not add unnecessary dependencies.
+- No significant file reads inside an egui frame.
+- Adding a language must not require changes to business code.
 
-## 候选方案
+## Candidate options
 
-### 方案 A：运行时外部资源文件
+### Option A: External resource files at runtime
 
-从用户配置目录读取 `locales/<language>.json`。
+Read `locales/<language>.json` from the user configuration directory.
 
-优点：
+Pros:
 
-- 用户可以直接修改或补充翻译。
-- 新增语言无需重新编译。
+- Users can edit or extend translations directly.
+- New languages do not require recompilation.
 
-缺点：
+Cons:
 
-- 每次启动都要处理文件缺失、权限、格式错误与版本不匹配。
-- 需要定义资源搜索路径与优先级。
-- 运行时可被破坏，必须提供完整的错误回退。
+- Every startup must handle missing files, permissions, malformed data, and version mismatches.
+- Resource search paths and priority order must be defined.
+- It can be broken at runtime, so a full error fallback must be provided.
 
-### 方案 B：编译期嵌入资源，运行期选择语言
+### Option B: Embed resources at compile time, select language at runtime
 
-`include_str!` 嵌入 `locales/en.json` 与 `locales/zh-CN.json`，反序列化为强类型 `Strings`。
+`include_str!` embeds `locales/en.json` and `locales/zh-CN.json`, which are deserialized into a strongly typed `Strings`.
 
-优点：
+Pros:
 
-- 零新增依赖（复用已有的 `serde` / `serde_json`）。
-- 缺少字段或拼写错误会在单元测试中直接失败。
-- 不涉及运行时文件 I/O，也没有资源路径问题。
-- 语言切换立即生效。
+- Zero new dependencies (reuses the existing `serde` / `serde_json`).
+- Missing fields or typos fail directly in unit tests.
+- No runtime file I/O is involved, and there is no resource path problem.
+- Language switching takes effect immediately.
 
-缺点：
+Cons:
 
-- 新增语言需要重新编译。
-- 不能由用户直接修改翻译文件。
+- Adding a language requires recompilation.
+- Users cannot modify the translation files directly.
 
-### 方案 C：第三方 i18n crate
+### Option C: A third-party i18n crate
 
-优点：
+Pros:
 
-- 可能提供插值、复数、语言协商等能力。
+- May provide interpolation, plurals, language negotiation, and similar capabilities.
 
-缺点：
+Cons:
 
-- 当前只有两个语言与简单插值，功能过剩。
-- 增加宏、运行时与版本维护成本。
+- With only two languages and simple interpolation today, the feature set is excessive.
+- Adds macro, runtime, and version maintenance costs.
 
-## 决策
+## Decision
 
-选择：
+Choice:
 
-> 方案 B。
+> Option B.
 
-具体实现：
+Concrete implementation:
 
-- `src/ui/i18n.rs` 定义 `Language`、`Strings` 与 `fill`。
-- 资源位于 `locales/en.json`、`locales/zh-CN.json`。
-- 只本地化 UI 字符串；应用层 warning 与媒体层错误保持英文，直到它们被建模为结构化错误。
-- 中文依赖 eframe 默认启用的系统字体回退（`egui_system_font_provider`），不捆绑字体。
+- `src/ui/i18n.rs` defines `Language`, `Strings`, and `fill`.
+- Resources live in `locales/en.json` and `locales/zh-CN.json`.
+- Only UI strings are localized; application-layer warnings and media-layer errors stay in English until they are modeled as structured errors.
+- Chinese relies on the system font fallback enabled by default in eframe (`egui_system_font_provider`); no fonts are bundled.
 
-设置持久化：
+Settings persistence:
 
-- 启用 `eframe` 的 `persistence` feature，使用 eframe storage。
-- `UiSettings` 保存“是否跟随系统主题”、深色 / 浅色与语言。
-- 语言的 serde 名称使用 RON 可解析的标识符（`en`、`zh_hans`），并有内存 storage 往返测试。
-- egui memory 同时持久化，因此流的折叠状态在会话之间保留。
+- Enable the `persistence` feature of `eframe` and use eframe storage.
+- `UiSettings` stores "follow system theme", dark / light, and language.
+- Language serde names use RON-parseable identifiers (`en`, `zh_hans`), with a round-trip test over in-memory storage.
+- egui memory is persisted as well, so a stream's collapsed state survives between sessions.
 
-## 决策理由
+## Rationale
 
-1. 满足“字符串单独存储、按语言读取”的要求，同时保持零新增直接依赖。
-2. 失败模式在编译 / 测试期暴露，不需要运行时资源容错。
-3. 设置持久化复用已有 eframe 能力，避免自建配置文件与原子写入逻辑。
+1. It satisfies "strings stored separately, read per language" while keeping zero new direct dependencies.
+2. Failure modes surface at compile / test time, so no runtime resource fault tolerance is needed.
+3. Settings persistence reuses existing eframe capabilities, avoiding a hand-rolled config file and atomic write logic.
 
-## 后果
+## Consequences
 
-### 正面
+### Positive
 
-- 语言切换不需要重启。
-- 资源缺失由 `Strings` 的必填字段与单元测试保证。
-- 主题、语言与折叠状态跨会话保留。
+- Language switching does not require a restart.
+- Missing resources are caught by the required fields of `Strings` and by unit tests.
+- Theme, language, and collapsed state are retained across sessions.
 
-### 负面
+### Negative
 
-- 新增语言必须重新编译并同时更新所有 locale 文件。
-- `eframe` 的 `persistence` feature 引入传递依赖 `ron`。
-- 系统字体回退依赖桌面环境安装的 CJK 字体；没有字体时中文可能显示为方框。
-- 因为 command / ctrl + 滚轮用于 seek，egui 的 ctrl+滚轮界面缩放被关闭。
+- Adding a language requires recompiling and updating all locale files at once.
+- The `persistence` feature of `eframe` brings in the transitive dependency `ron`.
+- The system font fallback depends on CJK fonts installed in the desktop environment; without them, Chinese may render as boxes.
+- Because command / ctrl + wheel is used for seeking, egui's ctrl+wheel interface scaling is disabled.
 
-### 后续影响
+### Follow-up effects
 
-- 若需要用户可编辑翻译，可把加载器替换为“外部文件优先 + 嵌入资源兜底”，不影响调用方。
-- 应用层错误本地化需要先把字符串改为错误码或结构化错误。
+- If user-editable translations are needed, the loader can be replaced with "external files first, embedded resources as fallback" without affecting callers.
+- Localizing application-layer errors first requires converting the strings into error codes or structured errors.
 
-## 未解决问题
+## Open questions
 
-- 是否让界面语言默认跟随系统 locale。
-- 是否把折叠状态按文件路径区分。
+- Whether the interface language should follow the system locale by default.
+- Whether collapsed state should be tracked per file path.

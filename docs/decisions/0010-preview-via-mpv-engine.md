@@ -1,94 +1,99 @@
-# 0010 预览后端：mpv-engine export + wgpu（方案 F）
+# 0010 Preview Backend: mpv-engine export + wgpu (Option F)
 
-- 状态：已接受；实现完成（Phase 4C 步骤 1–8，旧预览路径保留为回退）
-- 日期：2026-10-26
-- 阶段：Phase 4C 修订
-- 取代：`0009-preview-decode-zero-copy.md` 的预览解码决策；
-  `0004-audio-clock-and-desktop-integration.md` §1 音频主时钟与 §3 快速 scrub
-  的主路径
+- Status: Accepted; implementation complete (Phase 4C steps 1–8, old preview path retained as fallback)
+- Date: 2026-10-26
+- Phase: Phase 4C revision
+- Supersedes: the preview decoding decision in `0009-preview-decode-zero-copy.md`;
+  the main path of the audio master clock in `0004-audio-clock-and-desktop-integration.md` §1
+  and of fast scrub in §3
 
-## 背景
+## Context
 
-ADR 0009 选择方案 D：进程内 `libav*` + 平台 hwaccel + `media/platform` surface
-导入。Phase 4C 尚未开始，项目仍是外部 FFmpeg 进程 + RGB24 管道预览。
+ADR 0009 chose Option D: in-process `libav*` + platform hwaccel + `media/platform` surface
+import. Phase 4C had not started, and the project still used an external FFmpeg process +
+RGB24 pipeline preview.
 
-Phase 4A 已证明外部进程只能交付系统内存帧，4K HEVC VAAPI 下载是瓶颈。
-Phase 4B 的候选方案没有覆盖一条后来被验证的路径：
+Phase 4A already proved that an external process can only deliver system memory frames, and that
+the 4K HEVC VAAPI download is the bottleneck. The Phase 4B candidate set did not cover a path
+that was later validated:
 
-> libmpv 用隐藏 GL context 渲染到可导出 framebuffer，再导出
-> DMA-BUF / IOSurface / shared D3D11 texture，由 wgpu 导入。
+> libmpv renders to an exportable framebuffer using a hidden GL context, then exports
+> a DMA-BUF / IOSurface / shared D3D11 texture, which wgpu imports.
 
-`mpv-engine 0.2.1` 已经实现了这条路径，并且提供 safe Rust API。实测记录见
-`docs/investigations/mpv-engine-spike.md`，关键数据：
+`mpv-engine 0.2.1` already implements this path and offers a safe Rust API. The measurements are
+recorded in `docs/investigations/mpv-engine-spike.md`; key data:
 
-| 项 | 结果 |
+| Item | Result |
 | --- | --- |
-| Linux DMA-BUF → wgpu | 3/3 导入测试通过；字节一致、生命周期安全、帧池可回收 |
-| 4K HEVC 预览 | 29–30 fps；CPU 约 18.5%；RSS 约 269 MiB |
-| DMA-BUF 参数 | `AR24`、linear modifier、stride 8192 |
-| eframe 0.37 集成 | 红 `(253,0,0)`、灰 `(127,128,127)` 正确；无需 CPU 回读 |
-| 音频 | mpv `ao` 可用；`position()` 与 `audio-pts` 稳定相差约 11–16 ms |
-| 快速 seek | `hr-seek=no` 约 130–190 ms，落在前一个关键帧 |
-| 精确 seek | 4K headless 约 50–330 ms（多数 200–330 ms）；eframe + 4K + 音频 365 ms |
+| Linux DMA-BUF → wgpu | 3/3 import tests pass; byte-identical, lifetime-safe, frame pool reclaims |
+| 4K HEVC preview | 29–30 fps; CPU about 18.5%; RSS about 269 MiB |
+| DMA-BUF parameters | `AR24`, linear modifier, stride 8192 |
+| eframe 0.37 integration | red `(253,0,0)` and gray `(127,128,127)` correct; no CPU readback |
+| Audio | mpv `ao` works; `position()` and `audio-pts` differ steadily by about 11–16 ms |
+| Fast seek | `hr-seek=no` about 130–190 ms, landing on the previous keyframe |
+| Precise seek | 4K headless about 50–330 ms (mostly 200–330 ms); eframe + 4K + audio 365 ms |
 
-## 候选方案
+## Candidate options
 
-### 方案 A：继续外部 FFmpeg 软件预览
+### Option A: Keep external FFmpeg software preview
 
-优点：不引入新运行时，现有实现可用。
-缺点：4K HEVC CPU 占用高；外部进程 + `pipe:1` 结构上无法交付 GPU 帧。
+Pros: no new runtime introduced, and the existing implementation works.
+Cons: high CPU usage on 4K HEVC; an external process + `pipe:1` structurally cannot deliver GPU frames.
 
-### 方案 B：libmpv 软件 render
+### Option B: libmpv software render
 
-优点：实测吞吐高于外部 FFmpeg。
-缺点：仍有 GPU → CPU 回读；不能满足 zero-copy。
+Pros: measured throughput is higher than external FFmpeg.
+Cons: still has GPU → CPU readback; cannot satisfy zero-copy.
 
-### 方案 C：libmpv OpenGL render + eframe glow
+### Option C: libmpv OpenGL render + eframe glow
 
-优点：GPU-resident。
-缺点：跨平台仅 OpenGL；GL 状态与 egui 共享复杂；与项目已选的 wgpu 渲染栈不一致。
+Pros: GPU-resident.
+Cons: only OpenGL across platforms; sharing GL state with egui is complex; inconsistent with the wgpu rendering stack already chosen for the project.
 
-### 方案 D：进程内 libav* + 平台 hwaccel + media/platform
+### Option D: In-process libav* + platform hwaccel + media/platform
 
-优点：不依赖播放器运行时；zero-copy。
-缺点：需要自建 libav* 绑定、三平台 surface 导入、音频与 seek 同步；工程量和平台风险最高。
+Pros: does not depend on a player runtime; zero-copy.
+Cons: requires hand-built libav* bindings, three-platform surface import, and audio / seek synchronization; the highest engineering effort and platform risk.
 
-### 方案 E：完全自写 demux + 平台媒体 API
+### Option E: Fully hand-written demux + platform media API
 
-优点：不依赖 libav*。
-缺点：相当于独立容器解析项目，范围不可接受。
+Pros: does not depend on libav*.
+Cons: amounts to a separate container parsing project; scope is unacceptable.
 
-### 方案 F：libmpv + 隐藏 GL context + 可导出 surface + wgpu
+### Option F: libmpv + hidden GL context + exportable surface + wgpu
 
-优点：zero-copy；跨平台；音频、seek、容器与 codec 覆盖由 mpv 提供；项目代码不需要 unsafe。
-缺点：引入 libmpv 运行时与 GPL 约束；wgpu 版本锁；导出固定 8-bit BGRA。
+Pros: zero-copy; cross-platform; audio, seek, container, and codec coverage provided by mpv; project code needs no unsafe.
+Cons: introduces the libmpv runtime and GPL constraints; wgpu version lock; export is fixed to 8-bit BGRA.
 
-## 决策
+## Decision
 
-采用方案 F：
+Adopt Option F:
 
-- 预览的视频解码、缩放、色彩转换、帧调度、音频输出与 seek 交给
-  **libmpv**，通过 **`mpv-engine 0.2.1` 的 `export` + `wgpu` feature** 使用。
-- 项目只消费 `ExportedFrame` → `wgpu::Texture`，注册给 egui；
-  预览路径不做 CPU 回读。
-- 导出、裁切、合并与探测继续使用外部 FFmpeg / FFprobe；
-  stream copy 语义不变。
-- 现有外部 FFmpeg 预览在迁移期保留为回退路径，直到方案 F 稳定。
+- Video decoding, scaling, color conversion, frame scheduling, audio output, and seek for
+  preview are delegated to **libmpv**, used through the **`export` + `wgpu` features of
+  `mpv-engine 0.2.1`**.
+- The project only consumes `ExportedFrame` → `wgpu::Texture` and registers it with egui;
+  the preview path does no CPU readback.
+- Export, trimming, merging, and probing continue to use external FFmpeg / FFprobe;
+  stream copy semantics are unchanged.
+- The existing external FFmpeg preview is retained as a fallback path during the migration,
+  until Option F is stable.
 
-本 ADR 取代 ADR 0009 的“自建 `libav*` + `media/platform`”预览方案。
-`media/platform` 不再为预览路径所需；如果未来重新选择方案 D，再恢复该计划。
+This ADR supersedes the "hand-built `libav*` + `media/platform`" preview approach in ADR 0009.
+`media/platform` is no longer needed for the preview path; if Option D is chosen again in the
+future, that plan can be revived.
 
-## 决策理由
+## Rationale
 
-1. Phase 4A 已证明外部进程只能交付系统内存帧，方案 A 无法满足 4K HEVC 预览。
-2. 方案 B 仍有 GPU → CPU 回读，方案 C 绑定 OpenGL 且与 eframe 的 wgpu 渲染栈冲突。
-3. 方案 D 的所有正面目标（zero-copy、跨平台、统一 codec）方案 F 都能达到，
-   但方案 F 不需要自建 libav* 绑定、三平台 hwaccel 与 surface 导入。
-4. spike 已在 Linux RADV 上验证零拷贝、颜色、音频、seek 与 eframe 集成；
-   数据见 `docs/investigations/mpv-engine-spike.md`。
-5. 产品负责人接受 GPLv2+ 分发，并确认“预览与导出可以分开”。
+1. Phase 4A already proved that an external process can only deliver system memory frames, so Option A cannot satisfy 4K HEVC preview.
+2. Option B still has GPU → CPU readback, and Option C is tied to OpenGL and conflicts with eframe's wgpu rendering stack.
+3. Every positive goal of Option D (zero-copy, cross-platform, unified codec) is met by Option F,
+   but Option F does not need hand-built libav* bindings, three-platform hwaccel, or surface import.
+4. The spike validated zero-copy, color, audio, seek, and eframe integration on Linux RADV;
+   data is in `docs/investigations/mpv-engine-spike.md`.
+5. The product owner accepts GPLv2+ distribution and confirmed that "preview and export can be separated".
 
-## 架构与边界
+## Architecture and boundaries
 
 ```text
 UI (egui)
@@ -100,307 +105,315 @@ media::preview::mpv
 mpv-engine (export + wgpu)
   ↑
 libmpv → hwaccel (VAAPI / D3D11VA / VideoToolbox)
-        → 隐藏 GL context → DMA-BUF / IOSurface / shared D3D11
+        → hidden GL context → DMA-BUF / IOSurface / shared D3D11
         → wgpu::Texture
 ```
 
-规则：
+Rules:
 
-1. 新增 `src/media/preview/mpv.rs`（或同层子模块），只在这里依赖
-   `mpv-engine`。Domain 与 Application 不直接依赖 `mpv-engine` 类型。
-2. `Application` 负责命令、状态、错误与位置；UI 只发送命令并显示结果。
-   UI 不构造 mpv 命令，不解析 mpv 属性。
-3. `ExportedFrame` / `wgpu::Texture` 是 GPU 句柄，**不得进入 Domain 或
-   Application 的命令状态**，不得写入 `Segment`、`Timeline` 或持久化设置。
-   只允许在 `media::preview` 与 UI 渲染适配层之间按帧传递。
-4. 项目代码继续保持 `unsafe_code = "forbid"`。`mpv-engine` 内部的 FFI 与
-   `unsafe` 由第三方依赖承担；本项目不新增 unsafe 代码。
-5. 如果以后必须在项目内直接操作 GPU 句柄，才重新引入 `media/platform`；
-   方案 F 不要求它。
-6. eframe 的 wgpu 设备必须请求
-   `wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF`（Linux），并在
-   `NativeOptions.wgpu_options` 中使用 `WgpuSetupCreateNew.device_descriptor`。
-   `instance_descriptor.backends` 固定为 `mpv_engine::WGPU_BACKEND`。
-7. `wgpu` / `wgpu-hal` 必须与 eframe 解析到同一版本（当前 30.0.1）。
-   升级 eframe 或 mpv-engine 时，两者必须同步升级，否则 `Device::as_hal`
-   的类型不匹配。
-8. `register_native_texture` 在 egui-wgpu 0.37 可以直接接受 `Bgra8Unorm`；
-   文档要求 `Rgba8Unorm` 与实测不一致，必须保留颜色回归测试。
+1. Add `src/media/preview/mpv.rs` (or a submodule at the same layer); only this module depends on
+   `mpv-engine`. Domain and Application do not depend on `mpv-engine` types directly.
+2. `Application` owns commands, state, errors, and position; the UI only sends commands and displays results.
+   The UI does not build mpv commands and does not parse mpv properties.
+3. `ExportedFrame` / `wgpu::Texture` are GPU handles and **must not enter the command state of Domain or
+   Application**, and must not be written into `Segment`, `Timeline`, or persisted settings.
+   They may only be passed per frame between `media::preview` and the UI rendering adapter layer.
+4. Project code continues to hold `unsafe_code = "forbid"`. The FFI and `unsafe` inside `mpv-engine`
+   are borne by the third-party dependency; this project adds no unsafe code.
+5. `media/platform` is reintroduced only if GPU handles must later be manipulated directly inside the project;
+   Option F does not require it.
+6. The eframe wgpu device must request
+   `wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF` (Linux), and must use
+   `WgpuSetupCreateNew.device_descriptor` in `NativeOptions.wgpu_options`.
+   `instance_descriptor.backends` is fixed to `mpv_engine::WGPU_BACKEND`.
+7. `wgpu` / `wgpu-hal` must resolve to the same version as eframe (currently 30.0.1).
+   When upgrading eframe or mpv-engine, both must be upgraded together, otherwise the types of
+   `Device::as_hal` do not match.
+8. `register_native_texture` in egui-wgpu 0.37 accepts `Bgra8Unorm` directly; the documentation
+   requires `Rgba8Unorm`, which contradicts the measurement, so the color regression test must be kept.
 
-## 音频
+## Audio
 
-采用 mpv 独占音频输出：
+Use mpv's exclusive audio output:
 
-- `Engine::video()` 使用默认 `ao`；音频设备通过 mpv 的 `audio-device`
-  属性选择。
-- UI 的播放位置使用 `Engine::position()`（`time-pos`），不再使用 cpal
-  消费样本帧的时钟。
-- 暂停与 seek 已接入 `set_paused`、`seek_absolute`；音量与静音由 mpv 的
-  `volume` / `mute` 属性承载，UI 尚无控件。
-- 主路径移除 `PreviewAudio` 与 cpal 音频输出；cpal 只保留在外部 FFmpeg
-  回退路径中，回退路径删除后一并移除。
-- 不再同时让 mpv 与 cpal 输出音频，避免双声源和两套时钟。
+- `Engine::video()` uses the default `ao`; the audio device is selected through mpv's `audio-device`
+  property.
+- The UI play position uses `Engine::position()` (`time-pos`) instead of the cpal
+  clock that consumes sample frames.
+- Pause and seek are wired to `set_paused` and `seek_absolute`; volume and mute are carried by mpv's
+  `volume` / `mute` properties, and the UI has no controls for them yet.
+- The main path removes `PreviewAudio` and the cpal audio output; cpal remains only in the external FFmpeg
+  fallback path and is removed together with that path.
+- mpv and cpal never output audio at the same time, avoiding dual audio sources and two clocks.
 
-ADR 0004 §1 的 cpal 主时钟与 §3 的 FFmpeg scrub 设计由本节取代。
-音频测量：
+This section supersedes the cpal master clock in ADR 0004 §1 and the FFmpeg scrub design in §3.
+Audio measurements:
 
-- 稳定播放时 `position()` 与 `audio-pts` 相差约 11–16 ms；
-  启动阶段约 79 ms 的瞬态。
-- 暂停、暂停中 seek、恢复、音量、静音均已在 spike 中验证。
-- 多音轨、设备切换语义与输出延迟已核查（2026-11-04），见
-  `docs/investigations/mpv-engine-spike.md`；10 分钟以上的漂移已于
-  2026-11-04 复测通过，见 `docs/investigations/playback-pipeline.md`。
+- During steady playback, `position()` and `audio-pts` differ by about 11–16 ms;
+  there is a transient of about 79 ms during startup.
+- Pause, seek while paused, resume, volume, and mute have all been validated in the spike.
+- Multi-track, device switching semantics, and output latency have been checked (2026-11-04), see
+  `docs/investigations/mpv-engine-spike.md`; drift beyond 10 minutes was re-tested and passed on
+  2026-11-04, see `docs/investigations/playback-pipeline.md`.
 
-## 硬件解码
+## Hardware decoding
 
-预览启动时显式设置 `hwdec=auto-safe`：
+Preview startup explicitly sets `hwdec=auto-safe`:
 
-- Linux 默认 VAAPI，macOS 默认 VideoToolbox；
-- 设备不可用时由 mpv 回退软件解码；
-- 解码器不可用时不得静默失败，播放信息必须显示实际后端。
+- VAAPI by default on Linux, VideoToolbox by default on macOS;
+- mpv falls back to software decoding when the device is unavailable;
+- an unavailable decoder must not fail silently, and playback info must show the actual backend.
 
-> 2026-11-06 Windows 实测修正：预览走 `vo=libmpv` + OpenGL
-> （`WGL_NV_DX_interop2`），该路径不支持 `d3d11va`（它要求
-> `gpu-context=d3d11`），因此 `auto-safe` 在 NVIDIA 机器上解析为 `nvdec`。
-> 这是 `auto-safe` 的正常取值，不是 `hwdec=auto` 也不是显式指定。
+> Correction from Windows measurements on 2026-11-06: preview goes through `vo=libmpv` + OpenGL
+> (`WGL_NV_DX_interop2`), and that path does not support `d3d11va` (which requires
+> `gpu-context=d3d11`), so `auto-safe` resolves to `nvdec` on NVIDIA machines.
+> This is a normal value of `auto-safe`, neither `hwdec=auto` nor an explicit setting.
 
-UI 通过 `hwdec-current` 显示实际后端（例如 `vaapi`、`vaapi-copy`、
-`videotoolbox`、`nvdec`、`no`）。该属性由 `Application` 每 500 ms 读取一次并缓存，
-不放在 egui 帧的同步路径上。
+The UI shows the actual backend via `hwdec-current` (for example `vaapi`, `vaapi-copy`,
+`videotoolbox`, `nvdec`, `no`). `Application` reads and caches this property every 500 ms,
+off the synchronous path of the egui frame.
 
-## 快速 scrub 与精确 seek
+## Fast scrub and precise seek
 
-交互规则：
+Interaction rules:
 
-1. 拖动开始：设置 `hr-seek=no`，发出 seek。
-2. 拖动期间：UI 显示 `Engine::position()` 的实际落点；该落点是前一个
-   关键帧，不是用户请求的目标时间。
-3. 松开：设置 `hr-seek=yes`，发出最终精确 seek。
-4. 精确 seek 完成以 `PlaybackRestart` 为准；如果事件没有到达，以
-   `position()` 或观察 `time-pos` 兜底。
-5. 预览位置只用于视觉反馈，不得用于 Segment 边界、关键帧索引或导出。
+1. Drag start: set `hr-seek=no` and issue a seek.
+2. During dragging: the UI shows the actual landing point of `Engine::position()`; that landing point
+   is the previous keyframe, not the target time the user requested.
+3. Release: set `hr-seek=yes` and issue the final precise seek.
+4. Precise seek completion is determined by `PlaybackRestart`; if the event does not arrive, fall back
+   to `position()` or by observing `time-pos`.
+5. The preview position is only for visual feedback and must not be used for Segment boundaries,
+   keyframe indices, or export.
 
-实测：
+Measurements:
 
-- `hr-seek=no`：播放中 132–193 ms，暂停 128–313 ms；
-  测试素材 GOP 约 5 秒，落点误差约 4.9–5.0 秒。
-- `hr-seek=yes`：4K headless 约 50–330 ms（多数 200–330 ms），误差 0；
-  eframe + 4K + 音频 365 ms，`position=6.039`、`audio-pts=6.015`。
-- headless / `vo=null` / `audio=no` 下精确 seek 可能不触发
-  `PlaybackRestart`；真实 eframe + 音频下正常触发。实现必须两种路径都支持。
+- `hr-seek=no`: 132–193 ms during playback, 128–313 ms while paused;
+  the test footage has a GOP of about 5 seconds, and the landing error is about 4.9–5.0 seconds.
+- `hr-seek=yes`: 4K headless about 50–330 ms (mostly 200–330 ms), error 0;
+  eframe + 4K + audio 365 ms, `position=6.039`, `audio-pts=6.015`.
+- Under headless / `vo=null` / `audio=no`, a precise seek may not emit
+  `PlaybackRestart`; with real eframe + audio it does. The implementation must support both paths.
 
-## 许可证
+## License
 
-产品负责人已确认接受 GPLv2+，发布时按实际链接的 libmpv 许可证分发。
+The product owner has confirmed acceptance of GPLv2+, and releases are distributed under the
+license of the libmpv actually linked.
 
-- `mpv-engine`、`rsmpv`、`rsmpv-sys`：MIT / Apache-2.0 / ISC，宽松许可。
-- libmpv：mpv 默认构建为 GPLv2+；只有 `-Dgpl=false` 构建才是 LGPLv2.1+。
-- 分发时如果带上 GPL 构建的 libmpv，整个组合作品必须按 GPL 兼容方式分发，
-  并提供对应源码与许可证。由于项目依赖中含 Apache-2.0 代码，保守选择
-  **GPLv3+**；GPLv2-only 与 Apache-2.0 不兼容。
-- 如果只依赖用户系统提供的 libmpv，动态链接 GPL 库仍可能被视为衍生作品；
-  不能把“不捆绑”当作许可证规避。
-- 外部 `ffmpeg` 进程不受影响：不是链接，不构成衍生作品。
-- 分发清单必须包含 `LICENSES` / About 页面中的 libmpv 与 FFmpeg 说明。
-  如果未来需要宽松许可分发，必须改用 `-Dgpl=false` 的 LGPL libmpv，
-  或放弃方案 F。
+- `mpv-engine`, `rsmpv`, `rsmpv-sys`: MIT / Apache-2.0 / ISC, permissive.
+- libmpv: the default mpv build is GPLv2+; only `-Dgpl=false` builds are LGPLv2.1+.
+- If a GPL build of libmpv is shipped at distribution time, the combined work must be distributed
+  in a GPL-compatible way, with the corresponding source and license provided. Because the project's
+  dependencies include Apache-2.0 code, the conservative choice is **GPLv3+**; GPLv2-only is
+  incompatible with Apache-2.0.
+- If only the user's system-provided libmpv is depended on, dynamically linking a GPL library may
+  still be considered a derivative work; "not bundling" cannot be treated as a license workaround.
+- The external `ffmpeg` process is unaffected: it is not linked and does not form a derivative work.
+- The distribution manifest must include the libmpv and FFmpeg notices in `LICENSES` / the About page.
+  If permissive-license distribution is needed in the future, switch to an LGPL libmpv built with
+  `-Dgpl=false`, or abandon Option F.
 
-许可证细节以实际发行时的审查为准；本节记录的是产品决策，不是法律意见。
+License details are subject to review at actual release time; this section records a product
+decision, not legal advice.
 
-## 依赖与平台
+## Dependencies and platforms
 
-新增依赖：
+New dependency:
 
 ```toml
 mpv-engine = { version = "0.2.1", features = ["wgpu"] }
 ```
 
-`wgpu` feature 隐含 `export`。传递依赖：`rsmpv 0.2.1`、
-`wgpu 30.0.1`、`wgpu-hal 30.0.1`。
+The `wgpu` feature implies `export`. Transitive dependencies: `rsmpv 0.2.1`,
+`wgpu 30.0.1`, `wgpu-hal 30.0.1`.
 
-系统依赖：
+System dependencies:
 
-- Linux：libmpv（系统包）、libEGL、libgbm；运行需要可读的
-  `/dev/dri/renderD*`。
-- Windows：libmpv、OpenGL、D3D11、DXGI；导出路径使用
-  `WGL_NV_DX_interop2`。
-- macOS：libmpv、CGL、IOSurface、Metal。
+- Linux: libmpv (system package), libEGL, libgbm; running requires a readable
+  `/dev/dri/renderD*`.
+- Windows: libmpv, OpenGL, D3D11, DXGI; the export path uses
+  `WGL_NV_DX_interop2`.
+- macOS: libmpv, CGL, IOSurface, Metal.
 
-被否决的替代方案：
+Rejected alternatives:
 
-- 直接用 `rsmpv` / `libmpv2`：只提供 libmpv 绑定与 GL/software render，
-  仍需自己实现 GL context、FBO、DMA-BUF 导出与 wgpu 导入。
-- `egui-sharkplayer`：wgpu 路径实际是 GL 渲染 + `glReadPixels` + egui
-  texture；且锁 eframe 0.35，与项目 0.37 不兼容。
-- `alhazen-core`：Linux 只支持 NVIDIA NVDEC，本机 AMD 无硬件解码；
-  输出 CPU BGRA；API 是播放器而非编辑器。
-- 继续方案 D：需要自建 libav* 绑定、三平台 surface 导入与同步；
-  spike 已证明方案 F 可以用更少代码达到同样目标。
+- Using `rsmpv` / `libmpv2` directly: they only provide libmpv bindings and GL/software render,
+  so the GL context, FBO, DMA-BUF export, and wgpu import would still have to be implemented
+  by hand.
+- `egui-sharkplayer`: its wgpu path is actually GL rendering + `glReadPixels` + egui
+  texture; it also pins eframe 0.35, incompatible with the project's 0.37.
+- `alhazen-core`: on Linux it only supports NVIDIA NVDEC, so this machine's AMD has no hardware
+  decoding; it outputs CPU BGRA; its API is that of a player, not an editor.
+- Continuing with Option D: it requires hand-built libav* bindings, three-platform surface import,
+  and synchronization; the spike already proved Option F can reach the same goal with less code.
 
-## 回退与错误
+## Fallback and errors
 
-- libmpv 不可用、`Engine` 初始化失败、export 后端不可用、
-  或 device 缺少 DMA-BUF feature 时，回退到现有外部 FFmpeg 预览。
-- mpv-engine 的加载 API 只接受 UTF-8 路径；非 UTF-8 路径必须回退外部 FFmpeg，
-  并在错误信息中说明原因。
-- 回退必须可见：播放信息显示实际后端（mpv / ffmpeg software / ffmpeg vaapi）。
-- 不允许静默把 zero-copy 降级为 CPU 回读；如果使用 `render_sw`，
-  必须在 UI 标注。
-- 导入失败、驱动拒绝、尺寸不支持必须返回带上下文的错误，不 panic。
+- Fall back to the existing external FFmpeg preview when libmpv is unavailable, `Engine`
+  initialization fails, the export backend is unavailable, or the device lacks the DMA-BUF feature.
+- mpv-engine's loading API accepts only UTF-8 paths; non-UTF-8 paths must fall back to external
+  FFmpeg, and the error message must explain why.
+- Fallback must be visible: playback info shows the actual backend (mpv / ffmpeg software / ffmpeg vaapi).
+- Silently degrading zero-copy to CPU readback is not allowed; if `render_sw` is used,
+  it must be labeled in the UI.
+- Import failure, driver rejection, and unsupported size must return errors with context, never panic.
 
-## 帧语义与编辑约束
+## Frame semantics and editing constraints
 
-- `ExportedFrame` 不提供 PTS。`Engine::position()` 是 mpv 播放时钟，
-  **不是当前纹理对应的源 PTS**。
-- 预览位置只用于 UI 显示与 scrub 反馈；Segment 边界、关键帧索引、
-  导出参数仍来自 FFprobe / FFmpeg。
-- 内部媒体时间继续使用 `Timestamp` / `Duration`；`f64` 秒只出现在
-  mpv API 边界，不能成为项目的时间表示。
-- 预览固定为显示尺寸；导出与编辑不得依赖预览帧或预览时间。
-- ADR 0009 的 OQ-7（预览必须使用源 PTS）在方案 F 下不再适用；
-  如果未来需要帧精确预览，另立 ADR。
+- `ExportedFrame` does not provide a PTS. `Engine::position()` is the mpv playback clock,
+  **not the source PTS corresponding to the current texture**.
+- The preview position is only for UI display and scrub feedback; Segment boundaries, keyframe indices,
+  and export parameters still come from FFprobe / FFmpeg.
+- Internal media time continues to use `Timestamp` / `Duration`; `f64` seconds appear only at the
+  mpv API boundary and must not become the project's time representation.
+- Preview is fixed to display size; export and editing must not depend on preview frames or preview time.
+- OQ-7 from ADR 0009 (preview must use source PTS) no longer applies under Option F;
+  if frame-accurate preview is needed later, a separate ADR should be written.
 
 ## HDR / 10-bit
 
-mpv-engine 导出 8-bit BGRA（Linux `AR24`/`XR24`），HDR 素材会被 mpv
-tone map 到 SDR。
+mpv-engine exports 8-bit BGRA (Linux `AR24`/`XR24`), and HDR footage is tone mapped
+to SDR by mpv.
 
-- 当前产品以 8-bit stream copy 裁切为主，8-bit 预览满足需求。
-- stream copy 导出不受预览位深影响。
-- smart cut 重编码读取源 `pix_fmt`、primaries、transfer、matrix，并显式传给
-  编码器，保持 10-bit/HDR 元数据；不得把预览的 8-bit 帧作为重编码输入。
-- 2026-11-04 已验证：预览保持 SDR tone map；stream copy 与 smart cut 均保留
-  10-bit/HDR，不需要更高位深导出。见 `docs/investigations/mpv-engine-spike.md`。
+- The current product focuses on 8-bit stream copy trimming, so 8-bit preview meets the need.
+- stream copy export is unaffected by preview bit depth.
+- smart cut re-encoding reads the source `pix_fmt`, primaries, transfer, and matrix, and passes them
+  explicitly to the encoder to preserve 10-bit/HDR metadata; preview's 8-bit frames must not be used
+  as re-encode input.
+- Validated on 2026-11-04: preview keeps the SDR tone map; both stream copy and smart cut preserve
+  10-bit/HDR, with no need for higher-bit-depth export. See `docs/investigations/mpv-engine-spike.md`.
 
-## 窗口尺寸
+## Window size
 
-- `set_export_size` 必须使用**物理像素**，不是 egui 的逻辑点。
-- eframe 0.37 在 Wayland scale 下逻辑 1280x720 对应物理 1707x960；
-  实现需要从 `egui::Context` / `ViewportInfo` 获取像素尺寸。
-- resize 时要节流，避免每个事件都重配置 export；原始帧尺寸变化后再更新。
-- resize 当时未在 spike 中验证，是 OQ-10 的剩余项；2026-11-04 已实现并验证，
-  见 `docs/investigations/mpv-engine-spike.md`。
+- `set_export_size` must use **physical pixels**, not egui logical points.
+- Under Wayland scale in eframe 0.37, logical 1280x720 corresponds to physical 1707x960;
+  the implementation must obtain the pixel size from `egui::Context` / `ViewportInfo`.
+- Resize must be throttled so export is not reconfigured on every event; update only after the raw
+  frame size changes.
+- Resize was not validated in the spike at the time and was a remaining item of OQ-10; it was implemented
+  and validated on 2026-11-04, see `docs/investigations/mpv-engine-spike.md`.
 
-## 测试与验收
+## Tests and acceptance
 
-### 单元测试
+### Unit tests
 
-- `Timestamp` ↔ mpv 秒参数的转换。
-- `hr-seek=no/yes` 状态机；拖动开始/结束的幂等性。
-- 回退选择：引擎不可用、feature 不可用、导入失败。
-- 错误上下文包含路径、目标时间与后端。
+- Conversion between `Timestamp` and mpv seconds arguments.
+- The `hr-seek=no/yes` state machine; idempotency of drag start/end.
+- Fallback selection: engine unavailable, feature unavailable, import failure.
+- Error context includes path, target time, and backend.
 
-### 集成测试（Linux 必需）
+### Integration tests (required on Linux)
 
-- 4K HEVC：导出帧 → wgpu 读回与 `copy_pixels()` 字节一致。
-- 纹理生命周期：detach / drop 后仍可读；帧池回收不串帧。
-- eframe 红/灰颜色回归：BGRA 通道顺序与 sRGB 不偏移。
-- 音频：播放、暂停、暂停中 seek、音量、静音；
-  `position()` 与 `audio-pts` 在容差内。
-- scrub：`hr-seek=no` 落在关键帧；`hr-seek=yes` 落点误差在 1 帧内；
-  延迟记录到报告中。
-- resize：物理像素变化后画面比例与清晰度正确。
-- 回退：缺少 libmpv / DMA-BUF feature 时回到外部 FFmpeg，并在 UI 显示。
+- 4K HEVC: exported frames → wgpu readback matches `copy_pixels()` byte-for-byte.
+- Texture lifetime: still readable after detach / drop; frame pool reclamation does not mix frames.
+- eframe red/gray color regression: BGRA channel order and sRGB are not shifted.
+- Audio: play, pause, seek while paused, volume, mute;
+  `position()` and `audio-pts` within tolerance.
+- scrub: `hr-seek=no` lands on a keyframe; `hr-seek=yes` lands within 1 frame;
+  latency is recorded in the report.
+- resize: aspect ratio and sharpness are correct after the physical pixel size changes.
+- fallback: returns to external FFmpeg when libmpv / the DMA-BUF feature is missing, and shows it in the UI.
 
-### 平台验收
+### Platform acceptance
 
-- Linux：本机 RADV 实测。
-- Windows：D3D11VA + DX12 导入，真实机器验证。
-- macOS：VideoToolbox + Metal/IOSurface，真实机器验证。
-- 未完成前，不得在文档或 UI 声称对应平台已支持。
+- Linux: measured on this machine's RADV.
+- Windows: D3D11VA + DX12 import, verified on real hardware.
+- macOS: VideoToolbox + Metal/IOSurface, verified on real hardware.
+- Until completed, documentation or the UI must not claim support for the corresponding platform.
 
-### 性能目标（本机 4K HEVC）
+### Performance targets (this machine, 4K HEVC)
 
-- 预览 ≥ 30 fps。
-- CPU ≤ 25%（单核口径，按 spike 约 18.5%）。
-- 快速 seek ≤ 300 ms；精确 seek ≤ 500 ms。
-- 预览路径无 CPU 像素回读。
+- Preview ≥ 30 fps.
+- CPU ≤ 25% (single-core basis; about 18.5% per the spike).
+- Fast seek ≤ 300 ms; precise seek ≤ 500 ms.
+- No CPU pixel readback on the preview path.
 
-## 后果
+## Consequences
 
-### 正面
+### Positive
 
-- 预览保持 GPU-resident，避免 4K VAAPI 下载瓶颈。
-- 不再需要自建 libav* 绑定、三平台 hwaccel 与 surface 导入。
-- 音频、seek、VFR、容器与 codec 覆盖由 mpv 提供。
-- eframe 0.37 / wgpu 30 与 mpv-engine 0.2.1 版本已对齐。
-- 项目代码仍无 unsafe；许可证风险由产品决策接受。
+- Preview stays GPU-resident, avoiding the 4K VAAPI download bottleneck.
+- Hand-built libav* bindings, three-platform hwaccel, and surface import are no longer needed.
+- Audio, seek, VFR, container, and codec coverage are provided by mpv.
+- eframe 0.37 / wgpu 30 and mpv-engine 0.2.1 versions are already aligned.
+- Project code still has no unsafe; the license risk is accepted by a product decision.
 
-### 负面
+### Negative
 
-- 运行时依赖 libmpv；分发受 GPL 约束。
-- wgpu 大版本与 mpv-engine 强耦合，升级需要同步。
-- 隐藏 GL context 增加平台依赖与调试复杂度。
-- 预览不暴露源 PTS；不能用于帧精确编辑。
-- 预览固定 8-bit BGRA；HDR 预览为 SDR tone map。导出仍保留源位深与 HDR
-  元数据，需要 HDR 色彩审片时使用外部播放器。
-- Windows / macOS 路径尚未实测。
-- mpv-engine 0.2.1 很新，维护与升级风险由项目承担。
-- 现有 `PreviewAudio`、`PreviewVideo` 与相关测试需要替换或保留为回退。
+- Runtime dependency on libmpv; distribution is subject to GPL.
+- The wgpu major version is tightly coupled to mpv-engine, so upgrades must be synchronized.
+- The hidden GL context adds platform dependencies and debugging complexity.
+- Preview does not expose source PTS; it cannot be used for frame-accurate editing.
+- Preview is fixed at 8-bit BGRA; HDR preview is an SDR tone map. Export still preserves source bit depth
+  and HDR metadata, so an external player is needed for HDR color review.
+- The Windows / macOS paths have not been measured yet.
+- mpv-engine 0.2.1 is very new, so maintenance and upgrade risk falls on the project.
+- The existing `PreviewAudio`, `PreviewVideo`, and related tests need to be replaced or retained as fallback.
 
-## Phase 4C 实施步骤
+## Phase 4C implementation steps
 
-以下步骤都发生在 Phase 4C 内，**不是项目 Phase 1**。Phase 1/2/3 已完成，
-不重做媒体分析、FFprobe、时间轴或现有编辑功能。
+All of the following steps happen inside Phase 4C and are **not project Phase 1**. Phases 1/2/3 are
+complete: media analysis, FFprobe, the timeline, and existing editing features are not redone.
 
-1. 加入 `mpv-engine` 依赖与平台检测；保留外部 FFmpeg 回退。
-2. 实现 `media::preview::mpv`：生命周期、attach export、acquire frame、
-   命令、错误与状态。
-3. UI 接入：请求 wgpu feature、注册纹理、颜色/生命周期回归。
-4. 音频切换：mpv `ao` 成为主路径，移除 cpal 主时钟。
-5. scrub 状态机：`hr-seek=no` → `hr-seek=yes`，事件与位置兜底。
-6. resize / Wayland scale 的物理像素处理。
-7. 回退与播放信息：显示实际后端；错误路径可见。
-8. 测试、文档与 AGENTS 条款修订；稳定后再删除旧预览路径。
+1. Add the `mpv-engine` dependency and platform detection; retain the external FFmpeg fallback.
+2. Implement `media::preview::mpv`: lifetime, attach export, acquire frame,
+   commands, errors, and state.
+3. UI integration: request wgpu features, register textures, color / lifetime regression.
+4. Audio switch: mpv `ao` becomes the main path, and the cpal master clock is removed.
+5. scrub state machine: `hr-seek=no` → `hr-seek=yes`, with event and position fallback.
+6. Physical pixel handling for resize / Wayland scale.
+7. Fallback and playback info: show the actual backend; make error paths visible.
+8. Tests, documentation, and AGENTS clause revisions; delete the old preview path once stable.
 
-## 需要同步修订的文档
+## Documents that need synchronized revision
 
-- `AGENTS.md`：预览解码/音频边界、GPU 句柄传递范围、依赖与许可证条款。
-- `docs/architecture.md`：预览数据流。
-- `docs/media-model.md`：预览时间与编辑时间的边界（如需要）。
-- `PLANS.md`：Phase 4C 任务改为方案 F。
-- `docs/open-questions.md`：OQ-3/4/5/6/7 标记为方案 D 历史项；
-  OQ-10..13 作为方案 F 的待办（OQ-10 已于 2026-11-04 关闭）。
+- `AGENTS.md`: preview decoding / audio boundaries, GPU handle passing scope, dependency and license clauses.
+- `docs/architecture.md`: preview data flow.
+- `docs/media-model.md`: the boundary between preview time and editing time (if needed).
+- `PLANS.md`: change the Phase 4C task to Option F.
+- `docs/open-questions.md`: mark OQ-3/4/5/6/7 as Option D historical items;
+  OQ-10..13 are the todos for Option F (OQ-10 was closed on 2026-11-04).
 
-## 旧预览路径的退出条件
+## Exit conditions for the old preview path
 
-`PreviewVideo` 与 `PreviewAudio`（外部 FFmpeg + cpal）目前同时承担三条回退：
+`PreviewVideo` and `PreviewAudio` (external FFmpeg + cpal) currently serve three fallbacks at once:
 
-1. `mpv-preview` feature 关闭的构建（无 libmpv）。
-2. eframe 没有 wgpu render state。
-3. mpv 启动或帧导入失败。
+1. Builds with the `mpv-preview` feature disabled (no libmpv).
+2. eframe has no wgpu render state.
+3. mpv startup or frame import fails.
 
-因此它们不能在 Phase 4C 删除。可以删除的前提是：
+Therefore they cannot be deleted in Phase 4C. The preconditions for deletion are:
 
-1. 项目只提供带 libmpv 的构建，或者回退改为不依赖这两条进程路径的实现。
-2. Windows 与 macOS 的 mpv 导入路径完成实机验证（目前只有 Linux）。
-3. `tests/mpv_gpu_regression.rs` 与 `tests/mpv_preview.rs` 成为发布检查的一部分，
-   覆盖颜色、生命周期、seek 与音频时钟。
-4. OQ-9（长时漂移）已有可接受结论，见
-   `docs/investigations/playback-pipeline.md`。
+1. The project ships only builds with libmpv, or the fallback is changed to an implementation that
+   does not depend on these two process paths.
+2. The mpv import paths on Windows and macOS are verified on real hardware (currently only Linux).
+3. `tests/mpv_gpu_regression.rs` and `tests/mpv_preview.rs` become part of the release checks,
+   covering color, lifetime, seek, and the audio clock.
+4. OQ-9 (long-run drift) has an acceptable conclusion, see
+   `docs/investigations/playback-pipeline.md`.
 
-删除时同步移除 `cpal` 依赖、`PreviewAudio`、`PreviewVideo` 及对应测试，
-并更新 `AGENTS.md`、`PLANS.md` 与 `docs/architecture.md`。
+When deleting, also remove the `cpal` dependency, `PreviewAudio`, `PreviewVideo`, and the
+corresponding tests, and update `AGENTS.md`, `PLANS.md`, and `docs/architecture.md`.
 
-## 未解决问题
+## Open questions
 
-> 2026-11-04：OQ-9、OQ-10、OQ-11、OQ-12、OQ-13、OQ-21 均已关闭。OQ-9 为 10 分钟
-> 漂移复测，OQ-10 为窗口缩放与 GPU 回归，OQ-11 为音轨/设备切换语义与输出延迟，
-> OQ-12 为连续 scrub 与 frame-step，OQ-13 为 HDR/10-bit 预览与导出，
-> OQ-21 为精确 seek 旧帧门控；详见
-> `docs/investigations/playback-pipeline.md` 与 `docs/investigations/mpv-engine-spike.md`。
+> 2026-11-04: OQ-9, OQ-10, OQ-11, OQ-12, OQ-13, and OQ-21 are all closed. OQ-9 was the 10-minute
+> drift re-test, OQ-10 was window scaling and GPU regression, OQ-11 was track / device switching semantics
+> and output latency, OQ-12 was continuous scrub and frame-step, OQ-13 was HDR/10-bit preview and export,
+> and OQ-21 was the old-frame gating for precise seek; see
+> `docs/investigations/playback-pipeline.md` and `docs/investigations/mpv-engine-spike.md`.
 
-- ~~Windows D3D11VA / macOS VideoToolbox 的实机验证。~~ Windows 已实测：预览使用
-  `nvdec`，`d3d11va` 在 libmpv/OpenGL 导出路径下不可用（2026-11-06）；
-  macOS 仍未验证。
-- ~~多 GPU / 多 render node 时 mpv 的设备选择策略。~~ 已委托给 mpv：
-  Linux 使用 `--vaapi-device`（默认 `/dev/dri/renderD128`），项目不枚举设备；
-  Windows D3D11 适配器选择未验证。见 `docs/architecture.md`。
-- libmpv 分发许可证的最终审查与 `LICENSES` 清单。
+- ~~Real-hardware verification of Windows D3D11VA / macOS VideoToolbox.~~ Windows has been measured:
+  preview uses `nvdec`, and `d3d11va` is unavailable on the libmpv/OpenGL export path (2026-11-06);
+  macOS remains unverified.
+- ~~mpv's device selection strategy with multiple GPUs / multiple render nodes.~~ Delegated to mpv:
+  Linux uses `--vaapi-device` (default `/dev/dri/renderD128`), and the project does not enumerate
+  devices; Windows D3D11 adapter selection is unverified. See `docs/architecture.md`.
+- Final review of the libmpv distribution license and the `LICENSES` manifest.
 
-## 参考
+## References
 
 - `docs/investigations/mpv-engine-spike.md`
 - `docs/decisions/0009-preview-decode-zero-copy.md`
 - `docs/decisions/0004-audio-clock-and-desktop-integration.md`
-- mpv-engine README 与 `src/export/wgpu_linux.rs`（设计参考，不复制代码）
+- mpv-engine README and `src/export/wgpu_linux.rs` (design reference, no code copied)
