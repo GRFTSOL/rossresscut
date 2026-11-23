@@ -124,7 +124,13 @@ git push origin v0.4.2
 
 ## 6. Windows
 
-Windows 已能原生构建并产出便携包。剩余项见 `PLANS.md`。
+推送 `v*` tag 后，`Release` workflow 还会运行 `windows-package` job：在
+`windows-latest` 上从 `zhongfly/mpv-winbuild` 拉取固定版本的 libmpv 与 FFmpeg，
+校验两个压缩包的 SHA-256，生成 `mpv.lib`，再执行 `./scripts/package-windows.sh`，
+最后把 zip 附加到已存在的 Release。固定版本是 workflow 中的常量，升级时必须作为
+独立变更处理。
+
+下面这些步骤就是该 job 执行的步骤，也是打 tag 前在本机验证包内容的方式。
 
 ### Windows
 
@@ -164,7 +170,7 @@ Windows 已能原生构建并产出便携包。剩余项见 `PLANS.md`。
   `LICENSE`、`ATTRIBUTION.md` 与 `README-WINDOWS.txt`；包内说明由
   `packaging/README-WINDOWS.txt` 模板生成。
 
-验证状态（0.4.1）：
+验证状态（0.4.3）：
 
 - [x] 原生 MSVC 构建、`cargo test`、两轮 `cargo clippy` 通过。
 - [x] 预览（wgpu DX12 + libmpv 导出纹理）、波形、关键帧索引，NVIDIA `nvdec`。

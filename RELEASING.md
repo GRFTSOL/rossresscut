@@ -143,8 +143,15 @@ by mpv's `hwdec`.
 
 ## 6. Windows
 
-Windows can now be built natively and produces a portable bundle. See `PLANS.md`
-for the remaining items.
+Pushing a `v*` tag also runs the `windows-package` job in the `Release`
+workflow. It runs on `windows-latest`, fetches a pinned libmpv / FFmpeg build
+from `zhongfly/mpv-winbuild`, verifies the SHA-256 of both archives, generates
+`mpv.lib`, and runs `./scripts/package-windows.sh`; the zip is then attached to
+the existing release. The pinned versions are constants in the workflow and
+must be bumped as a separate change.
+
+The steps below are the same ones the job runs and remain the local path for
+checking a package before tagging.
 
 ### Windows
 
@@ -188,7 +195,7 @@ Portable bundle:
   `LICENSE`, `ATTRIBUTION.md`, and `README-WINDOWS.txt`; the bundled notes are
   generated from the `packaging/README-WINDOWS.txt` template.
 
-Verification status (0.4.1):
+Verification status (0.4.3):
 
 - [x] Native MSVC build, `cargo test`, and two rounds of `cargo clippy` pass.
 - [x] Preview (wgpu DX12 + libmpv exported texture), waveforms, keyframe index,

@@ -112,3 +112,100 @@ jobs:
             exit 0
           fi
           gh release upload "$TAG" dist/* --clobber
+
+  windows-package:
+    name: Windows portable package
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up the MSVC toolchain
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install Rust toolchain
+        shell: bash
+        run: rustup show
+
+      - name: Check version
+        shell: bash
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          if [[ $REF_NAME != "v$version" ]]; then
+            echo "error: tag $REF_NAME does not match version v$version" >&2
+            exit 1
+          fi
+
+      - name: Fetch libmpv and FFmpeg
+        shell: bash
+        env:
+          # Pinned so a released package cannot change underneath the tag.
+          MPV_BUILD_TAG: 2026-11-23-1eb941fdb9
+          MPV_DEV_ARCHIVE: mpv-dev-x86_64-20261123-git-1eb941fdb9.7z
+          MPV_DEV_SHA256: ef1ef7d2b405d2fb9defa9e6c3347e80ac8566190a37f85f0b4831988ed2c61a
+          FFMPEG_ARCHIVE: ffmpeg-x86_64-git-05c674c91.7z
+          FFMPEG_SHA256: 13973ba6463e72bca148162d0b312b7ac41b17c8064d68db88fe7b4bbfdd5c97
+        run: |
+          set -euo pipefail
+          base="https://github.com/zhongfly/mpv-winbuild/releases/download/$MPV_BUILD_TAG"
+          curl -sSfL "$base/$MPV_DEV_ARCHIVE" -o "$MPV_DEV_ARCHIVE"
+          curl -sSfL "$base/$FFMPEG_ARCHIVE" -o "$FFMPEG_ARCHIVE"
+          check_sum() {
+            local file=$1 expected=$2 actual
+            actual=$(sha256sum "$file" | cut -d' ' -f1)
+            if [[ $actual != "$expected" ]]; then
+              echo "error: $file checksum mismatch" >&2
+              exit 1
+            fi
+          }
+          check_sum "$MPV_DEV_ARCHIVE" "$MPV_DEV_SHA256"
+          check_sum "$FFMPEG_ARCHIVE" "$FFMPEG_SHA256"
+          7z x -y "$MPV_DEV_ARCHIVE" -odeps/mpv > /dev/null
+          7z x -y "$FFMPEG_ARCHIVE" -odeps/ffmpeg > /dev/null
+
+      - name: Generate the import library
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/mpv-import-lib.sh "$(find deps/mpv -name libmpv-2.dll | head -1)" dist/mpv-lib
+
+      - name: Build and package
+        shell: bash
+        run: |
+          set -euo pipefail
+          # rustc and the MSVC linker need a native Windows path; the shell
+          # tools below accept the MSYS paths that `find` returns.
+          export MPV_LIBRARY_DIR=$(cygpath -w "$PWD/dist/mpv-lib")
+          export MPV_DLL=$(find deps/mpv -name libmpv-2.dll | head -1)
+          export FFMPEG_BIN=$(find deps/ffmpeg -name ffmpeg.exe | head -1)
+          export FFPROBE_BIN=$(find deps/ffmpeg -name ffprobe.exe | head -1)
+          ./scripts/package-windows.sh
+
+      - name: Upload the package artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-package
+          path: |
+            dist/*windows-x64.zip
+            dist/*windows-x64.zip.sha256
+          if-no-files-found: error
+
+      - name: Attach to the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG does not exist yet; the package stays in the workflow artifacts" >&2
+            exit 0
+          fi
+          gh release upload "$TAG" dist/*windows-x64.zip dist/*windows-x64.zip.sha256 --clobber
