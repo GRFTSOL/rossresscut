@@ -149,13 +149,19 @@ jobs:
           MPV_BUILD_TAG: 2026-11-23-1eb941fdb9
           MPV_DEV_ARCHIVE: mpv-dev-x86_64-20261123-git-1eb941fdb9.7z
           MPV_DEV_SHA256: ef1ef7d2b405d2fb9defa9e6c3347e80ac8566190a37f85f0b4831988ed2c61a
-          FFMPEG_ARCHIVE: ffmpeg-x86_64-git-05c674c91.7z
-          FFMPEG_SHA256: 13973ba6463e72bca148162d0b312b7ac41b17c8064d68db88fe7b4bbfdd5c97
+          # zhongfly's ffmpeg archive ships ffmpeg.exe only, so FFmpeg comes
+          # from the full BtbN build instead.
+          FFMPEG_BUILD_TAG: autobuild-2026-11-23-12-43
+          FFMPEG_ARCHIVE: ffmpeg-N-129241-g05c674c913-win64-gpl.zip
+          FFMPEG_SHA256: 694e2e119adff51b6c7b7db260173760ea308f343cbff88c04883dba7a8b1a1c
         run: |
           set -euo pipefail
-          base="https://github.com/zhongfly/mpv-winbuild/releases/download/$MPV_BUILD_TAG"
-          curl -sSfL "$base/$MPV_DEV_ARCHIVE" -o "$MPV_DEV_ARCHIVE"
-          curl -sSfL "$base/$FFMPEG_ARCHIVE" -o "$FFMPEG_ARCHIVE"
+          curl -sSfL \
+            "https://github.com/zhongfly/mpv-winbuild/releases/download/$MPV_BUILD_TAG/$MPV_DEV_ARCHIVE" \
+            -o "$MPV_DEV_ARCHIVE"
+          curl -sSfL \
+            "https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases/download/$FFMPEG_BUILD_TAG/$FFMPEG_ARCHIVE" \
+            -o "$FFMPEG_ARCHIVE"
           check_sum() {
             local file=$1 expected=$2 actual
             actual=$(sha256sum "$file" | cut -d' ' -f1)
@@ -168,6 +174,12 @@ jobs:
           check_sum "$FFMPEG_ARCHIVE" "$FFMPEG_SHA256"
           7z x -y "$MPV_DEV_ARCHIVE" -odeps/mpv > /dev/null
           7z x -y "$FFMPEG_ARCHIVE" -odeps/ffmpeg > /dev/null
+          for name in libmpv-2.dll ffmpeg.exe ffprobe.exe; do
+            if ! find deps -name "$name" -print -quit | grep -q .; then
+              echo "error: $name is missing from the downloaded archives" >&2
+              exit 1
+            fi
+          done
 
       - name: Generate the import library
         shell: bash

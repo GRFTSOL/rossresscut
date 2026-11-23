@@ -144,8 +144,9 @@ by mpv's `hwdec`.
 ## 6. Windows
 
 Pushing a `v*` tag also runs the `windows-package` job in the `Release`
-workflow. It runs on `windows-latest`, fetches a pinned libmpv / FFmpeg build
-from `zhongfly/mpv-winbuild`, verifies the SHA-256 of both archives, generates
+workflow. It runs on `windows-latest`, fetches a pinned libmpv build from
+`zhongfly/mpv-winbuild` and a pinned FFmpeg build from
+`FFmpeg-Builds/FFmpeg-Builds`, verifies the SHA-256 of both archives, generates
 `mpv.lib`, and runs `./scripts/package-windows.sh`; the zip is then attached to
 the existing release. The pinned versions are constants in the workflow and
 must be bumped as a separate change.

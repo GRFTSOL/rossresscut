@@ -125,10 +125,10 @@ git push origin v0.4.2
 ## 6. Windows
 
 推送 `v*` tag 后，`Release` workflow 还会运行 `windows-package` job：在
-`windows-latest` 上从 `zhongfly/mpv-winbuild` 拉取固定版本的 libmpv 与 FFmpeg，
-校验两个压缩包的 SHA-256，生成 `mpv.lib`，再执行 `./scripts/package-windows.sh`，
-最后把 zip 附加到已存在的 Release。固定版本是 workflow 中的常量，升级时必须作为
-独立变更处理。
+`windows-latest` 上从 `zhongfly/mpv-winbuild` 拉取固定版本的 libmpv、从
+`FFmpeg-Builds/FFmpeg-Builds` 拉取固定版本的 FFmpeg，校验两个压缩包的 SHA-256，
+生成 `mpv.lib`，再执行 `./scripts/package-windows.sh`，最后把 zip 附加到已存在的
+Release。固定版本是 workflow 中的常量，升级时必须作为独立变更处理。
 
 下面这些步骤就是该 job 执行的步骤，也是打 tag 前在本机验证包内容的方式。
 
