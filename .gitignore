@@ -4,3 +4,4 @@
 /packaging/pkg
 /packaging/*.pkg.tar*
 __pycache__/
+/rust-iced-starter/
