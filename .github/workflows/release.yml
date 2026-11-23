@@ -194,6 +194,11 @@ jobs:
           if [[ -n ${VCToolsInstallDir:-} ]]; then
             export CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER="${VCToolsInstallDir}bin/HostX64/x64/link.exe"
           fi
+          # The tests start the external FFmpeg binaries by name.
+          ffmpeg_dir=$(dirname "$(find deps/ffmpeg -name ffmpeg.exe | head -1)")
+          export PATH="$(cygpath -u "$ffmpeg_dir"):$PATH"
+          ffmpeg -version > /dev/null
+          ffprobe -version > /dev/null
           # The runner has no Vulkan runtime, so tests that load libmpv cannot
           # start; everything else still runs here.
           cargo test --no-default-features
