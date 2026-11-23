@@ -5,8 +5,8 @@
 **Phases 0–8 are all complete.**
 
 - The wrap-up records for the release phase (Phase 8) are below; since v0.4.2 the Linux pacman
-  package is built by GitHub Actions on `v*` tags and attached to the Release of the same name,
-  while the Windows portable package is still built on this machine.
+  package is built by GitHub Actions on `v*` tags and attached to the Release of the same name;
+  since v0.4.3 the Windows portable package is built there too.
 - Detailed implementation and verification records are archived in
   `docs/history/completed-phases.md`.
 - Later work is feature polishing and bug fixing, no longer numbered by Phase; an ADR is still
@@ -56,7 +56,8 @@ workflows, not an architecture or code template for this project.
   desktop entry and icons, verified on Arch / Wayland; since v0.4.2 GitHub Actions builds it on
   `v*` tags and attaches it to the same-named Release.
 - **Windows**: native MSVC build; `./scripts/package-windows.sh` produces the portable zip (exe
-  + `libmpv-2.dll` + FFmpeg + license + README) and a `.sha256`; still packaged locally.
+  + `libmpv-2.dll` + FFmpeg + license + README) and a `.sha256`; since v0.4.3 GitHub Actions
+  builds and uploads it from `windows-latest`.
 - **License**: GPL-3.0-or-later (ADR 0015); `libmpv` (GPL-2.0-or-later) and `cpal`
   (Apache-2.0) are compatible with GPLv3.
 - **Not yet done**: a Windows installer; on-device acceptance of the file dialogs, drag and
