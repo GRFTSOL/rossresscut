@@ -67,6 +67,16 @@ fn wait_until_ready(application: &mut Application) {
     panic!("media did not become ready: {:?}", application.state());
 }
 
+/// Creates an application that decodes in software.
+///
+/// The default picks the platform decoder, which cannot run on CI runners
+/// without a GPU; the preview tests only care about frames.
+fn new_application() -> Application {
+    let mut application = Application::new();
+    application.set_preview_hardware(HardwareAcceleration::None);
+    application
+}
+
 #[test]
 fn decodes_a_frame_at_the_start() {
     let mut video = start_preview(Timestamp::ZERO);
@@ -125,7 +135,7 @@ fn reports_decoder_failures() {
 
 #[test]
 fn application_scrubs_with_a_fast_preview() {
-    let mut application = Application::new();
+    let mut application = new_application();
     application.open_media(fixture("sample-video-only.mp4"));
     wait_until_ready(&mut application);
 
@@ -152,7 +162,7 @@ fn application_scrubs_with_a_fast_preview() {
 
 #[test]
 fn application_steps_by_one_second() {
-    let mut application = Application::new();
+    let mut application = new_application();
     application.open_media(fixture("sample-keyframes.mp4"));
     wait_until_ready(&mut application);
 
@@ -168,7 +178,7 @@ fn application_steps_by_one_second() {
 
 #[test]
 fn stepping_a_second_does_not_add_the_pause_delta() {
-    let mut application = Application::new();
+    let mut application = new_application();
     application.open_media(fixture("sample-video-only.mp4"));
     wait_until_ready(&mut application);
 
@@ -185,7 +195,7 @@ fn stepping_a_second_does_not_add_the_pause_delta() {
 
 #[test]
 fn application_plays_pauses_and_seeks_video() {
-    let mut application = Application::new();
+    let mut application = new_application();
     application.open_media(fixture("sample-video-only.mp4"));
     wait_until_ready(&mut application);
 
