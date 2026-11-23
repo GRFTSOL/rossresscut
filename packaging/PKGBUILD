@@ -10,7 +10,7 @@
 # this package outside this machine.
 
 pkgname=rossresscut
-pkgver=0.4.2
+pkgver=0.4.3
 pkgrel=1
 pkgdesc='Native lossless media cutting tool built with Rust and egui'
 arch=('x86_64')

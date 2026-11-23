@@ -1,6 +1,6 @@
 [package]
 name = "rossresscut"
-version = "0.4.2"
+version = "0.4.3"
 edition = "2024"
 rust-version = "1.99"
 description = "Native lossless media cutting tool built with Rust and egui."
