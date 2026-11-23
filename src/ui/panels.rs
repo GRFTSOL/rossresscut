@@ -266,7 +266,6 @@ impl RossresscutApp {
                         } else {
                             self.application.select_segment(Some(segment.id()));
                         }
-                        self.application.seek(segment.start());
                     }
                 });
             }
