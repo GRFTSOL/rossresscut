@@ -229,7 +229,12 @@ impl RossresscutApp {
                         if response.clicked() {
                             self.application.toggle_playback();
                         }
-                        if response.hovered() {
+                        if super::timeline::wheel_target(
+                            ui.ctx(),
+                            rect,
+                            response.hovered(),
+                            self.last_pointer_pos,
+                        ) {
                             self.handle_wheel(ui);
                         }
                     } else if self.application.is_waiting_for_preview() {

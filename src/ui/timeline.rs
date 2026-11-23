@@ -300,7 +300,8 @@ impl RossresscutApp {
     fn volume_popup(&mut self, context: &egui::Context, anchor: &egui::Response) {
         let was_open = self.volume_popup_open;
         let mut volume = self.settings.volume;
-        let mut hovered = false;
+        let mut hovered_now = false;
+        let mut popup_rect = egui::Rect::NOTHING;
         // Keep the popup narrow: only a little padding around the rail and the
         // percentage label.
         let frame = egui::Frame::popup(context.global_style().as_ref())
@@ -349,12 +350,13 @@ impl RossresscutApp {
                             .show_value(false),
                     );
                 });
-                hovered = ui
+                hovered_now = ui
                     .input(|input| input.pointer.hover_pos())
                     .is_some_and(|pos| ui.max_rect().contains(pos));
+                popup_rect = ui.max_rect();
             });
 
-        if hovered {
+        if wheel_target(context, popup_rect, hovered_now, self.last_pointer_pos) {
             let (delta, _modifiers) = context.input(wheel_delta);
             let steps = accumulate_wheel_steps(&mut self.volume_popup_wheel, delta);
             if steps != 0.0 {
@@ -540,31 +542,33 @@ impl RossresscutApp {
             self.application.seek(target);
         }
 
-        if response.hovered() {
+        if wheel_target(ui.ctx(), rect, response.hovered(), self.last_pointer_pos) {
             self.handle_wheel(ui);
-            if let Some(pointer) = response.hover_pos() {
-                let hover_x = pointer.x.clamp(rect.left(), rect.right());
-                let hover = timestamp_at_x(rect, hover_x, duration);
-                painter.line_segment(
-                    [
-                        egui::pos2(hover_x, rect.top()),
-                        egui::pos2(hover_x, rect.bottom()),
-                    ],
-                    egui::Stroke::new(1.0, visuals.weak_text_color()),
+        }
+        if response.hovered()
+            && let Some(pointer) = response.hover_pos()
+        {
+            let hover_x = pointer.x.clamp(rect.left(), rect.right());
+            let hover = timestamp_at_x(rect, hover_x, duration);
+            painter.line_segment(
+                [
+                    egui::pos2(hover_x, rect.top()),
+                    egui::pos2(hover_x, rect.bottom()),
+                ],
+                egui::Stroke::new(1.0, visuals.weak_text_color()),
+            );
+            let text = self
+                .application
+                .timeline()
+                .segments()
+                .iter()
+                .rev()
+                .find(|segment| segment.contains(hover))
+                .map_or_else(
+                    || hover.to_string(),
+                    |segment| format!("{} – {}", segment.start(), segment.end()),
                 );
-                let text = self
-                    .application
-                    .timeline()
-                    .segments()
-                    .iter()
-                    .rev()
-                    .find(|segment| segment.contains(hover))
-                    .map_or_else(
-                        || hover.to_string(),
-                        |segment| format!("{} – {}", segment.start(), segment.end()),
-                    );
-                let _ = response.clone().on_hover_text(text);
-            }
+            let _ = response.clone().on_hover_text(text);
         }
     }
 
@@ -766,6 +770,24 @@ pub(super) fn wheel_seek_micros(steps: f32, modifiers: egui::Modifiers, step_mic
         step_micros
     };
     wheel_direction(steps).saturating_mul(per_step.saturating_mul(count))
+}
+
+/// Whether a wheel gesture should act on `rect`.
+///
+/// `hovered_now` is egui's own answer. When egui has no pointer position at
+/// all, `last_pos` decides instead: pressing Alt for a shortcut such as
+/// `Alt+I` makes Windows send a cursor leave, and without this fallback the
+/// wheel would be ignored until the mouse moves again.
+pub(super) fn wheel_target(
+    context: &egui::Context,
+    rect: egui::Rect,
+    hovered_now: bool,
+    last_pos: Option<egui::Pos2>,
+) -> bool {
+    if context.input(|input| input.pointer.hover_pos().is_some()) {
+        return hovered_now;
+    }
+    last_pos.is_some_and(|position| rect.contains(position))
 }
 
 /// Vertical wheel delta in points for this frame.

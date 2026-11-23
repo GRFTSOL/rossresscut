@@ -143,6 +143,13 @@ pub struct RossresscutApp {
     wheel_accumulator: f32,
     volume_popup_open: bool,
     volume_popup_wheel: f32,
+    /// Last pointer position egui reported while the pointer was present.
+    ///
+    /// Windows reports a cursor leave when Alt is pressed for a shortcut such as
+    /// `Alt+I`, after which egui has no pointer position until the mouse moves
+    /// again. Keeping the last known position lets wheel gestures keep working
+    /// across that gap.
+    last_pointer_pos: Option<egui::Pos2>,
     waveform_cache: Option<WaveformCache>,
     segment_error: Option<String>,
     segment_start_input: String,
@@ -286,6 +293,9 @@ impl RossresscutApp {
 }
 impl eframe::App for RossresscutApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        if let Some(position) = ui.ctx().input(|input| input.pointer.hover_pos()) {
+            self.last_pointer_pos = Some(position);
+        }
         if let Some(diagnostics) = &mut self.diagnostics {
             diagnostics.frame();
         }
@@ -452,7 +462,9 @@ mod tests {
     #[cfg(target_os = "linux")]
     use super::settings::{gtk_theme_from_ini, ini_value, qt_theme_from_ini, theme_from_label};
     use super::shortcuts::default_shortcuts;
-    use super::timeline::{fraction_of, timestamp_at_x, wheel_direction, wheel_seek_micros};
+    use super::timeline::{
+        fraction_of, timestamp_at_x, wheel_direction, wheel_seek_micros, wheel_target,
+    };
     use super::*;
     use crate::domain::time::Duration as MediaDuration;
 
@@ -833,6 +845,59 @@ mod tests {
         );
         // A fractional remainder is not a whole step and must not seek.
         assert_eq!(wheel_seek_micros(0.4, none, step), 0);
+    }
+
+    #[test]
+    fn wheel_target_uses_the_last_pointer_position_after_a_cursor_leave() {
+        let context = egui::Context::default();
+        context.begin_pass(egui::RawInput {
+            events: vec![egui::Event::PointerGone],
+            ..Default::default()
+        });
+        let rect = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(100.0, 20.0));
+
+        assert!(wheel_target(
+            &context,
+            rect,
+            false,
+            Some(egui::pos2(20.0, 20.0))
+        ));
+        assert!(!wheel_target(
+            &context,
+            rect,
+            false,
+            Some(egui::pos2(200.0, 20.0))
+        ));
+        assert!(!wheel_target(&context, rect, false, None));
+
+        let mut output = context.end_pass();
+        output.textures_delta.clear();
+    }
+
+    #[test]
+    fn wheel_target_defers_to_egui_while_the_pointer_is_known() {
+        let context = egui::Context::default();
+        context.begin_pass(egui::RawInput {
+            events: vec![egui::Event::PointerMoved(egui::pos2(200.0, 200.0))],
+            ..Default::default()
+        });
+        let rect = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(100.0, 20.0));
+
+        assert!(!wheel_target(
+            &context,
+            rect,
+            false,
+            Some(egui::pos2(20.0, 20.0))
+        ));
+        assert!(wheel_target(
+            &context,
+            rect,
+            true,
+            Some(egui::pos2(200.0, 200.0))
+        ));
+
+        let mut output = context.end_pass();
+        output.textures_delta.clear();
     }
 
     #[test]
