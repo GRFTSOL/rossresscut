@@ -187,10 +187,29 @@ jobs:
           set -euo pipefail
           ./scripts/mpv-import-lib.sh "$(find deps/mpv -name libmpv-2.dll | head -1)" dist/mpv-lib
 
-      - name: Build and package
+      - name: Test without the preview backend
         shell: bash
         run: |
           set -euo pipefail
+          if [[ -n ${VCToolsInstallDir:-} ]]; then
+            export CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER="${VCToolsInstallDir}bin/HostX64/x64/link.exe"
+          fi
+          # The runner has no Vulkan runtime, so tests that load libmpv cannot
+          # start; everything else still runs here.
+          cargo test --no-default-features
+
+      - name: Build and package
+        shell: bash
+        env:
+          PACKAGE_SKIP_CHECKS: 1
+        run: |
+          set -euo pipefail
+          # Git Bash puts its own /usr/bin first, where `link.exe` is coreutils'
+          # link, not the MSVC linker. Point rustc at the real one explicitly.
+          if [[ -n ${VCToolsInstallDir:-} ]]; then
+            export PATH="$(cygpath -u "$VCToolsInstallDir")bin/HostX64/x64:$PATH"
+            export CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER="${VCToolsInstallDir}bin/HostX64/x64/link.exe"
+          fi
           # rustc and the MSVC linker need a native Windows path; the shell
           # tools below accept the MSYS paths that `find` returns.
           export MPV_LIBRARY_DIR=$(cygpath -w "$PWD/dist/mpv-lib")

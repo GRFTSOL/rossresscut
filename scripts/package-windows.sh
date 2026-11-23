@@ -62,7 +62,12 @@ mkdir -p target/debug/deps
 cp "$mpv_dll" target/debug/deps/libmpv-2.dll
 cp "$mpv_dll" target/debug/libmpv-2.dll
 
-./scripts/check.sh
+# The release workflow sets PACKAGE_SKIP_CHECKS=1: its runner has no Vulkan
+# runtime, so tests that load libmpv cannot start there. It runs
+# `cargo test --no-default-features` instead.
+if [[ ${PACKAGE_SKIP_CHECKS:-0} != 1 ]]; then
+    ./scripts/check.sh
+fi
 cargo build --release --locked
 
 if [[ $(head -c 2 target/release/rossresscut.exe) != "MZ" ]]; then

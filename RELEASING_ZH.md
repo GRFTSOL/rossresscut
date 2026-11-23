@@ -130,6 +130,10 @@ git push origin v0.4.2
 生成 `mpv.lib`，再执行 `./scripts/package-windows.sh`，最后把 zip 附加到已存在的
 Release。固定版本是 workflow 中的常量，升级时必须作为独立变更处理。
 
+该 job 跑 `cargo test --no-default-features`，并用 `PACKAGE_SKIP_CHECKS=1`
+打包：`windows-latest` 没有 Vulkan 运行时，加载 `libmpv-2.dll` 的测试在那里无法启动。
+完整测试仍由 Linux 上的 `CI` workflow 覆盖。
+
 下面这些步骤就是该 job 执行的步骤，也是打 tag 前在本机验证包内容的方式。
 
 ### Windows

@@ -151,6 +151,11 @@ workflow. It runs on `windows-latest`, fetches a pinned libmpv build from
 the existing release. The pinned versions are constants in the workflow and
 must be bumped as a separate change.
 
+The job runs `cargo test --no-default-features` and packs with
+`PACKAGE_SKIP_CHECKS=1`: `windows-latest` has no Vulkan runtime, so tests that
+load `libmpv-2.dll` cannot start there. The full suite still runs in the `CI`
+workflow on Linux.
+
 The steps below are the same ones the job runs and remain the local path for
 checking a package before tagging.
 
